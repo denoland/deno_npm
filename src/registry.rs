@@ -225,6 +225,8 @@ impl NpmPackageVersionDistInfo {
   }
 }
 
+// todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
+// in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 #[async_trait]
 pub trait NpmRegistryApi: Sync {
   /// Gets the package information from the npm registry.
