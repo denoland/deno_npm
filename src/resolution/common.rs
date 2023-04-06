@@ -1,5 +1,6 @@
 // Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
 
+use deno_semver::npm::NpmPackageNv;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use once_cell::sync::Lazy;
@@ -10,6 +11,11 @@ use crate::registry::NpmPackageVersionInfo;
 
 pub static LATEST_VERSION_REQ: Lazy<VersionReq> =
   Lazy::new(|| VersionReq::parse_from_specifier("latest").unwrap());
+
+/// Error that occurs when the version is not found in the package information.
+#[derive(Debug, Error, Clone)]
+#[error("Could not find version '{}' for npm package '{}'.", .0.version, .0.name)]
+pub struct NpmPackageVersionNotFound(pub NpmPackageNv);
 
 #[derive(Debug, Error, Clone)]
 pub enum NpmPackageVersionResolutionError {
@@ -28,16 +34,10 @@ pub enum NpmPackageVersionResolutionError {
     dist_tag: String,
     version: String,
   },
+  #[error(transparent)]
+  VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[error(
-    "Could not find version '{version}' for npm package '{package_name}'."
-  )]
-  VersionNotFound {
-    package_name: String,
-    version: Version,
-  },
-  // todo(dsherret): This shouldn't reference a CLI flag.
-  #[error(
-    "Could not find npm package '{package_name}' matching '{version_req}'. Try retrieving the latest npm package information by running with --reload"
+    "Could not find npm package '{package_name}' matching '{version_req}'."
   )]
   VersionReqNotMatched {
     package_name: String,
@@ -57,10 +57,12 @@ pub fn resolve_best_package_version_info<'info, 'version>(
   )? {
     match package_info.versions.get(version) {
       Some(version_info) => Ok(version_info),
-      None => Err(NpmPackageVersionResolutionError::VersionNotFound {
-        package_name: package_info.name.clone(),
-        version: version.clone(),
-      }),
+      None => Err(NpmPackageVersionResolutionError::VersionNotFound(
+        NpmPackageVersionNotFound(NpmPackageNv {
+          name: package_info.name.clone(),
+          version: version.clone(),
+        }),
+      )),
     }
   } else {
     // get the information

@@ -2,6 +2,7 @@ mod common;
 mod graph;
 mod snapshot;
 
+pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;
 pub use graph::NpmResolutionError;
 pub use snapshot::NpmPackagesPartitioned;

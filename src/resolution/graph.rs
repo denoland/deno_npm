@@ -27,7 +27,6 @@ use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
-use crate::registry::NpmRegistryPackageVersionInfoLoadError;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
 use super::common::version_req_satisfies;
@@ -43,8 +42,6 @@ use crate::NpmResolutionPackage;
 pub enum NpmResolutionError {
   #[error(transparent)]
   Registry(#[from] NpmRegistryPackageInfoLoadError),
-  #[error(transparent)]
-  RegistryPackageVersion(#[from] NpmRegistryPackageVersionInfoLoadError),
   #[error(transparent)]
   Resolution(#[from] NpmPackageVersionResolutionError),
   #[error(transparent)]
@@ -957,7 +954,10 @@ impl<'a> GraphDependencyResolver<'a> {
         } else {
           // the api is expected to have cached this at this point, so no
           // need to parallelize
-          let version_info = self.api.package_version_info(&pkg_nv).await?;
+          let package_info = self.api.package_info(&pkg_nv.name).await?;
+          let version_info = package_info
+            .version_info(&pkg_nv)
+            .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
           self.dep_entry_cache.store(pkg_nv.clone(), &version_info)?
         };
 

@@ -12,6 +12,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::resolution::NpmPackageVersionNotFound;
+
 #[derive(Debug, Clone, Error)]
 #[error("Could not find @ symbol in npm url '{value}'")]
 pub struct PackageDepNpmSchemeValueParseError {
@@ -45,6 +47,18 @@ pub struct NpmPackageInfo {
   pub versions: HashMap<Version, NpmPackageVersionInfo>,
   #[serde(rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
+}
+
+impl NpmPackageInfo {
+  pub fn version_info(
+    &self,
+    nv: &NpmPackageNv,
+  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    match self.versions.get(&nv.version).cloned() {
+      Some(version_info) => Ok(version_info),
+      None => Err(NpmPackageVersionNotFound(nv.clone())),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Error)]
@@ -245,19 +259,8 @@ pub enum NpmRegistryPackageInfoLoadError {
   LoadError(#[from] Arc<anyhow::Error>),
 }
 
-/// Error that occurs when loading the package info from the npm registry fails.
-#[derive(Debug, Error, Clone)]
-pub enum NpmRegistryPackageVersionInfoLoadError {
-  #[error("Could not find version information for '{0}'.")]
-  VersionNotFound(NpmPackageNv),
-  #[error(transparent)]
-  Package(#[from] NpmRegistryPackageInfoLoadError),
-}
-
-// todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
-// in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 #[async_trait]
-pub trait NpmRegistryApi: Sync {
+pub trait NpmRegistryApi {
   /// Gets the package information from the npm registry.
   ///
   /// Note: The implementer should handle requests for the same npm
@@ -267,19 +270,6 @@ pub trait NpmRegistryApi: Sync {
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
-
-  async fn package_version_info(
-    &self,
-    nv: &NpmPackageNv,
-  ) -> Result<NpmPackageVersionInfo, NpmRegistryPackageVersionInfoLoadError> {
-    let package_info = self.package_info(&nv.name).await?;
-    match package_info.versions.get(&nv.version).cloned() {
-      Some(version_info) => Ok(version_info),
-      None => Err(NpmRegistryPackageVersionInfoLoadError::VersionNotFound(
-        nv.clone(),
-      )),
-    }
-  }
 }
 
 /// Note: This test struct is not thread safe for setup
