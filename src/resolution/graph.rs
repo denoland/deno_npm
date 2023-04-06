@@ -590,9 +590,8 @@ impl Graph {
 
       // at this point, the api should have this cached
       let dist = api
-        .maybe_package_info(&pkg_id.nv.name)
+        .package_info(&pkg_id.nv.name)
         .await?
-        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))
         .versions
         .get(&pkg_id.nv.version)
         .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))

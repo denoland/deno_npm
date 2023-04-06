@@ -225,6 +225,15 @@ impl NpmPackageVersionDistInfo {
   }
 }
 
+/// Error that occurs when loading the package info from the npm registry fails.
+#[derive(Debug, Error, Clone)]
+pub enum NpmRegistryPackageInfoLoadError {
+  #[error("npm package '{package_name}' does not exist.")]
+  PacakgeNotExists { package_name: String },
+  #[error(transparent)]
+  LoadError(#[from] Arc<anyhow::Error>),
+}
+
 // todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
 // in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 #[async_trait]
@@ -234,26 +243,16 @@ pub trait NpmRegistryApi: Sync {
   /// Note: The implementer should handle requests for the same npm
   /// package name concurrently and try not to make the same request
   /// to npm at the same time.
-  async fn maybe_package_info(
-    &self,
-    name: &str,
-  ) -> Result<Option<Arc<NpmPackageInfo>>, anyhow::Error>;
-
   async fn package_info(
     &self,
     name: &str,
-  ) -> Result<Arc<NpmPackageInfo>, anyhow::Error> {
-    let maybe_package_info = self.maybe_package_info(name).await?;
-    match maybe_package_info {
-      Some(package_info) => Ok(package_info),
-      None => anyhow::bail!("npm package '{}' does not exist", name),
-    }
-  }
+  ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 
   async fn package_version_info(
     &self,
     nv: &NpmPackageNv,
-  ) -> Result<Option<NpmPackageVersionInfo>, anyhow::Error> {
+  ) -> Result<Option<NpmPackageVersionInfo>, NpmRegistryPackageInfoLoadError>
+  {
     let package_info = self.package_info(&nv.name).await?;
     Ok(package_info.versions.get(&nv.version).cloned())
   }
@@ -369,12 +368,12 @@ impl TestNpmRegistryApi {
 #[cfg(test)]
 #[async_trait]
 impl NpmRegistryApi for TestNpmRegistryApi {
-  async fn maybe_package_info(
+  async fn package_info(
     &self,
     name: &str,
-  ) -> Result<Option<Arc<NpmPackageInfo>>, anyhow::Error> {
+  ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
     let infos = self.package_infos.lock();
-    Ok(infos.get(name).cloned().map(Arc::new))
+    Ok(Arc::new(infos.get(name).cloned().unwrap()))
   }
 }
 
