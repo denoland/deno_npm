@@ -210,7 +210,7 @@ mod test {
     );
     assert_eq!(
       result.err().unwrap().to_string(),
-      "Could not find version '1.0.0-alpha' referenced in dist-tag 'latest'."
+      "Could not find version '1.0.0-alpha' referenced in dist-tag 'latest' for npm package 'test'."
     );
 
     // dist tag where version is a pre-release

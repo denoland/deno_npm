@@ -61,7 +61,9 @@ pub struct NpmResolutionSnapshotCreateOptionsPackage {
 
 #[derive(Debug, Clone)]
 pub struct NpmResolutionSnapshotCreateOptions {
+  /// Resolved npm specifiers to package id mappings.
   pub root_packages: HashMap<NpmPackageReq, NpmPackageId>,
+  /// Collection of resolved packages in the dependency graph.
   pub packages: Vec<NpmResolutionSnapshotCreateOptionsPackage>,
 }
 
