@@ -32,15 +32,17 @@ use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find package '{}' in the list of packages.", self.0.as_serialized())]
+#[error("Could not find referenced package '{}' in the list of packages.", self.0.as_serialized())]
 pub struct PackageIdNotFoundError(pub NpmPackageId);
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find package constraint '{0}' in the list of packages.")]
+#[error(
+  "Could not find referenced package constraint '{0}' in the list of packages."
+)]
 pub struct PackageReqNotFoundError(pub NpmPackageReq);
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find package '{0}' in the list of packages.")]
+#[error("Could not find referenced package '{0}' in the list of packages.")]
 pub struct PackageNvNotFoundError(pub NpmPackageNv);
 
 #[derive(Debug, Error, Clone)]
