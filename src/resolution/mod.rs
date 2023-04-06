@@ -8,3 +8,7 @@ pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;
 pub use snapshot::NpmResolutionSnapshotCreateOptions;
 pub use snapshot::NpmResolutionSnapshotCreateOptionsPackage;
+pub use snapshot::PackageIdNotFoundError;
+pub use snapshot::PackageNotFoundFromReferrerError;
+pub use snapshot::PackageNvNotFoundError;
+pub use snapshot::PackageReqNotFoundError;

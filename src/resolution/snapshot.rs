@@ -6,9 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use anyhow::bail;
-use anyhow::Error as AnyError;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
 use deno_semver::VersionReq;
@@ -24,6 +21,7 @@ use super::common::LATEST_VERSION_REQ;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
+use super::NpmPackageVersionResolutionError;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionDistInfo;
@@ -34,8 +32,27 @@ use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find referenced package '{}' in the list of packages.", self.0.as_serialized())]
-pub struct NpmResolutionSnapshotPackageIdNotFoundError(pub NpmPackageId);
+#[error("Could not find package '{}' in the list of packages.", self.0.as_serialized())]
+pub struct PackageIdNotFoundError(pub NpmPackageId);
+
+#[derive(Debug, Error, Clone)]
+#[error("Could not find package constraint '{0}' in the list of packages.")]
+pub struct PackageReqNotFoundError(pub NpmPackageReq);
+
+#[derive(Debug, Error, Clone)]
+#[error("Could not find package '{0}' in the list of packages.")]
+pub struct PackageNvNotFoundError(pub NpmPackageNv);
+
+#[derive(Debug, Error, Clone)]
+pub enum PackageNotFoundFromReferrerError {
+  #[error("Could not find referrer npm package '{0}'.")]
+  Referrer(NpmPackageCacheFolderId),
+  #[error("Could not find npm package '{name}' referenced by '{referrer}'.")]
+  Package {
+    name: String,
+    referrer: NpmPackageCacheFolderId,
+  },
+}
 
 /// Packages partitioned by if they are "copy" packages or not.
 pub struct NpmPackagesPartitioned {
@@ -159,7 +176,7 @@ mod map_to_vec {
 impl NpmResolutionSnapshot {
   pub fn from_packages(
     options: NpmResolutionSnapshotCreateOptions,
-  ) -> Result<Self, NpmResolutionSnapshotPackageIdNotFoundError> {
+  ) -> Result<Self, PackageIdNotFoundError> {
     let mut package_reqs =
       HashMap::<NpmPackageReq, NpmPackageNv>::with_capacity(
         options.root_packages.len(),
@@ -212,7 +229,7 @@ impl NpmResolutionSnapshot {
     // verify that all these ids exist in packages
     for id in verify_ids {
       if !packages.contains_key(&id) {
-        return Err(NpmResolutionSnapshotPackageIdNotFoundError(id));
+        return Err(PackageIdNotFoundError(id));
       }
     }
 
@@ -297,10 +314,13 @@ impl NpmResolutionSnapshot {
   pub fn resolve_pkg_from_pkg_req(
     &self,
     req: &NpmPackageReq,
-  ) -> Result<&NpmResolutionPackage, AnyError> {
+  ) -> Result<&NpmResolutionPackage, PackageReqNotFoundError> {
     match self.package_reqs.get(req) {
-      Some(id) => self.resolve_package_from_deno_module(id),
-      None => bail!("could not find npm package directory for '{}'", req),
+      Some(id) => self
+        .resolve_package_from_deno_module(id)
+        // ignore the nv not found error and return a req not found
+        .map_err(|_| PackageReqNotFoundError(req.clone())),
+      None => Err(PackageReqNotFoundError(req.clone())),
     }
   }
 
@@ -308,10 +328,10 @@ impl NpmResolutionSnapshot {
   pub fn resolve_package_from_deno_module(
     &self,
     nv: &NpmPackageNv,
-  ) -> Result<&NpmResolutionPackage, AnyError> {
+  ) -> Result<&NpmResolutionPackage, PackageNvNotFoundError> {
     match self.root_packages.get(nv) {
       Some(id) => Ok(self.packages.get(id).unwrap()),
-      None => bail!("could not find npm package directory for '{}'", nv),
+      None => Err(PackageNvNotFoundError(nv.clone())),
     }
   }
 
@@ -336,7 +356,7 @@ impl NpmResolutionSnapshot {
     &self,
     name: &str,
     referrer: &NpmPackageCacheFolderId,
-  ) -> Result<&NpmResolutionPackage, AnyError> {
+  ) -> Result<&NpmResolutionPackage, Box<PackageNotFoundFromReferrerError>> {
     // todo(dsherret): do we need an additional hashmap to get this quickly?
     let referrer_package = self
       .packages_by_name
@@ -356,7 +376,7 @@ impl NpmResolutionSnapshot {
           .next()
       })
       .ok_or_else(|| {
-        anyhow!("could not find referrer npm package '{}'", referrer)
+        Box::new(PackageNotFoundFromReferrerError::Referrer(referrer.clone()))
       })?;
 
     let name = name_without_path(name);
@@ -377,11 +397,10 @@ impl NpmResolutionSnapshot {
       }
     }
 
-    bail!(
-      "could not find npm package '{}' referenced by '{}'",
-      name,
-      referrer
-    )
+    Err(Box::new(PackageNotFoundFromReferrerError::Package {
+      name: name.to_string(),
+      referrer: referrer.clone(),
+    }))
   }
 
   pub fn all_packages(&self) -> Vec<NpmResolutionPackage> {
@@ -433,7 +452,7 @@ impl NpmResolutionSnapshot {
     &mut self,
     pkg_req: &NpmPackageReq,
     package_info: &NpmPackageInfo,
-  ) -> Result<NpmPackageNv, AnyError> {
+  ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
     let version_req =
       pkg_req.version_req.as_ref().unwrap_or(&*LATEST_VERSION_REQ);
     let version_info = match self.packages_by_name.get(&package_info.name) {
