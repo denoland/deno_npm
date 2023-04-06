@@ -49,10 +49,14 @@ pub struct NpmPackageInfo {
 
 #[derive(Debug, Clone, Error)]
 #[error(
-  "Error parsing version requirement for dependency: {key}@{version_req}\n\n{source:#}"
+  "Error in {parent_nv} parsing version requirement for dependency: {key}@{version_req}\n\n{source:#}"
 )]
 pub struct NpmDependencyEntryError {
+  /// Name and version of the package that has this dependency.
+  pub parent_nv: NpmPackageNv,
+  /// Bare specifier.
   pub key: String,
+  /// Version requirement text.
   pub version_req: String,
   #[source]
   pub source: NpmDependencyEntryErrorSource,
@@ -61,9 +65,11 @@ pub struct NpmDependencyEntryError {
 #[derive(Debug, Clone, Error)]
 pub enum NpmDependencyEntryErrorSource {
   #[error(transparent)]
-  NpmVersionReqParseError(NpmVersionReqParseError),
+  NpmVersionReqParseError(#[from] NpmVersionReqParseError),
   #[error(transparent)]
-  PackageDepNpmSchemeValueParseError(PackageDepNpmSchemeValueParseError),
+  PackageDepNpmSchemeValueParseError(
+    #[from] PackageDepNpmSchemeValueParseError,
+  ),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -143,17 +149,16 @@ pub struct NpmPackageVersionInfo {
 impl NpmPackageVersionInfo {
   pub fn dependencies_as_entries(
     &self,
-  ) -> Result<Vec<NpmDependencyEntry>, NpmDependencyEntryError> {
+    // name of the package used to improve error messages
+    package_name: &str,
+  ) -> Result<Vec<NpmDependencyEntry>, Box<NpmDependencyEntryError>> {
     fn parse_dep_entry_inner(
       (key, value): (&String, &String),
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
-        parse_dep_entry_name_and_raw_version(key, value).map_err(
-          NpmDependencyEntryErrorSource::PackageDepNpmSchemeValueParseError,
-        )?;
-      let version_req = VersionReq::parse_from_npm(version_req)
-        .map_err(NpmDependencyEntryErrorSource::NpmVersionReqParseError)?;
+        parse_dep_entry_name_and_raw_version(key, value)?;
+      let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
         bare_specifier: key.to_string(),
@@ -164,21 +169,27 @@ impl NpmPackageVersionInfo {
     }
 
     fn parse_dep_entry(
+      nv: (&str, &Version),
       key_value: (&String, &String),
       kind: NpmDependencyEntryKind,
-    ) -> Result<NpmDependencyEntry, NpmDependencyEntryError> {
+    ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
-        NpmDependencyEntryError {
+        Box::new(NpmDependencyEntryError {
+          parent_nv: NpmPackageNv {
+            name: nv.0.to_string(),
+            version: nv.1.clone(),
+          },
           key: key_value.0.to_string(),
           version_req: key_value.1.to_string(),
           source,
-        }
+        })
       })
     }
 
     let mut result = HashMap::with_capacity(
       self.dependencies.len() + self.peer_dependencies.len(),
     );
+    let nv = (package_name, &self.version);
     for entry in &self.peer_dependencies {
       let is_optional = self
         .peer_dependencies_meta
@@ -189,11 +200,11 @@ impl NpmPackageVersionInfo {
         true => NpmDependencyEntryKind::OptionalPeer,
         false => NpmDependencyEntryKind::Peer,
       };
-      let entry = parse_dep_entry(entry, kind)?;
+      let entry = parse_dep_entry(nv, entry, kind)?;
       result.insert(entry.bare_specifier.clone(), entry);
     }
     for entry in &self.dependencies {
-      let entry = parse_dep_entry(entry, NpmDependencyEntryKind::Dep)?;
+      let entry = parse_dep_entry(nv, entry, NpmDependencyEntryKind::Dep)?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,
       // but then use this dependency version requirement otherwise
@@ -229,9 +240,18 @@ impl NpmPackageVersionDistInfo {
 #[derive(Debug, Error, Clone)]
 pub enum NpmRegistryPackageInfoLoadError {
   #[error("npm package '{package_name}' does not exist.")]
-  PacakgeNotExists { package_name: String },
+  PackageNotExists { package_name: String },
   #[error(transparent)]
   LoadError(#[from] Arc<anyhow::Error>),
+}
+
+/// Error that occurs when loading the package info from the npm registry fails.
+#[derive(Debug, Error, Clone)]
+pub enum NpmRegistryPackageVersionInfoLoadError {
+  #[error("Could not find version information for '{0}'.")]
+  VersionNotFound(NpmPackageNv),
+  #[error(transparent)]
+  Package(#[from] NpmRegistryPackageInfoLoadError),
 }
 
 // todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
@@ -251,10 +271,14 @@ pub trait NpmRegistryApi: Sync {
   async fn package_version_info(
     &self,
     nv: &NpmPackageNv,
-  ) -> Result<Option<NpmPackageVersionInfo>, NpmRegistryPackageInfoLoadError>
-  {
+  ) -> Result<NpmPackageVersionInfo, NpmRegistryPackageVersionInfoLoadError> {
     let package_info = self.package_info(&nv.name).await?;
-    Ok(package_info.versions.get(&nv.version).cloned())
+    match package_info.versions.get(&nv.version).cloned() {
+      Some(version_info) => Ok(version_info),
+      None => Err(NpmRegistryPackageVersionInfoLoadError::VersionNotFound(
+        nv.clone(),
+      )),
+    }
   }
 }
 

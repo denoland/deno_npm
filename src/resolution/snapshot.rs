@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use anyhow::Error as AnyError;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
@@ -18,18 +17,25 @@ use futures::StreamExt;
 use log::debug;
 use serde::Deserialize;
 use serde::Serialize;
+use thiserror::Error;
 
 use super::common::resolve_best_package_version_info;
 use super::common::LATEST_VERSION_REQ;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
+use super::graph::NpmResolutionError;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmRegistryApi;
+use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
+
+#[derive(Debug, Error, Clone)]
+#[error("Could not find referenced package '{}' in the list of packages.", self.0.as_serialized())]
+pub struct NpmResolutionSnapshotPackageIdNotFoundError(pub NpmPackageId);
 
 /// Packages partitioned by if they are "copy" packages or not.
 pub struct NpmPackagesPartitioned {
@@ -153,7 +159,7 @@ mod map_to_vec {
 impl NpmResolutionSnapshot {
   pub fn from_packages(
     options: NpmResolutionSnapshotCreateOptions,
-  ) -> Result<Self, AnyError> {
+  ) -> Result<Self, NpmResolutionSnapshotPackageIdNotFoundError> {
     let mut package_reqs =
       HashMap::<NpmPackageReq, NpmPackageNv>::with_capacity(
         options.root_packages.len(),
@@ -204,12 +210,9 @@ impl NpmResolutionSnapshot {
     }
 
     // verify that all these ids exist in packages
-    for id in &verify_ids {
-      if !packages.contains_key(id) {
-        bail!(
-          "Could not find referenced package '{}' in the list of packages.",
-          id.as_serialized()
-        );
+    for id in verify_ids {
+      if !packages.contains_key(&id) {
+        return Err(NpmResolutionSnapshotPackageIdNotFoundError(id));
       }
     }
 
@@ -235,15 +238,9 @@ impl NpmResolutionSnapshot {
     self,
     package_reqs: Vec<NpmPackageReq>,
     api: &dyn NpmRegistryApi,
-  ) -> Result<Self, anyhow::Error> {
+  ) -> Result<Self, NpmResolutionError> {
     // convert the snapshot to a traversable graph
-    let mut graph = Graph::from_snapshot(self).with_context(|| {
-      // todo(dsherret): this should return a thiserror and
-      // the reference to a lockfile can be removed
-      anyhow::anyhow!(
-        "Failed creating npm state. Try recreating your lockfile."
-      )
-    })?;
+    let mut graph = Graph::from_snapshot(self);
     let pending_unresolved = graph.take_pending_unresolved();
 
     let package_reqs = package_reqs
@@ -263,7 +260,10 @@ impl NpmResolutionSnapshot {
         .map(|req| {
           Either::Left(async move {
             let info = api.package_info(&req.name).await?;
-            Result::<_, anyhow::Error>::Ok((ReqOrNv::Req(req), info))
+            Result::<_, NpmRegistryPackageInfoLoadError>::Ok((
+              ReqOrNv::Req(req),
+              info,
+            ))
           })
         })
         .chain(pending_unresolved.map(|nv| {
@@ -290,7 +290,7 @@ impl NpmResolutionSnapshot {
 
     resolver.resolve_pending().await?;
 
-    graph.into_snapshot(api).await
+    graph.into_snapshot(api).await.map_err(|err| err.into())
   }
 
   /// Resolve a package from a package requirement.
