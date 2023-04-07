@@ -12,6 +12,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::resolution::NpmPackageVersionNotFound;
+
 #[derive(Debug, Clone, Error)]
 #[error("Could not find @ symbol in npm url '{value}'")]
 pub struct PackageDepNpmSchemeValueParseError {
@@ -47,12 +49,28 @@ pub struct NpmPackageInfo {
   pub dist_tags: HashMap<String, Version>,
 }
 
+impl NpmPackageInfo {
+  pub fn version_info(
+    &self,
+    nv: &NpmPackageNv,
+  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    match self.versions.get(&nv.version).cloned() {
+      Some(version_info) => Ok(version_info),
+      None => Err(NpmPackageVersionNotFound(nv.clone())),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Error)]
 #[error(
-  "Error parsing version requirement for dependency: {key}@{version_req}\n\n{source:#}"
+  "Error in {parent_nv} parsing version requirement for dependency: {key}@{version_req}\n\n{source:#}"
 )]
 pub struct NpmDependencyEntryError {
+  /// Name and version of the package that has this dependency.
+  pub parent_nv: NpmPackageNv,
+  /// Bare specifier.
   pub key: String,
+  /// Version requirement text.
   pub version_req: String,
   #[source]
   pub source: NpmDependencyEntryErrorSource,
@@ -61,9 +79,11 @@ pub struct NpmDependencyEntryError {
 #[derive(Debug, Clone, Error)]
 pub enum NpmDependencyEntryErrorSource {
   #[error(transparent)]
-  NpmVersionReqParseError(NpmVersionReqParseError),
+  NpmVersionReqParseError(#[from] NpmVersionReqParseError),
   #[error(transparent)]
-  PackageDepNpmSchemeValueParseError(PackageDepNpmSchemeValueParseError),
+  PackageDepNpmSchemeValueParseError(
+    #[from] PackageDepNpmSchemeValueParseError,
+  ),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -143,17 +163,16 @@ pub struct NpmPackageVersionInfo {
 impl NpmPackageVersionInfo {
   pub fn dependencies_as_entries(
     &self,
-  ) -> Result<Vec<NpmDependencyEntry>, NpmDependencyEntryError> {
+    // name of the package used to improve error messages
+    package_name: &str,
+  ) -> Result<Vec<NpmDependencyEntry>, Box<NpmDependencyEntryError>> {
     fn parse_dep_entry_inner(
       (key, value): (&String, &String),
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
-        parse_dep_entry_name_and_raw_version(key, value).map_err(
-          NpmDependencyEntryErrorSource::PackageDepNpmSchemeValueParseError,
-        )?;
-      let version_req = VersionReq::parse_from_npm(version_req)
-        .map_err(NpmDependencyEntryErrorSource::NpmVersionReqParseError)?;
+        parse_dep_entry_name_and_raw_version(key, value)?;
+      let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
         bare_specifier: key.to_string(),
@@ -164,21 +183,27 @@ impl NpmPackageVersionInfo {
     }
 
     fn parse_dep_entry(
+      nv: (&str, &Version),
       key_value: (&String, &String),
       kind: NpmDependencyEntryKind,
-    ) -> Result<NpmDependencyEntry, NpmDependencyEntryError> {
+    ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
-        NpmDependencyEntryError {
+        Box::new(NpmDependencyEntryError {
+          parent_nv: NpmPackageNv {
+            name: nv.0.to_string(),
+            version: nv.1.clone(),
+          },
           key: key_value.0.to_string(),
           version_req: key_value.1.to_string(),
           source,
-        }
+        })
       })
     }
 
     let mut result = HashMap::with_capacity(
       self.dependencies.len() + self.peer_dependencies.len(),
     );
+    let nv = (package_name, &self.version);
     for entry in &self.peer_dependencies {
       let is_optional = self
         .peer_dependencies_meta
@@ -189,11 +214,11 @@ impl NpmPackageVersionInfo {
         true => NpmDependencyEntryKind::OptionalPeer,
         false => NpmDependencyEntryKind::Peer,
       };
-      let entry = parse_dep_entry(entry, kind)?;
+      let entry = parse_dep_entry(nv, entry, kind)?;
       result.insert(entry.bare_specifier.clone(), entry);
     }
     for entry in &self.dependencies {
-      let entry = parse_dep_entry(entry, NpmDependencyEntryKind::Dep)?;
+      let entry = parse_dep_entry(nv, entry, NpmDependencyEntryKind::Dep)?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,
       // but then use this dependency version requirement otherwise
@@ -225,6 +250,15 @@ impl NpmPackageVersionDistInfo {
   }
 }
 
+/// Error that occurs when loading the package info from the npm registry fails.
+#[derive(Debug, Error, Clone)]
+pub enum NpmRegistryPackageInfoLoadError {
+  #[error("npm package '{package_name}' does not exist.")]
+  PackageNotExists { package_name: String },
+  #[error(transparent)]
+  LoadError(#[from] Arc<anyhow::Error>),
+}
+
 // todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
 // in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 #[async_trait]
@@ -234,29 +268,10 @@ pub trait NpmRegistryApi: Sync {
   /// Note: The implementer should handle requests for the same npm
   /// package name concurrently and try not to make the same request
   /// to npm at the same time.
-  async fn maybe_package_info(
-    &self,
-    name: &str,
-  ) -> Result<Option<Arc<NpmPackageInfo>>, anyhow::Error>;
-
   async fn package_info(
     &self,
     name: &str,
-  ) -> Result<Arc<NpmPackageInfo>, anyhow::Error> {
-    let maybe_package_info = self.maybe_package_info(name).await?;
-    match maybe_package_info {
-      Some(package_info) => Ok(package_info),
-      None => anyhow::bail!("npm package '{}' does not exist", name),
-    }
-  }
-
-  async fn package_version_info(
-    &self,
-    nv: &NpmPackageNv,
-  ) -> Result<Option<NpmPackageVersionInfo>, anyhow::Error> {
-    let package_info = self.package_info(&nv.name).await?;
-    Ok(package_info.versions.get(&nv.version).cloned())
-  }
+  ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 }
 
 /// Note: This test struct is not thread safe for setup
@@ -369,12 +384,12 @@ impl TestNpmRegistryApi {
 #[cfg(test)]
 #[async_trait]
 impl NpmRegistryApi for TestNpmRegistryApi {
-  async fn maybe_package_info(
+  async fn package_info(
     &self,
     name: &str,
-  ) -> Result<Option<Arc<NpmPackageInfo>>, anyhow::Error> {
+  ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
     let infos = self.package_infos.lock();
-    Ok(infos.get(name).cloned().map(Arc::new))
+    Ok(Arc::new(infos.get(name).cloned().unwrap()))
   }
 }
 

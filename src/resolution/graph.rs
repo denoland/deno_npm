@@ -9,9 +9,6 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
-use anyhow::bail;
-use anyhow::Context;
-use anyhow::Error as AnyError;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
 use deno_semver::Version;
@@ -19,13 +16,17 @@ use deno_semver::VersionReq;
 use futures::StreamExt;
 use log::debug;
 use parking_lot::Mutex;
+use thiserror::Error;
 
 use super::common::resolve_best_package_version_info;
+use super::common::NpmPackageVersionResolutionError;
 use crate::registry::NpmDependencyEntry;
+use crate::registry::NpmDependencyEntryError;
 use crate::registry::NpmDependencyEntryKind;
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
+use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
 use super::common::version_req_satisfies;
@@ -36,6 +37,16 @@ use crate::NpmResolutionPackage;
 
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
+
+#[derive(Debug, Clone, Error)]
+pub enum NpmResolutionError {
+  #[error(transparent)]
+  Registry(#[from] NpmRegistryPackageInfoLoadError),
+  #[error(transparent)]
+  Resolution(#[from] NpmPackageVersionResolutionError),
+  #[error(transparent)]
+  DependencyEntry(#[from] Box<NpmDependencyEntryError>),
+}
 
 /// A unique identifier to a node in the graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -326,17 +337,15 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(
-    snapshot: NpmResolutionSnapshot,
-  ) -> Result<Self, AnyError> {
+  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
     fn get_or_create_graph_node(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
       packages: &HashMap<NpmPackageId, NpmResolutionPackage>,
       created_package_ids: &mut HashMap<NpmPackageId, NodeId>,
-    ) -> Result<NodeId, AnyError> {
+    ) -> NodeId {
       if let Some(id) = created_package_ids.get(pkg_id) {
-        return Ok(*id);
+        return *id;
       }
 
       let node_id = graph.create_node(&pkg_id.nv);
@@ -346,14 +355,14 @@ impl Graph {
         .peer_dependencies
         .iter()
         .map(|peer_dep| {
-          Ok(ResolvedIdPeerDep::SnapshotNodeId(get_or_create_graph_node(
+          ResolvedIdPeerDep::SnapshotNodeId(get_or_create_graph_node(
             graph,
             peer_dep,
             packages,
             created_package_ids,
-          )?))
+          ))
         })
-        .collect::<Result<Vec<_>, AnyError>>()?;
+        .collect::<Vec<_>>();
       let graph_resolved_id = ResolvedId {
         nv: Arc::new(pkg_id.nv.clone()),
         peer_dependencies: peer_dep_ids,
@@ -361,8 +370,10 @@ impl Graph {
       graph.resolved_node_ids.set(node_id, graph_resolved_id);
       let resolution = match packages.get(pkg_id) {
         Some(resolved_id) => resolved_id,
-        // maybe the user messed around with the lockfile
-        None => bail!("not found package: {}", pkg_id.as_serialized()),
+        // we verify in other places that references in a snapshot
+        // should be valid (ex. when creating a snapshot), so we should
+        // never get here and if so that indicates a bug elsewhere
+        None => panic!("not found package: {}", pkg_id.as_serialized()),
       };
       for (name, child_id) in &resolution.dependencies {
         let child_node_id = get_or_create_graph_node(
@@ -370,10 +381,10 @@ impl Graph {
           child_id,
           packages,
           created_package_ids,
-        )?;
+        );
         graph.set_child_of_parent_node(node_id, name, child_node_id);
       }
-      Ok(node_id)
+      node_id
     }
 
     let mut graph = Self {
@@ -404,10 +415,10 @@ impl Graph {
         &resolved_id,
         &snapshot.packages,
         &mut created_package_ids,
-      )?;
+      );
       graph.root_packages.insert(Arc::new(id), node_id);
     }
-    Ok(graph)
+    graph
   }
 
   pub fn take_pending_unresolved(&mut self) -> Vec<Arc<NpmPackageNv>> {
@@ -550,7 +561,7 @@ impl Graph {
   pub async fn into_snapshot(
     self,
     api: &dyn NpmRegistryApi,
-  ) -> Result<NpmResolutionSnapshot, AnyError> {
+  ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     let packages_to_pkg_ids = self
       .nodes
       .keys()
@@ -590,9 +601,8 @@ impl Graph {
 
       // at this point, the api should have this cached
       let dist = api
-        .maybe_package_info(&pkg_id.nv.name)
+        .package_info(&pkg_id.nv.name)
         .await?
-        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))
         .versions
         .get(&pkg_id.nv.version)
         .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))
@@ -723,11 +733,10 @@ impl DepEntryCache {
     &mut self,
     nv: Arc<NpmPackageNv>,
     version_info: &NpmPackageVersionInfo,
-  ) -> Result<Arc<Vec<NpmDependencyEntry>>, AnyError> {
+  ) -> Result<Arc<Vec<NpmDependencyEntry>>, Box<NpmDependencyEntryError>> {
+    debug_assert_eq!(nv.version, version_info.version);
     debug_assert!(!self.0.contains_key(&nv)); // we should not be re-inserting
-    let mut deps = version_info
-      .dependencies_as_entries()
-      .with_context(|| format!("npm package: {nv}"))?;
+    let mut deps = version_info.dependencies_as_entries(&nv.name)?;
     // Ensure name alphabetical and then version descending
     // so these are resolved in that order
     deps.sort();
@@ -773,7 +782,7 @@ impl<'a> GraphDependencyResolver<'a> {
     &mut self,
     package_nv: &NpmPackageNv,
     package_info: &NpmPackageInfo,
-  ) -> Result<(), AnyError> {
+  ) -> Result<(), NpmResolutionError> {
     if self.graph.root_packages.contains_key(package_nv) {
       return Ok(()); // already added
     }
@@ -801,7 +810,7 @@ impl<'a> GraphDependencyResolver<'a> {
     &mut self,
     package_req: &NpmPackageReq,
     package_info: &NpmPackageInfo,
-  ) -> Result<(), AnyError> {
+  ) -> Result<(), NpmResolutionError> {
     if self.graph.package_reqs.contains_key(package_req) {
       return Ok(()); // already added
     }
@@ -831,7 +840,7 @@ impl<'a> GraphDependencyResolver<'a> {
     entry: &NpmDependencyEntry,
     package_info: &NpmPackageInfo,
     parent_path: &Arc<GraphPath>,
-  ) -> Result<NodeId, AnyError> {
+  ) -> Result<NodeId, NpmResolutionError> {
     debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
     let parent_id = parent_path.node_id();
     let (child_nv, mut child_id) = self.resolve_node_from_info(
@@ -875,7 +884,7 @@ impl<'a> GraphDependencyResolver<'a> {
     version_req: &VersionReq,
     package_info: &NpmPackageInfo,
     parent_id: Option<NodeId>,
-  ) -> Result<(Arc<NpmPackageNv>, NodeId), AnyError> {
+  ) -> Result<(Arc<NpmPackageNv>, NodeId), NpmResolutionError> {
     let info = resolve_best_package_version_info(
       version_req,
       package_info,
@@ -923,7 +932,7 @@ impl<'a> GraphDependencyResolver<'a> {
     Ok((pkg_nv, node_id))
   }
 
-  pub async fn resolve_pending(&mut self) -> Result<(), AnyError> {
+  pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
     // go down through the dependencies by tree depth
     while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
       let (parent_nv, child_deps) = {
@@ -943,15 +952,13 @@ impl<'a> GraphDependencyResolver<'a> {
         let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
           deps.clone()
         } else {
-          // the api should have this in the cache at this point, so no need to parallelize
-          match self.api.package_version_info(&pkg_nv).await? {
-            Some(version_info) => {
-              self.dep_entry_cache.store(pkg_nv.clone(), &version_info)?
-            }
-            None => {
-              bail!("Could not find version information for {}", pkg_nv)
-            }
-          }
+          // the api is expected to have cached this at this point, so no
+          // need to parallelize
+          let package_info = self.api.package_info(&pkg_nv.name).await?;
+          let version_info = package_info
+            .version_info(&pkg_nv)
+            .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
+          self.dep_entry_cache.store(pkg_nv.clone(), &version_info)?
         };
 
         (pkg_nv, deps)
@@ -1081,7 +1088,7 @@ impl<'a> GraphDependencyResolver<'a> {
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
     ancestor_path: &Arc<GraphPath>,
-  ) -> Result<Option<NodeId>, anyhow::Error> {
+  ) -> Result<Option<NodeId>, NpmResolutionError> {
     debug_assert!(matches!(
       peer_dep.kind,
       NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer
@@ -1163,7 +1170,7 @@ impl<'a> GraphDependencyResolver<'a> {
     path: &Arc<GraphPath>,
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
-  ) -> Result<Option<(GraphPathNodeOrRoot, NodeId)>, anyhow::Error> {
+  ) -> Result<Option<(GraphPathNodeOrRoot, NodeId)>, NpmResolutionError> {
     let node_id = path.node_id();
     let resolved_node_id = self.graph.resolved_node_ids.get(node_id).unwrap();
     // check if this node itself is a match for
@@ -1401,7 +1408,7 @@ fn find_matching_child<'a>(
   peer_dep: &NpmDependencyEntry,
   peer_package_info: &NpmPackageInfo,
   children: impl Iterator<Item = (NodeId, &'a Arc<NpmPackageNv>)>,
-) -> Result<Option<NodeId>, AnyError> {
+) -> Result<Option<NodeId>, NpmResolutionError> {
   for (child_id, pkg_id) in children {
     if pkg_id.name == peer_dep.name
       && version_req_satisfies(
@@ -3675,7 +3682,6 @@ mod test {
 
     {
       let new_snapshot = Graph::from_snapshot(snapshot.clone())
-        .unwrap()
         .into_snapshot(&api)
         .await
         .unwrap();
@@ -3685,7 +3691,6 @@ mod test {
       );
       // create one again from the new snapshot
       let new_snapshot2 = Graph::from_snapshot(new_snapshot.clone())
-        .unwrap()
         .into_snapshot(&api)
         .await
         .unwrap();
