@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
-use super::common::resolve_best_package_version_info;
+use super::common::NpmVersionResolver;
 use super::common::LATEST_VERSION_REQ;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
@@ -75,8 +75,17 @@ impl NpmPackagesPartitioned {
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct NpmResolutionSnapshotCreateOptionsPackage {
+/// A serialized snapshot that has been verified to be non-corrupt
+/// and valid.
+#[derive(Default)]
+pub struct ValidSerializedNpmResolutionSnapshot(
+  // keep private -- once verified the caller
+  // shouldn't be able to modify it
+  SerializedNpmResolutionSnapshot,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SerializedNpmResolutionSnapshotPackage {
   pub pkg_id: NpmPackageId,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
@@ -84,137 +93,116 @@ pub struct NpmResolutionSnapshotCreateOptionsPackage {
   pub dependencies: HashMap<String, NpmPackageId>,
 }
 
-#[derive(Debug, Clone)]
-pub struct NpmResolutionSnapshotCreateOptions {
+#[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SerializedNpmResolutionSnapshot {
   /// Resolved npm specifiers to package id mappings.
   pub root_packages: HashMap<NpmPackageReq, NpmPackageId>,
   /// Collection of resolved packages in the dependency graph.
-  pub packages: Vec<NpmResolutionSnapshotCreateOptionsPackage>,
+  pub packages: Vec<SerializedNpmResolutionSnapshotPackage>,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+impl SerializedNpmResolutionSnapshot {
+  /// Marks the serialized snapshot as valid, if able.
+  ///
+  /// Snapshots from serialized sources might be invalid due to tampering
+  /// by the user. For example, this could be populated from a lockfile
+  /// that the user modified.
+  pub fn into_valid(
+    self,
+  ) -> Result<ValidSerializedNpmResolutionSnapshot, PackageIdNotFoundError> {
+    let mut verify_ids = HashSet::with_capacity(self.packages.len());
+
+    // collect the specifiers to version mappings
+    verify_ids.extend(self.root_packages.values());
+
+    // then the packages
+    let mut package_ids = HashSet::with_capacity(self.packages.len());
+    for package in &self.packages {
+      package_ids.insert(&package.pkg_id);
+      verify_ids.extend(package.dependencies.values());
+    }
+
+    // verify that all these ids exist in packages
+    for id in verify_ids {
+      if !package_ids.contains(&id) {
+        return Err(PackageIdNotFoundError(id.clone()));
+      }
+    }
+
+    Ok(ValidSerializedNpmResolutionSnapshot(self))
+  }
+}
+
+impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    // do a custom debug implementation that creates deterministic output for the tests
+    f.debug_struct("SerializedNpmResolutionSnapshot")
+      .field(
+        "root_packages",
+        &self.root_packages.iter().collect::<BTreeMap<_, _>>(),
+      )
+      .field("packages", &self.packages)
+      .finish()
+  }
+}
+
+pub struct NpmResolutionSnapshotCreateOptions {
+  pub api: Arc<dyn NpmRegistryApi>,
+  pub snapshot: ValidSerializedNpmResolutionSnapshot,
+  /// Known good version requirement to use for the `@types/node` package
+  /// when the version is unspecified or "latest".
+  pub types_node_version_req: Option<VersionReq>,
+}
+
+#[derive(Clone)]
 pub struct NpmResolutionSnapshot {
+  pub(super) api: Arc<dyn NpmRegistryApi>,
+  pub(super) version_resolver: NpmVersionResolver,
   /// The unique package requirements map to a single npm package name and version.
-  #[serde(with = "map_to_vec")]
   pub(super) package_reqs: HashMap<NpmPackageReq, NpmPackageNv>,
   // Each root level npm package name and version maps to an exact npm package node id.
-  #[serde(with = "map_to_vec")]
   pub(super) root_packages: HashMap<NpmPackageNv, NpmPackageId>,
   pub(super) packages_by_name: HashMap<String, Vec<NpmPackageId>>,
-  #[serde(with = "map_to_vec")]
   pub(super) packages: HashMap<NpmPackageId, NpmResolutionPackage>,
   /// Ordered list based on resolution of packages whose dependencies
   /// have not yet been resolved
   pub(super) pending_unresolved_packages: Vec<NpmPackageNv>,
 }
 
-impl std::fmt::Debug for NpmResolutionSnapshot {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    // do a custom debug implementation that creates deterministic output for the tests
-    f.debug_struct("NpmResolutionSnapshot")
-      .field(
-        "package_reqs",
-        &self.package_reqs.iter().collect::<BTreeMap<_, _>>(),
-      )
-      .field(
-        "root_packages",
-        &self.root_packages.iter().collect::<BTreeMap<_, _>>(),
-      )
-      .field(
-        "packages_by_name",
-        &self.packages_by_name.iter().collect::<BTreeMap<_, _>>(),
-      )
-      .field(
-        "packages",
-        &self.packages.iter().collect::<BTreeMap<_, _>>(),
-      )
-      .field(
-        "pending_unresolved_packages",
-        &self.pending_unresolved_packages,
-      )
-      .finish()
-  }
-}
-
-// This is done so the maps with non-string keys get serialized and deserialized as vectors.
-// Adapted from: https://github.com/serde-rs/serde/issues/936#issuecomment-302281792
-mod map_to_vec {
-  use std::collections::HashMap;
-
-  use serde::de::Deserialize;
-  use serde::de::Deserializer;
-  use serde::ser::Serializer;
-  use serde::Serialize;
-
-  pub fn serialize<S, K: Serialize, V: Serialize>(
-    map: &HashMap<K, V>,
-    serializer: S,
-  ) -> Result<S::Ok, S::Error>
-  where
-    S: Serializer,
-  {
-    serializer.collect_seq(map.iter())
-  }
-
-  pub fn deserialize<
-    'de,
-    D,
-    K: Deserialize<'de> + Eq + std::hash::Hash,
-    V: Deserialize<'de>,
-  >(
-    deserializer: D,
-  ) -> Result<HashMap<K, V>, D::Error>
-  where
-    D: Deserializer<'de>,
-  {
-    let mut map = HashMap::new();
-    for (key, value) in Vec::<(K, V)>::deserialize(deserializer)? {
-      map.insert(key, value);
-    }
-    Ok(map)
-  }
-}
-
 impl NpmResolutionSnapshot {
-  pub fn from_packages(
-    options: NpmResolutionSnapshotCreateOptions,
-  ) -> Result<Self, PackageIdNotFoundError> {
+  pub fn new(options: NpmResolutionSnapshotCreateOptions) -> Self {
+    let snapshot = options.snapshot.0;
     let mut package_reqs =
       HashMap::<NpmPackageReq, NpmPackageNv>::with_capacity(
-        options.root_packages.len(),
+        snapshot.root_packages.len(),
       );
     let mut root_packages =
       HashMap::<NpmPackageNv, NpmPackageId>::with_capacity(
-        options.root_packages.len(),
+        snapshot.root_packages.len(),
       );
     let mut packages_by_name =
       HashMap::<String, Vec<NpmPackageId>>::with_capacity(
-        options.packages.len(),
+        snapshot.packages.len(),
       ); // close enough
     let mut packages =
       HashMap::<NpmPackageId, NpmResolutionPackage>::with_capacity(
-        options.packages.len(),
+        snapshot.packages.len(),
       );
     let mut copy_index_resolver =
-      SnapshotPackageCopyIndexResolver::with_capacity(options.packages.len());
-
-    let mut verify_ids = HashSet::with_capacity(options.packages.len());
+      SnapshotPackageCopyIndexResolver::with_capacity(snapshot.packages.len());
 
     // collect the specifiers to version mappings
-    for (req, id) in options.root_packages {
+    for (req, id) in snapshot.root_packages {
       package_reqs.insert(req, id.nv.clone());
       root_packages.insert(id.nv.clone(), id.clone());
-      verify_ids.insert(id.clone());
     }
 
     // then the packages
-    for package in options.packages {
+    for package in snapshot.packages {
       packages_by_name
         .entry(package.pkg_id.nv.name.to_string())
         .or_default()
         .push(package.pkg_id.clone());
-
-      verify_ids.extend(package.dependencies.values().cloned());
 
       let copy_index = copy_index_resolver.resolve(&package.pkg_id);
       packages.insert(
@@ -228,20 +216,40 @@ impl NpmResolutionSnapshot {
       );
     }
 
-    // verify that all these ids exist in packages
-    for id in verify_ids {
-      if !packages.contains_key(&id) {
-        return Err(PackageIdNotFoundError(id));
-      }
-    }
-
-    Ok(Self {
+    Self {
+      api: options.api,
+      version_resolver: NpmVersionResolver {
+        types_node_version_req: options.types_node_version_req,
+      },
       package_reqs,
       root_packages,
       packages_by_name,
       packages,
       pending_unresolved_packages: Default::default(),
-    })
+    }
+  }
+
+  /// Gets the snapshot as a serialized snapshot.
+  pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshot {
+    SerializedNpmResolutionSnapshot {
+      root_packages: self
+        .package_reqs
+        .iter()
+        .map(|(req, nv)| {
+          let id = self.root_packages.get(nv).unwrap();
+          (req.clone(), id.clone())
+        })
+        .collect(),
+      packages: self
+        .packages
+        .values()
+        .map(|package| SerializedNpmResolutionSnapshotPackage {
+          pkg_id: package.pkg_id.clone(),
+          dist: package.dist.clone(),
+          dependencies: package.dependencies.clone(),
+        })
+        .collect(),
+    }
   }
 
   /// Gets if this snapshot is empty.
@@ -249,17 +257,36 @@ impl NpmResolutionSnapshot {
     self.packages.is_empty() && self.pending_unresolved_packages.is_empty()
   }
 
+  /// Gets if the snapshot has any pending packages whose dependencies
+  /// need to be resolved.
   pub fn has_pending(&self) -> bool {
     !self.pending_unresolved_packages.is_empty()
   }
 
+  /// Converts the snapshot into an empty snapshot.
+  pub fn into_empty(self) -> Self {
+    // this is `into_empty()` instead of something like `clear()` in order
+    // to reduce the chance of a mistake forgetting to clear a collection
+    Self {
+      api: self.api,
+      version_resolver: self.version_resolver,
+      package_reqs: Default::default(),
+      root_packages: Default::default(),
+      packages_by_name: Default::default(),
+      packages: Default::default(),
+      pending_unresolved_packages: Default::default(),
+    }
+  }
+
+  /// Resolves any pending packages in the snapshot along with the provided
+  /// package requirements (in the CLI, these are package requirements from
+  /// a package.json while the pending are specifiers found in the graph)
   pub async fn resolve_pending(
     self,
     package_reqs: Vec<NpmPackageReq>,
-    api: &dyn NpmRegistryApi,
   ) -> Result<Self, NpmResolutionError> {
     // convert the snapshot to a traversable graph
-    let mut graph = Graph::from_snapshot(self);
+    let (mut graph, api, version_resolver) = Graph::from_snapshot(self);
     let pending_unresolved = graph.take_pending_unresolved();
 
     let package_reqs = package_reqs
@@ -274,10 +301,11 @@ impl NpmResolutionSnapshot {
       Nv(Arc<NpmPackageNv>),
     }
 
-    let mut top_level_packages = futures::stream::FuturesOrdered::from_iter(
+    let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
+      let api = &api;
       package_reqs
         .map(|req| {
-          Either::Left(async move {
+          Either::Left(async {
             let info = api.package_info(&req.name).await?;
             Result::<_, NpmRegistryPackageInfoLoadError>::Ok((
               ReqOrNv::Req(req),
@@ -286,16 +314,17 @@ impl NpmResolutionSnapshot {
           })
         })
         .chain(pending_unresolved.map(|nv| {
-          Either::Right(async move {
+          Either::Right(async {
             let info = api.package_info(&nv.name).await?;
             Ok((ReqOrNv::Nv(nv), info))
           })
-        })),
-    );
+        }))
+    });
 
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
-    let mut resolver = GraphDependencyResolver::new(&mut graph, api);
+    let mut resolver =
+      GraphDependencyResolver::new(&mut graph, &*api, &version_resolver);
 
     // The package reqs and ids should already be sorted
     // in the order they should be resolved in.
@@ -306,10 +335,13 @@ impl NpmResolutionSnapshot {
         ReqOrNv::Nv(nv) => resolver.add_root_package(&nv, &info)?,
       }
     }
+    drop(top_level_packages); // stop borrow of api
 
     resolver.resolve_pending().await?;
 
-    graph.into_snapshot(api).await.map_err(|err| err.into())
+    let snapshot = graph.into_snapshot(api, version_resolver).await?;
+    debug_assert!(!snapshot.has_pending());
+    Ok(snapshot)
   }
 
   /// Resolve a package from a package requirement.
@@ -458,12 +490,14 @@ impl NpmResolutionSnapshot {
     let version_req =
       pkg_req.version_req.as_ref().unwrap_or(&*LATEST_VERSION_REQ);
     let version_info = match self.packages_by_name.get(&package_info.name) {
-      Some(existing_versions) => resolve_best_package_version_info(
-        version_req,
-        package_info,
-        existing_versions.iter().map(|p| &p.nv.version),
-      )?,
-      None => resolve_best_package_version_info(
+      Some(existing_versions) => {
+        self.version_resolver.resolve_best_package_version_info(
+          version_req,
+          package_info,
+          existing_versions.iter().map(|p| &p.nv.version),
+        )?
+      }
+      None => self.version_resolver.resolve_best_package_version_info(
         version_req,
         package_info,
         Vec::new().iter(),

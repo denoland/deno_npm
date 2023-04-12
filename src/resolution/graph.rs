@@ -18,7 +18,6 @@ use log::debug;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use super::common::resolve_best_package_version_info;
 use super::common::NpmPackageVersionResolutionError;
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
@@ -29,7 +28,7 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
-use super::common::version_req_satisfies;
+use super::common::NpmVersionResolver;
 use super::common::LATEST_VERSION_REQ;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
@@ -318,7 +317,6 @@ impl<'a> Iterator for GraphPathAncestorIterator<'a> {
   }
 }
 
-#[derive(Default)]
 pub struct Graph {
   /// Each requirement is mapped to a specific name and version.
   package_reqs: HashMap<NpmPackageReq, Arc<NpmPackageNv>>,
@@ -337,7 +335,9 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
+  pub fn from_snapshot(
+    snapshot: NpmResolutionSnapshot,
+  ) -> (Self, Arc<dyn NpmRegistryApi>, NpmVersionResolver) {
     fn get_or_create_graph_node(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -405,7 +405,10 @@ impl Graph {
         .into_iter()
         .map(Arc::new)
         .collect(),
-      ..Default::default()
+      nodes: Default::default(),
+      package_name_versions: Default::default(),
+      resolved_node_ids: Default::default(),
+      root_packages: Default::default(),
     };
     let mut created_package_ids =
       HashMap::with_capacity(snapshot.packages.len());
@@ -418,7 +421,7 @@ impl Graph {
       );
       graph.root_packages.insert(Arc::new(id), node_id);
     }
-    graph
+    (graph, snapshot.api, snapshot.version_resolver)
   }
 
   pub fn take_pending_unresolved(&mut self) -> Vec<Arc<NpmPackageNv>> {
@@ -560,7 +563,8 @@ impl Graph {
 
   pub async fn into_snapshot(
     self,
-    api: &dyn NpmRegistryApi,
+    api: Arc<dyn NpmRegistryApi>,
+    version_resolver: NpmVersionResolver,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     let packages_to_pkg_ids = self
       .nodes
@@ -631,6 +635,8 @@ impl Graph {
     }
 
     Ok(NpmResolutionSnapshot {
+      api,
+      version_resolver,
       root_packages: self
         .root_packages
         .into_iter()
@@ -761,6 +767,7 @@ struct UnresolvedOptionalPeer {
 pub struct GraphDependencyResolver<'a> {
   graph: &'a mut Graph,
   api: &'a dyn NpmRegistryApi,
+  version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Arc<GraphPath>>,
   unresolved_optional_peers:
     HashMap<Arc<NpmPackageNv>, Vec<UnresolvedOptionalPeer>>,
@@ -768,10 +775,15 @@ pub struct GraphDependencyResolver<'a> {
 }
 
 impl<'a> GraphDependencyResolver<'a> {
-  pub fn new(graph: &'a mut Graph, api: &'a dyn NpmRegistryApi) -> Self {
+  pub fn new(
+    graph: &'a mut Graph,
+    api: &'a dyn NpmRegistryApi,
+    version_resolver: &'a NpmVersionResolver,
+  ) -> Self {
     Self {
       graph,
       api,
+      version_resolver,
       pending_unresolved_nodes: Default::default(),
       unresolved_optional_peers: Default::default(),
       dep_entry_cache: Default::default(),
@@ -885,7 +897,7 @@ impl<'a> GraphDependencyResolver<'a> {
     package_info: &NpmPackageInfo,
     parent_id: Option<NodeId>,
   ) -> Result<(Arc<NpmPackageNv>, NodeId), NpmResolutionError> {
-    let info = resolve_best_package_version_info(
+    let info = self.version_resolver.resolve_best_package_version_info(
       version_req,
       package_info,
       self
@@ -1131,7 +1143,7 @@ impl<'a> GraphDependencyResolver<'a> {
         }
         GraphPathNodeOrRoot::Root(root_pkg_id) => {
           // in this case, the parent is the root so the children are all the package requirements
-          if let Some(child_id) = find_matching_child(
+          if let Some(child_id) = self.find_matching_child(
             peer_dep,
             peer_package_info,
             self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
@@ -1176,7 +1188,7 @@ impl<'a> GraphDependencyResolver<'a> {
     // check if this node itself is a match for
     // the peer dependency and if so use that
     if resolved_node_id.nv.name == peer_dep.name
-      && version_req_satisfies(
+      && self.version_resolver.version_req_satisfies(
         &peer_dep.version_req,
         &resolved_node_id.nv.version,
         peer_package_info,
@@ -1193,14 +1205,14 @@ impl<'a> GraphDependencyResolver<'a> {
           &self.graph.resolved_node_ids.get(child_node_id).unwrap().nv,
         )
       });
-      find_matching_child(peer_dep, peer_package_info, children).map(
-        |maybe_child_id| {
+      self
+        .find_matching_child(peer_dep, peer_package_info, children)
+        .map(|maybe_child_id| {
           maybe_child_id.map(|child_id| {
             let parent = GraphPathNodeOrRoot::Node(path.clone());
             (parent, child_id)
           })
-        },
-      )
+        })
     }
   }
 
@@ -1402,25 +1414,26 @@ impl<'a> GraphDependencyResolver<'a> {
 
     ancestor.linked_circular_descendants.lock().push(descendant);
   }
-}
 
-fn find_matching_child<'a>(
-  peer_dep: &NpmDependencyEntry,
-  peer_package_info: &NpmPackageInfo,
-  children: impl Iterator<Item = (NodeId, &'a Arc<NpmPackageNv>)>,
-) -> Result<Option<NodeId>, NpmResolutionError> {
-  for (child_id, pkg_id) in children {
-    if pkg_id.name == peer_dep.name
-      && version_req_satisfies(
-        &peer_dep.version_req,
-        &pkg_id.version,
-        peer_package_info,
-      )?
-    {
-      return Ok(Some(child_id));
+  fn find_matching_child<'nv>(
+    &self,
+    peer_dep: &NpmDependencyEntry,
+    peer_package_info: &NpmPackageInfo,
+    children: impl Iterator<Item = (NodeId, &'nv Arc<NpmPackageNv>)>,
+  ) -> Result<Option<NodeId>, NpmResolutionError> {
+    for (child_id, pkg_id) in children {
+      if pkg_id.name == peer_dep.name
+        && self.version_resolver.version_req_satisfies(
+          &peer_dep.version_req,
+          &pkg_id.version,
+          peer_package_info,
+        )?
+      {
+        return Ok(Some(child_id));
+      }
     }
+    Ok(None)
   }
-  Ok(None)
 }
 
 #[cfg(test)]
@@ -1429,6 +1442,8 @@ mod test {
   use pretty_assertions::assert_eq;
 
   use crate::registry::TestNpmRegistryApi;
+  use crate::resolution::NpmResolutionSnapshotCreateOptions;
+  use crate::resolution::SerializedNpmResolutionSnapshot;
 
   use super::*;
 
@@ -3667,8 +3682,26 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let mut graph = Graph::default();
-    let mut resolver = GraphDependencyResolver::new(&mut graph, &api);
+    fn snapshot_to_serialized(
+      snapshot: &NpmResolutionSnapshot,
+    ) -> SerializedNpmResolutionSnapshot {
+      let mut snapshot = snapshot.as_serialized();
+      snapshot.packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
+      snapshot
+    }
+
+    let snapshot =
+      NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
+        api: Arc::new(api),
+        snapshot: Default::default(),
+        types_node_version_req: None,
+      });
+    let (mut graph, api, version_resolver) = Graph::from_snapshot(snapshot);
+    let npm_version_resolver = NpmVersionResolver {
+      types_node_version_req: None,
+    };
+    let mut resolver =
+      GraphDependencyResolver::new(&mut graph, &*api, &npm_version_resolver);
 
     for req in reqs {
       let req = NpmPackageReqReference::from_str(req).unwrap().req;
@@ -3678,24 +3711,26 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(&api).await.unwrap();
+    let snapshot = graph.into_snapshot(api, version_resolver).await.unwrap();
 
     {
-      let new_snapshot = Graph::from_snapshot(snapshot.clone())
-        .into_snapshot(&api)
-        .await
-        .unwrap();
+      let (graph, api, version_resolver) =
+        Graph::from_snapshot(snapshot.clone());
+      let new_snapshot =
+        graph.into_snapshot(api, version_resolver).await.unwrap();
       assert_eq!(
-        snapshot, new_snapshot,
+        snapshot_to_serialized(&snapshot),
+        snapshot_to_serialized(&new_snapshot),
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let new_snapshot2 = Graph::from_snapshot(new_snapshot.clone())
-        .into_snapshot(&api)
-        .await
-        .unwrap();
+      let (graph, api, version_resolver) =
+        Graph::from_snapshot(new_snapshot.clone());
+      let new_snapshot2 =
+        graph.into_snapshot(api, version_resolver).await.unwrap();
       assert_eq!(
-        snapshot, new_snapshot2,
+        snapshot_to_serialized(&snapshot),
+        snapshot_to_serialized(&new_snapshot2),
         "second recreated snapshot should be the same"
       );
     }
