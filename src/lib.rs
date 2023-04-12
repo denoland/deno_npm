@@ -180,7 +180,7 @@ pub struct NpmPackageCacheFolderId {
   pub nv: NpmPackageNv,
   /// Peer dependency resolution may require us to have duplicate copies
   /// of the same package.
-  pub copy_index: usize,
+  pub copy_index: u8,
 }
 
 impl NpmPackageCacheFolderId {
@@ -209,7 +209,7 @@ pub struct NpmResolutionPackage {
   /// package (name and version) depending on where it is in
   /// the resolution tree. This copy index indicates which
   /// copy of the package this is.
-  pub copy_index: usize,
+  pub copy_index: u8,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.

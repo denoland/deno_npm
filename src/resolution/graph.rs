@@ -331,7 +331,7 @@ pub struct Graph {
   resolved_node_ids: ResolvedNodeIds,
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
-  packages_to_copy_index: HashMap<NpmPackageId, usize>,
+  packages_to_copy_index: HashMap<NpmPackageId, u8>,
   /// Packages that the resolver should resolve first.
   pending_unresolved_packages: Vec<Arc<NpmPackageNv>>,
 }
@@ -3659,7 +3659,7 @@ mod test {
   #[derive(Debug, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
-    pub copy_index: usize,
+    pub copy_index: u8,
     pub dependencies: BTreeMap<String, String>,
   }
 

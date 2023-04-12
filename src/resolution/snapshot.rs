@@ -498,8 +498,8 @@ impl NpmResolutionSnapshot {
 }
 
 pub struct SnapshotPackageCopyIndexResolver {
-  packages_to_copy_index: HashMap<NpmPackageId, usize>,
-  package_name_version_to_copy_count: HashMap<NpmPackageNv, usize>,
+  packages_to_copy_index: HashMap<NpmPackageId, u8>,
+  package_name_version_to_copy_count: HashMap<NpmPackageNv, u8>,
 }
 
 impl SnapshotPackageCopyIndexResolver {
@@ -511,7 +511,7 @@ impl SnapshotPackageCopyIndexResolver {
   }
 
   pub fn from_map_with_capacity(
-    mut packages_to_copy_index: HashMap<NpmPackageId, usize>,
+    mut packages_to_copy_index: HashMap<NpmPackageId, u8>,
     capacity: usize,
   ) -> Self {
     let mut package_name_version_to_copy_count =
@@ -534,7 +534,7 @@ impl SnapshotPackageCopyIndexResolver {
     }
   }
 
-  pub fn resolve(&mut self, node_id: &NpmPackageId) -> usize {
+  pub fn resolve(&mut self, node_id: &NpmPackageId) -> u8 {
     if let Some(index) = self.packages_to_copy_index.get(node_id) {
       *index
     } else {
