@@ -594,6 +594,7 @@ impl Graph {
       if traversed_ids.insert(pkg_id.clone()) {
         pending.push_back((root_id, pkg_id));
       }
+      required_packages.insert(pkg_id.nv.clone());
     }
     let mut had_optional = false;
 
