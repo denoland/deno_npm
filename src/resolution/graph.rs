@@ -17,7 +17,6 @@ use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
 use log::debug;
-use parking_lot::Mutex;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
@@ -218,7 +217,7 @@ struct GraphPath {
   nv: Rc<NpmPackageNv>,
   /// Descendants in the path that circularly link to an ancestor in a child.These
   /// descendants should be kept up to date and always point to this node.
-  linked_circular_descendants: Mutex<Vec<Rc<GraphPath>>>,
+  linked_circular_descendants: RefCell<Vec<Rc<GraphPath>>>,
 }
 
 impl GraphPath {
@@ -1263,7 +1262,7 @@ impl<'a> GraphDependencyResolver<'a> {
       graph_path_node.change_id(new_node_id);
 
       let circular_descendants =
-        graph_path_node.linked_circular_descendants.lock().clone();
+        graph_path_node.linked_circular_descendants.borrow().clone();
       for descendant in circular_descendants {
         let path = descendant.get_path_to_ancestor_exclusive(new_node_id);
         self.add_peer_deps_to_path(&path, peer_deps);
@@ -1343,7 +1342,7 @@ impl<'a> GraphDependencyResolver<'a> {
       // it's circular, so link this in step with the ancestor node
       ancestor_node
         .linked_circular_descendants
-        .lock()
+        .borrow_mut()
         .push(new_path);
     } else {
       // mark the peer dep as needing to be analyzed
@@ -1408,7 +1407,10 @@ impl<'a> GraphDependencyResolver<'a> {
       descendant.node_id(),
     );
 
-    ancestor.linked_circular_descendants.lock().push(descendant);
+    ancestor
+      .linked_circular_descendants
+      .borrow_mut()
+      .push(descendant);
   }
 
   fn find_matching_child<'nv>(
