@@ -579,6 +579,7 @@ impl Graph {
     let mut packages = HashMap::with_capacity(self.nodes.len());
     let mut packages_by_name: HashMap<String, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
+    let mut required_packages = HashSet::with_capacity(self.nodes.len());
 
     // todo(dsherret): there is a lurking bug within the peer dependencies code.
     // You can see it by using `NodeIds` instead of `NpmPackageIds` on this travered_ids
@@ -594,6 +595,7 @@ impl Graph {
         pending.push_back((root_id, pkg_id));
       }
     }
+    let mut had_optional = false;
 
     while let Some((node_id, pkg_id)) = pending.pop_front() {
       let node = self.nodes.get(&node_id).unwrap();
@@ -604,14 +606,11 @@ impl Graph {
         .push(pkg_id.clone());
 
       // at this point, the api should have this cached
-      let dist = api
-        .package_info(&pkg_id.nv.name)
-        .await?
+      let package_info = api.package_info(&pkg_id.nv.name).await?;
+      let version_info = package_info
         .versions
         .get(&pkg_id.nv.version)
-        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))
-        .dist
-        .clone();
+        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv));
 
       let mut dependencies = HashMap::with_capacity(node.children.len());
       for (specifier, child_id) in &node.children {
@@ -623,15 +622,39 @@ impl Graph {
         dependencies.insert(specifier.clone(), (*child_pkg_id).clone());
       }
 
+      // store all the required packages which can then be used to check
+      // for any optional dependencies
+      if version_info.optional_dependencies.is_empty() {
+        required_packages.extend(dependencies.values().map(|id| id.nv.clone()));
+      } else {
+        required_packages.extend(
+          dependencies
+            .keys()
+            .filter(|key| version_info.optional_dependencies.contains_key(*key))
+            .map(|key| dependencies.get(key).unwrap().nv.clone()),
+        );
+        had_optional = true;
+      }
+
       packages.insert(
         (*pkg_id).clone(),
         NpmResolutionPackage {
           copy_index: copy_index_resolver.resolve(pkg_id),
+          optional: false,
           pkg_id: (*pkg_id).clone(),
-          dist,
+          cpu: version_info.cpu.clone(),
+          os: version_info.os.clone(),
+          dist: version_info.dist.clone(),
           dependencies,
         },
       );
+    }
+
+    // only bother doing this if an optional dependency was found
+    if had_optional {
+      for package in packages.values_mut() {
+        package.optional = !required_packages.contains(&package.pkg_id.nv);
+      }
     }
 
     Ok(NpmResolutionSnapshot {
@@ -1044,7 +1067,7 @@ impl<'a> GraphDependencyResolver<'a> {
               &parent_path,
             )?;
 
-            // For optional dependencies, we want to resolve them if any future
+            // For optional peer dependencies, we want to resolve them if any future
             // same parent version resolves them. So when not resolved, store them to be
             // potentially resolved later.
             //

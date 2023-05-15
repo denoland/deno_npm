@@ -210,6 +210,10 @@ pub struct NpmResolutionPackage {
   /// the resolution tree. This copy index indicates which
   /// copy of the package this is.
   pub copy_index: u8,
+  /// If this package only appears in optional dependencies.
+  pub optional: bool,
+  pub cpu: Vec<String>,
+  pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
@@ -222,6 +226,9 @@ impl std::fmt::Debug for NpmResolutionPackage {
     f.debug_struct("NpmResolutionPackage")
       .field("pkg_id", &self.pkg_id)
       .field("copy_index", &self.copy_index)
+      .field("optional", &self.optional)
+      .field("cpu", &self.cpu)
+      .field("os", &self.os)
       .field("dist", &self.dist)
       .field(
         "dependencies",

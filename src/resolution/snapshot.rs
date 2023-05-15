@@ -87,6 +87,9 @@ pub struct ValidSerializedNpmResolutionSnapshot(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshotPackage {
   pub pkg_id: NpmPackageId,
+  pub optional: bool,
+  pub cpu: Vec<String>,
+  pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
@@ -210,6 +213,9 @@ impl NpmResolutionSnapshot {
         NpmResolutionPackage {
           pkg_id: package.pkg_id,
           copy_index,
+          optional: package.optional,
+          cpu: package.cpu,
+          os: package.os,
           dist: package.dist,
           dependencies: package.dependencies,
         },
@@ -245,6 +251,9 @@ impl NpmResolutionSnapshot {
         .values()
         .map(|package| SerializedNpmResolutionSnapshotPackage {
           pkg_id: package.pkg_id.clone(),
+          optional: package.optional,
+          cpu: package.cpu.clone(),
+          os: package.os.clone(),
           dist: package.dist.clone(),
           dependencies: package.dependencies.clone(),
         })

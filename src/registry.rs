@@ -155,9 +155,15 @@ pub struct NpmPackageVersionInfo {
   #[serde(default)]
   pub dependencies: HashMap<String, String>,
   #[serde(default)]
+  pub optional_dependencies: HashMap<String, String>,
+  #[serde(default)]
   pub peer_dependencies: HashMap<String, String>,
   #[serde(default)]
   pub peer_dependencies_meta: HashMap<String, NpmPeerDependencyMeta>,
+  #[serde(default)]
+  pub os: Vec<String>,
+  #[serde(default)]
+  pub cpu: Vec<String>,
 }
 
 impl NpmPackageVersionInfo {
@@ -417,10 +423,7 @@ mod test {
           shasum: "test".to_string(),
           integrity: None,
         },
-        bin: None,
-        dependencies: Default::default(),
-        peer_dependencies: Default::default(),
-        peer_dependencies_meta: Default::default()
+        ..Default::default()
       }
     );
   }
