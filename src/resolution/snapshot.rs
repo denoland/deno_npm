@@ -4,6 +4,7 @@ use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use deno_semver::npm::NpmPackageNv;
@@ -298,7 +299,7 @@ impl NpmResolutionSnapshot {
 
     enum ReqOrNv {
       Req(NpmPackageReq),
-      Nv(Arc<NpmPackageNv>),
+      Nv(Rc<NpmPackageNv>),
     }
 
     let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
