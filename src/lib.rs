@@ -245,6 +245,57 @@ impl NpmResolutionPackage {
       copy_index: self.copy_index,
     }
   }
+
+  pub fn should_download(&self) -> bool {
+    !self.optional
+      || self.cpu_matches(node_js_arch()) && self.os_matches(node_js_os())
+  }
+
+  pub fn cpu_matches(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.cpu, target)
+  }
+
+  pub fn os_matches(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.os, target)
+  }
+}
+
+fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
+  if items.is_empty() {
+    return true;
+  }
+  let mut had_negation = false;
+  for item in items {
+    if item.starts_with('!') {
+      if &item[1..] == target {
+        return false;
+      }
+      had_negation = true;
+    } else if item == target {
+      return true;
+    }
+  }
+  had_negation
+}
+
+fn node_js_arch() -> &'static str {
+  // possible values: https://nodejs.org/api/process.html#processarch
+  // 'arm', 'arm64', 'ia32', 'mips','mipsel', 'ppc', 'ppc64', 's390', 's390x', and 'x64'
+  match std::env::consts::ARCH {
+    "x86_64" => "x64",
+    "aarch64" => "arm64",
+    value => value,
+  }
+}
+
+fn node_js_os() -> &'static str {
+  // possible values: https://nodejs.org/api/process.html#processplatform
+  // 'aix', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', and 'win32'
+  match std::env::consts::OS {
+    "macos" => "darwin",
+    "windows" => "win32",
+    value => value,
+  }
 }
 
 #[cfg(test)]

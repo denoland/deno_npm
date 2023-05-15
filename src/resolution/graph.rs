@@ -631,7 +631,9 @@ impl Graph {
         required_packages.extend(
           dependencies
             .keys()
-            .filter(|key| version_info.optional_dependencies.contains_key(*key))
+            .filter(|key| {
+              !version_info.optional_dependencies.contains_key(*key)
+            })
             .map(|key| dependencies.get(key).unwrap().nv.clone()),
         );
         had_optional = true;
