@@ -246,9 +246,9 @@ impl NpmResolutionPackage {
     }
   }
 
-  pub fn should_download(&self) -> bool {
+  pub fn should_download(&self, system_info: &NpmSystemInfo) -> bool {
     !self.optional
-      || self.cpu_matches(node_js_arch()) && self.os_matches(node_js_os())
+      || self.cpu_matches(&system_info.cpu) && self.os_matches(&system_info.os)
   }
 
   pub fn cpu_matches(&self, target: &str) -> bool {
@@ -257,6 +257,34 @@ impl NpmResolutionPackage {
 
   pub fn os_matches(&self, target: &str) -> bool {
     matches_os_or_cpu_vec(&self.os, target)
+  }
+}
+
+/// System information used to determine which optional packages
+/// to download.
+#[derive(Debug, Clone)]
+pub struct NpmSystemInfo {
+  /// `process.platform` value from Node.js
+  pub os: String,
+  /// `process.arch` value from Node.js
+  pub cpu: String,
+}
+
+impl Default for NpmSystemInfo {
+  fn default() -> Self {
+    Self {
+      os: node_js_os(std::env::consts::OS),
+      cpu: node_js_cpu(std::env::consts::ARCH),
+    }
+  }
+}
+
+impl NpmSystemInfo {
+  pub fn from_rust(os: &str, cpu: &str) -> Self {
+    Self {
+      os: node_js_os(os),
+      cpu: node_js_cpu(cpu),
+    }
   }
 }
 
@@ -278,24 +306,26 @@ fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
   had_negation
 }
 
-fn node_js_arch() -> &'static str {
+fn node_js_cpu(rust_arch: &str) -> String {
   // possible values: https://nodejs.org/api/process.html#processarch
   // 'arm', 'arm64', 'ia32', 'mips','mipsel', 'ppc', 'ppc64', 's390', 's390x', and 'x64'
-  match std::env::consts::ARCH {
+  match rust_arch {
     "x86_64" => "x64",
     "aarch64" => "arm64",
     value => value,
   }
+  .to_string()
 }
 
-fn node_js_os() -> &'static str {
+fn node_js_os(rust_os: &str) -> String {
   // possible values: https://nodejs.org/api/process.html#processplatform
   // 'aix', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', and 'win32'
-  match std::env::consts::OS {
+  match rust_os {
     "macos" => "darwin",
     "windows" => "win32",
     value => value,
   }
+  .to_string()
 }
 
 #[cfg(test)]
