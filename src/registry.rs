@@ -340,6 +340,26 @@ impl TestNpmRegistryApi {
       .insert(package_to.0.to_string(), package_to.1.to_string());
   }
 
+  pub fn add_optional_dependency(
+    &self,
+    package_from: (&str, &str),
+    package_to: (&str, &str),
+  ) {
+    let mut infos = self.package_infos.lock();
+    let info = infos.get_mut(package_from.0).unwrap();
+    let package_from = (
+      package_from.0,
+      Version::parse_from_npm(package_from.1).unwrap(),
+    );
+    let version = info.versions.get_mut(&package_from.1).unwrap();
+    version
+      .dependencies
+      .insert(package_to.0.to_string(), package_to.1.to_string());
+    version
+      .optional_dependencies
+      .insert(package_to.0.to_string(), package_to.1.to_string());
+  }
+
   pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
     let mut infos = self.package_infos.lock();
     let info = infos.get_mut(package_name).unwrap();

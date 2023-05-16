@@ -576,10 +576,12 @@ impl Graph {
         self.packages_to_copy_index,
         self.nodes.len(),
       );
-    let mut packages = HashMap::with_capacity(self.nodes.len());
+    let mut packages: HashMap<NpmPackageId, NpmResolutionPackage> =
+      HashMap::with_capacity(self.nodes.len());
     let mut packages_by_name: HashMap<String, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
     let mut required_packages = HashSet::with_capacity(self.nodes.len());
+    let mut optional_packages = HashSet::with_capacity(self.nodes.len());
 
     // todo(dsherret): there is a lurking bug within the peer dependencies code.
     // You can see it by using `NodeIds` instead of `NpmPackageIds` on this travered_ids
@@ -596,10 +598,10 @@ impl Graph {
       }
       required_packages.insert(pkg_id.nv.clone());
     }
-    let mut had_optional = false;
 
     while let Some((node_id, pkg_id)) = pending.pop_front() {
       let node = self.nodes.get(&node_id).unwrap();
+      let is_parent_required = required_packages.contains(&pkg_id.nv);
 
       packages_by_name
         .entry(pkg_id.nv.name.clone())
@@ -617,26 +619,44 @@ impl Graph {
       for (specifier, child_id) in &node.children {
         let child_id = *child_id;
         let child_pkg_id = packages_to_pkg_ids.get(&child_id).unwrap();
+        let is_child_optional =
+          version_info.optional_dependencies.contains_key(specifier)
+            && !required_packages.contains(&child_pkg_id.nv);
+        let should_mark_required = is_parent_required && !is_child_optional;
+        if should_mark_required && optional_packages.contains(&child_pkg_id.nv)
+        {
+          // revert required dependencies back to being required because this
+          // name and version is no longer found in an optional tree
+          let mut pending_revert =
+            VecDeque::with_capacity(optional_packages.len());
+          pending_revert.push_back(child_pkg_id.clone());
+          while let Some(pkg_id) = pending_revert.pop_front() {
+            if optional_packages.remove(&pkg_id.nv) {
+              required_packages.insert(pkg_id.nv.clone());
+              let package_info = api.package_info(&pkg_id.nv.name).await?;
+              let version_info = package_info
+                .versions
+                .get(&pkg_id.nv.version)
+                .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv));
+              let package = packages.get(&pkg_id).unwrap();
+              for key in version_info.dependencies.keys() {
+                if !version_info.optional_dependencies.contains_key(key) {
+                  let dep_id = package.dependencies.get(key).unwrap();
+                  pending_revert.push_back(dep_id.clone());
+                }
+              }
+            }
+          }
+        }
         if traversed_ids.insert(child_pkg_id.clone()) {
           pending.push_back((child_id, child_pkg_id));
+          if should_mark_required {
+            required_packages.insert(child_pkg_id.nv.clone());
+          } else {
+            optional_packages.insert(child_pkg_id.nv.clone());
+          }
         }
         dependencies.insert(specifier.clone(), (*child_pkg_id).clone());
-      }
-
-      // store all the required packages which can then be used to check
-      // for any optional dependencies
-      if version_info.optional_dependencies.is_empty() {
-        required_packages.extend(dependencies.values().map(|id| id.nv.clone()));
-      } else {
-        required_packages.extend(
-          dependencies
-            .keys()
-            .filter(|key| {
-              !version_info.optional_dependencies.contains_key(*key)
-            })
-            .map(|key| dependencies.get(key).unwrap().nv.clone()),
-        );
-        had_optional = true;
       }
 
       packages.insert(
@@ -654,9 +674,9 @@ impl Graph {
     }
 
     // only bother doing this if an optional dependency was found
-    if had_optional {
+    if !optional_packages.is_empty() {
       for package in packages.values_mut() {
-        package.optional = !required_packages.contains(&package.pkg_id.nv);
+        package.optional = optional_packages.contains(&package.pkg_id.nv);
       }
     }
 
@@ -1871,7 +1891,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0_package-peer@4.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-a@1.0.0_package-peer@4.0.0".to_string(),
@@ -2586,8 +2606,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0_package-peer-a@4.0.0__package-peer-b@5.4.1".to_string(),
-          ),]),
-
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-a@1.0.0_package-peer-a@4.0.0__package-peer-b@5.4.1".to_string(),
@@ -3003,7 +3022,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-d".to_string(),
             "package-d@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-d@1.0.0".to_string(),
@@ -3237,7 +3256,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0".to_string(),
@@ -3334,7 +3353,6 @@ mod test {
               "package-c@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
             )
           ]),
-
         },
         TestNpmResolutionPackage {
           pkg_id: "package-c@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
@@ -3353,7 +3371,6 @@ mod test {
               "package-d@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
             )
           ]),
-
         },
         TestNpmResolutionPackage {
           pkg_id: "package-d@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
@@ -3368,7 +3385,6 @@ mod test {
               "package-a@1.0.0_package-0@1.0.0".to_string(),
             )
           ]),
-
         }
       ]
     );
@@ -3485,7 +3501,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0".to_string(),
@@ -3646,7 +3662,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0_package-a@1.0.0".to_string(),
-          ),]),
+          )])
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0_package-a@1.0.0".to_string(),
@@ -3687,7 +3703,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0".to_string()
-          ),]),
+          )]),
         },
       ]
     );
@@ -3695,6 +3711,79 @@ mod test {
       package_reqs,
       vec![("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string())]
     );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_deps() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+
+    let (optional_packages, required_packages) =
+      run_resolver_and_partition_optional_packages(
+        api,
+        vec!["npm:package-a@1.0.0"],
+      )
+      .await;
+    assert_eq!(
+      required_packages,
+      vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string()]
+    );
+    assert_eq!(
+      optional_packages,
+      vec![
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+        "package-e@1.0.0".to_string()
+      ],
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_to_required() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b2", "1.0.0");
+    api.ensure_package_version("package-b3", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-b", "1.0.0"), ("package-b2", "1"));
+    api.add_dependency(("package-b2", "1.0.0"), ("package-b3", "1"));
+    // deep down this is set back to being required, so it and its required
+    // dependency should be marked as required
+    api.add_dependency(("package-b3", "1.0.0"), ("package-c", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+
+    let (optional_packages, required_packages) =
+      run_resolver_and_partition_optional_packages(
+        api,
+        vec!["npm:package-a@1.0.0"],
+      )
+      .await;
+    assert_eq!(
+      required_packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b@1.0.0".to_string(),
+        "package-b2@1.0.0".to_string(),
+        "package-b3@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+      ]
+    );
+    assert_eq!(optional_packages, vec!["package-e@1.0.0".to_string()],);
   }
 
   #[derive(Debug, PartialEq, Eq)]
@@ -3708,6 +3797,47 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
+    let (packages, package_reqs) =
+      run_resolver_and_get_raw_packages(api, reqs).await;
+    let packages = packages
+      .into_iter()
+      .map(|pkg| TestNpmResolutionPackage {
+        pkg_id: pkg.pkg_id.as_serialized(),
+        copy_index: pkg.copy_index,
+        dependencies: pkg
+          .dependencies
+          .into_iter()
+          .map(|(key, value)| (key, value.as_serialized()))
+          .collect(),
+      })
+      .collect();
+
+    (packages, package_reqs)
+  }
+
+  async fn run_resolver_and_partition_optional_packages(
+    api: TestNpmRegistryApi,
+    reqs: Vec<&str>,
+  ) -> (Vec<String>, Vec<String>) {
+    let (packages, _) = run_resolver_and_get_raw_packages(api, reqs).await;
+    let (optional, required): (Vec<_>, Vec<_>) =
+      packages.into_iter().partition(|pkg| pkg.optional);
+    (
+      optional
+        .into_iter()
+        .map(|pkg| pkg.pkg_id.as_serialized())
+        .collect(),
+      required
+        .into_iter()
+        .map(|pkg| pkg.pkg_id.as_serialized())
+        .collect(),
+    )
+  }
+
+  async fn run_resolver_and_get_raw_packages(
+    api: TestNpmRegistryApi,
+    reqs: Vec<&str>,
+  ) -> (Vec<NpmResolutionPackage>, Vec<(String, String)>) {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
@@ -3774,19 +3904,6 @@ mod test {
       })
       .collect::<Vec<_>>();
     package_reqs.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
-    let packages = packages
-      .into_iter()
-      .map(|pkg| TestNpmResolutionPackage {
-        pkg_id: pkg.pkg_id.as_serialized(),
-        copy_index: pkg.copy_index,
-        dependencies: pkg
-          .dependencies
-          .into_iter()
-          .map(|(key, value)| (key, value.as_serialized()))
-          .collect(),
-      })
-      .collect();
-
     (packages, package_reqs)
   }
 }
