@@ -608,7 +608,7 @@ impl Graph {
         .or_default()
         .push(pkg_id.clone());
 
-      // at this point, the api should have this cached
+      // at this point the api should have this cached
       let package_info = api.package_info(&pkg_id.nv.name).await?;
       let version_info = package_info
         .versions
@@ -625,14 +625,16 @@ impl Graph {
         let should_mark_required = is_parent_required && !is_child_optional;
         if should_mark_required && optional_packages.contains(&child_pkg_id.nv)
         {
-          // revert required dependencies back to being required because this
-          // name and version is no longer found in an optional tree
-          let mut pending_revert =
-            VecDeque::with_capacity(optional_packages.len());
-          pending_revert.push_back(child_pkg_id.clone());
-          while let Some(pkg_id) = pending_revert.pop_front() {
+          // A previously optional package is now found to be required. Revert
+          // this dependency and its required descendant dependencies back to
+          // being required because this name and version is no longer found in
+          // an optional tree
+          let mut pending = VecDeque::with_capacity(optional_packages.len());
+          pending.push_back(child_pkg_id.clone());
+          while let Some(pkg_id) = pending.pop_front() {
             if optional_packages.remove(&pkg_id.nv) {
               required_packages.insert(pkg_id.nv.clone());
+              // should be cached in the api at this point
               let package_info = api.package_info(&pkg_id.nv.name).await?;
               let version_info = package_info
                 .versions
@@ -642,7 +644,7 @@ impl Graph {
               for key in version_info.dependencies.keys() {
                 if !version_info.optional_dependencies.contains_key(key) {
                   let dep_id = package.dependencies.get(key).unwrap();
-                  pending_revert.push_back(dep_id.clone());
+                  pending.push_back(dep_id.clone());
                 }
               }
             }
@@ -673,7 +675,7 @@ impl Graph {
       );
     }
 
-    // only bother doing this if an optional dependency was found
+    // mark the packages that we know are optional
     if !optional_packages.is_empty() {
       for package in packages.values_mut() {
         package.optional = optional_packages.contains(&package.pkg_id.nv);
