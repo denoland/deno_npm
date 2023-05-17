@@ -307,6 +307,21 @@ impl TestNpmRegistryApi {
     }
   }
 
+  pub fn with_package(&self, name: &str, f: impl FnOnce(&mut NpmPackageInfo)) {
+    self.ensure_package(name);
+    let mut infos = self.package_infos.lock();
+    let info = infos.get_mut(name).unwrap();
+    f(info);
+  }
+
+  pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
+    self.with_package(package_name, |package| {
+      package
+        .dist_tags
+        .insert(tag.to_string(), Version::parse_from_npm(version).unwrap());
+    })
+  }
+
   pub fn ensure_package_version(&self, name: &str, version: &str) {
     self.ensure_package(name);
     let mut infos = self.package_infos.lock();
@@ -323,87 +338,69 @@ impl TestNpmRegistryApi {
     }
   }
 
-  pub fn add_dependency(
+  pub fn with_version_info(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    f: impl FnOnce(&mut NpmPackageVersionInfo),
   ) {
+    let (name, version) = package;
+    self.ensure_package_version(name, version);
     let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
+    let info = infos.get_mut(name).unwrap();
+    let version = Version::parse_from_npm(version).unwrap();
+    let version_info = info.versions.get_mut(&version).unwrap();
+    f(version_info);
+  }
+
+  pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
+    self.with_version_info(package, |version| {
+      version
+        .dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    })
   }
 
   pub fn add_optional_dependency(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    entry: (&str, &str),
   ) {
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
-    version
-      .optional_dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
-  }
-
-  pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_name).unwrap();
-    info
-      .dist_tags
-      .insert(tag.to_string(), Version::parse_from_npm(version).unwrap());
+    self.with_version_info(package, |version| {
+      version
+        .dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+      version
+        .optional_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    })
   }
 
   pub fn add_peer_dependency(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    entry: (&str, &str),
   ) {
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .peer_dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
+    self.with_version_info(package, |version| {
+      version
+        .peer_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    });
   }
 
   pub fn add_optional_peer_dependency(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    entry: (&str, &str),
   ) {
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .peer_dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
-    version.peer_dependencies_meta.insert(
-      package_to.0.to_string(),
-      NpmPeerDependencyMeta { optional: true },
-    );
+    self.with_version_info(package, |version| {
+      version
+        .peer_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+      version.peer_dependencies_meta.insert(
+        entry.0.to_string(),
+        NpmPeerDependencyMeta { optional: true },
+      );
+    });
   }
 }
 

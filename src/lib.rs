@@ -262,7 +262,7 @@ impl NpmResolutionPackage {
 
 /// System information used to determine which optional packages
 /// to download.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NpmSystemInfo {
   /// `process.platform` value from Node.js
   pub os: String,
@@ -333,7 +333,7 @@ mod test {
   use deno_semver::npm::NpmPackageNv;
   use deno_semver::Version;
 
-  use super::NpmPackageId;
+  use super::*;
 
   #[test]
   fn serialize_npm_package_id() {
@@ -385,5 +385,64 @@ mod test {
     let serialized = id.as_serialized();
     assert_eq!(serialized, "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1");
     assert_eq!(NpmPackageId::from_serialized(&serialized).unwrap(), id);
+  }
+
+  #[test]
+  fn test_matches_os_or_cpu_vec() {
+    assert!(matches_os_or_cpu_vec(&[], "x64"));
+    assert!(matches_os_or_cpu_vec(&["x64".to_string()], "x64"));
+    assert!(!matches_os_or_cpu_vec(&["!x64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["!arm64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(
+      &["!arm64".to_string(), "!x86".to_string()],
+      "x64"
+    ));
+    assert!(!matches_os_or_cpu_vec(
+      &["!arm64".to_string(), "!x86".to_string()],
+      "x86"
+    ));
+    assert!(!matches_os_or_cpu_vec(
+      &[
+        "!arm64".to_string(),
+        "!x86".to_string(),
+        "other".to_string()
+      ],
+      "x86"
+    ));
+
+    // not explicitly excluded so it's considered a match
+    assert!(matches_os_or_cpu_vec(
+      &[
+        "!arm64".to_string(),
+        "!x86".to_string(),
+        "other".to_string()
+      ],
+      "x64"
+    ));
+  }
+
+  #[test]
+  fn npm_package_should_download() {
+    let system_info = NpmSystemInfo::default();
+    let mut pkg = NpmResolutionPackage {
+      pkg_id: NpmPackageId::from_serialized("pkg@1.0.0").unwrap(),
+      copy_index: 0,
+      optional: true,
+      cpu: vec![system_info.cpu.clone()],
+      os: vec![system_info.os.clone()],
+      dist: NpmPackageVersionDistInfo::default(),
+      dependencies: Default::default(),
+    };
+    assert!(pkg.should_download(&system_info));
+    pkg.optional = false;
+    assert!(pkg.should_download(&system_info));
+    pkg.cpu[0] = "test".to_string();
+    assert!(pkg.should_download(&system_info));
+    pkg.optional = true;
+    assert!(!pkg.should_download(&system_info));
+    pkg.cpu[0] = system_info.cpu.clone();
+    assert!(pkg.should_download(&system_info));
+    pkg.os[0] = "test".to_string();
+    assert!(!pkg.should_download(&system_info));
   }
 }
