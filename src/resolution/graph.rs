@@ -574,7 +574,8 @@ impl Graph {
         self.packages_to_copy_index,
         self.nodes.len(),
       );
-    let mut packages = HashMap::with_capacity(self.nodes.len());
+    let mut packages: HashMap<NpmPackageId, NpmResolutionPackage> =
+      HashMap::with_capacity(self.nodes.len());
     let mut packages_by_name: HashMap<String, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
 
@@ -601,15 +602,12 @@ impl Graph {
         .or_default()
         .push(pkg_id.clone());
 
-      // at this point, the api should have this cached
-      let dist = api
-        .package_info(&pkg_id.nv.name)
-        .await?
+      // at this point the api should have this cached
+      let package_info = api.package_info(&pkg_id.nv.name).await?;
+      let version_info = package_info
         .versions
         .get(&pkg_id.nv.version)
-        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv))
-        .dist
-        .clone();
+        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv));
 
       let mut dependencies = HashMap::with_capacity(node.children.len());
       for (specifier, child_id) in &node.children {
@@ -626,8 +624,15 @@ impl Graph {
         NpmResolutionPackage {
           copy_index: copy_index_resolver.resolve(pkg_id),
           pkg_id: (*pkg_id).clone(),
-          dist,
+          cpu: version_info.cpu.clone(),
+          os: version_info.os.clone(),
+          dist: version_info.dist.clone(),
           dependencies,
+          optional_dependencies: version_info
+            .optional_dependencies
+            .keys()
+            .cloned()
+            .collect(),
         },
       );
     }
@@ -1039,7 +1044,7 @@ impl<'a> GraphDependencyResolver<'a> {
               &parent_path,
             )?;
 
-            // For optional dependencies, we want to resolve them if any future
+            // For optional peer dependencies, we want to resolve them if any future
             // same parent version resolves them. So when not resolved, store them to be
             // potentially resolved later.
             //
@@ -1442,6 +1447,7 @@ mod test {
   use crate::registry::TestNpmRegistryApi;
   use crate::resolution::NpmResolutionSnapshotCreateOptions;
   use crate::resolution::SerializedNpmResolutionSnapshot;
+  use crate::NpmSystemInfo;
 
   use super::*;
 
@@ -1843,7 +1849,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0_package-peer@4.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-a@1.0.0_package-peer@4.0.0".to_string(),
@@ -2558,8 +2564,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0_package-peer-a@4.0.0__package-peer-b@5.4.1".to_string(),
-          ),]),
-
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-a@1.0.0_package-peer-a@4.0.0__package-peer-b@5.4.1".to_string(),
@@ -2975,7 +2980,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-d".to_string(),
             "package-d@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-d@1.0.0".to_string(),
@@ -3209,7 +3214,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0".to_string(),
@@ -3306,7 +3311,6 @@ mod test {
               "package-c@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
             )
           ]),
-
         },
         TestNpmResolutionPackage {
           pkg_id: "package-c@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
@@ -3325,7 +3329,6 @@ mod test {
               "package-d@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
             )
           ]),
-
         },
         TestNpmResolutionPackage {
           pkg_id: "package-d@1.0.0_package-0@1.0.0_package-a@1.0.0__package-0@1.0.0".to_string(),
@@ -3340,7 +3343,6 @@ mod test {
               "package-a@1.0.0_package-0@1.0.0".to_string(),
             )
           ]),
-
         }
       ]
     );
@@ -3457,7 +3459,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0".to_string(),
-          ),]),
+          )]),
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0".to_string(),
@@ -3618,7 +3620,7 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
             "package-b@1.0.0_package-a@1.0.0".to_string(),
-          ),]),
+          )])
         },
         TestNpmResolutionPackage {
           pkg_id: "package-b@1.0.0_package-a@1.0.0".to_string(),
@@ -3659,13 +3661,132 @@ mod test {
           dependencies: BTreeMap::from([(
             "package-a".to_string(),
             "package-a@1.0.0".to_string()
-          ),]),
+          )]),
         },
       ]
     );
     assert_eq!(
       package_reqs,
       vec![("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string())]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_deps() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+    api.with_version_info(("package-c", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string(), "darwin".to_string()];
+    });
+    api.with_version_info(("package-e", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "win32".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+        "package-e@1.0.0".to_string(),
+      ]
+    );
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+      ]
+    );
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "linux".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string()]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_to_required() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b1", "1.0.0");
+    api.ensure_package_version("package-b2", "1.0.0");
+    api.ensure_package_version("package-b3", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b1", "1"));
+    api.add_dependency(("package-b1", "1.0.0"), ("package-b2", "1"));
+    api.add_dependency(("package-b2", "1.0.0"), ("package-b3", "1"));
+    // deep down this is set back to being required, so it and its required
+    // dependency should be marked as required
+    api.add_dependency(("package-b3", "1.0.0"), ("package-c", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+
+    api.with_version_info(("package-c", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+    api.with_version_info(("package-e", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b1@1.0.0".to_string(),
+        "package-b2@1.0.0".to_string(),
+        "package-b3@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+      ]
     );
   }
 
@@ -3680,6 +3801,57 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
+    let snapshot = run_resolver_and_get_snapshot(api, reqs).await;
+    let mut packages = snapshot
+      .all_packages_for_every_system()
+      .cloned()
+      .collect::<Vec<_>>();
+    packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
+    let mut package_reqs = snapshot
+      .package_reqs
+      .into_iter()
+      .map(|(a, b)| {
+        (
+          a.to_string(),
+          snapshot.root_packages.get(&b).unwrap().as_serialized(),
+        )
+      })
+      .collect::<Vec<_>>();
+    package_reqs.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+
+    let packages = packages
+      .into_iter()
+      .map(|pkg| TestNpmResolutionPackage {
+        pkg_id: pkg.pkg_id.as_serialized(),
+        copy_index: pkg.copy_index,
+        dependencies: pkg
+          .dependencies
+          .into_iter()
+          .map(|(key, value)| (key, value.as_serialized()))
+          .collect(),
+      })
+      .collect();
+
+    (packages, package_reqs)
+  }
+
+  fn package_names_with_info(
+    snapshot: &NpmResolutionSnapshot,
+    system_info: &NpmSystemInfo,
+  ) -> Vec<String> {
+    let mut packages = snapshot
+      .all_system_packages(system_info)
+      .into_iter()
+      .map(|p| p.pkg_id.as_serialized())
+      .collect::<Vec<_>>();
+    packages.sort();
+    packages
+  }
+
+  async fn run_resolver_and_get_snapshot(
+    api: TestNpmRegistryApi,
+    reqs: Vec<&str>,
+  ) -> NpmResolutionSnapshot {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
@@ -3733,32 +3905,6 @@ mod test {
       );
     }
 
-    let mut packages = snapshot.all_packages();
-    packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
-    let mut package_reqs = snapshot
-      .package_reqs
-      .into_iter()
-      .map(|(a, b)| {
-        (
-          a.to_string(),
-          snapshot.root_packages.get(&b).unwrap().as_serialized(),
-        )
-      })
-      .collect::<Vec<_>>();
-    package_reqs.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
-    let packages = packages
-      .into_iter()
-      .map(|pkg| TestNpmResolutionPackage {
-        pkg_id: pkg.pkg_id.as_serialized(),
-        copy_index: pkg.copy_index,
-        dependencies: pkg
-          .dependencies
-          .into_iter()
-          .map(|(key, value)| (key, value.as_serialized()))
-          .collect(),
-      })
-      .collect();
-
-    (packages, package_reqs)
+    snapshot
   }
 }

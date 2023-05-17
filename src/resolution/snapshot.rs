@@ -4,6 +4,7 @@ use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -31,6 +32,7 @@ use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
+use crate::NpmSystemInfo;
 
 #[derive(Debug, Error, Clone)]
 #[error("Could not find referenced package '{}' in the list of packages.", self.0.as_serialized())]
@@ -88,10 +90,13 @@ pub struct ValidSerializedNpmResolutionSnapshot(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshotPackage {
   pub pkg_id: NpmPackageId,
+  pub cpu: Vec<String>,
+  pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
+  pub optional_dependencies: HashSet<String>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -211,8 +216,11 @@ impl NpmResolutionSnapshot {
         NpmResolutionPackage {
           pkg_id: package.pkg_id,
           copy_index,
+          cpu: package.cpu,
+          os: package.os,
           dist: package.dist,
           dependencies: package.dependencies,
+          optional_dependencies: package.optional_dependencies,
         },
       );
     }
@@ -244,11 +252,7 @@ impl NpmResolutionSnapshot {
       packages: self
         .packages
         .values()
-        .map(|package| SerializedNpmResolutionSnapshotPackage {
-          pkg_id: package.pkg_id.clone(),
-          dist: package.dist.clone(),
-          dependencies: package.dependencies.clone(),
-        })
+        .map(|package| package.as_serialized())
         .collect(),
     }
   }
@@ -438,20 +442,86 @@ impl NpmResolutionSnapshot {
     }))
   }
 
-  pub fn all_packages(&self) -> Vec<NpmResolutionPackage> {
-    self.packages.values().cloned().collect()
+  /// Gets all the packages found in the snapshot regardless of
+  /// whether they are supported on the current system.
+  pub fn all_packages_for_every_system(
+    &self,
+  ) -> impl Iterator<Item = &NpmResolutionPackage> {
+    // NOTE: This method intentionally has a verbose name
+    // to discourage its use.
+    self.packages.values()
   }
 
-  pub fn all_packages_partitioned(&self) -> NpmPackagesPartitioned {
-    let mut packages = self.all_packages();
-    let mut copy_packages = Vec::with_capacity(packages.len() / 2); // at most 1 copy for every package
+  pub fn all_system_packages(
+    &self,
+    system_info: &NpmSystemInfo,
+  ) -> Vec<NpmResolutionPackage> {
+    let mut packages = Vec::with_capacity(self.packages.len());
+    let mut pending = VecDeque::with_capacity(self.packages.len());
+    let mut visited_ids = HashSet::with_capacity(self.packages.len());
 
-    // partition out any packages that are "copy" packages
-    for i in (0..packages.len()).rev() {
-      if packages[i].copy_index > 0 {
-        copy_packages.push(packages.swap_remove(i));
+    pending.extend(
+      self
+        .root_packages
+        .values()
+        .map(|pkg_id| self.packages.get(pkg_id).unwrap()),
+    );
+    visited_ids.extend(self.root_packages.values());
+
+    while let Some(pkg) = pending.pop_front() {
+      packages.push(pkg.clone());
+
+      for (key, dep_id) in &pkg.dependencies {
+        if visited_ids.contains(&dep_id) {
+          continue;
+        }
+        let dep = self.packages.get(dep_id).unwrap();
+
+        if pkg.optional_dependencies.contains(key) {
+          if dep.matches_system(system_info) {
+            pending.push_back(dep);
+            visited_ids.insert(dep_id);
+          }
+        } else {
+          pending.push_back(dep);
+          visited_ids.insert(dep_id);
+        }
       }
     }
+
+    packages
+  }
+
+  pub fn all_system_packages_partitioned(
+    &self,
+    system_info: &NpmSystemInfo,
+  ) -> NpmPackagesPartitioned {
+    let mut packages = self.all_system_packages(system_info);
+
+    // in most scenarios, there won't ever be any copy packages so skip
+    // the extra allocations if so
+    let copy_packages = if packages.iter().any(|p| p.copy_index > 0) {
+      let mut copy_packages = Vec::with_capacity(packages.len() / 2); // at most 1 copy for every package
+      let copy_index_zero_nvs = packages
+        .iter()
+        .filter(|p| p.copy_index == 0)
+        .map(|p| p.pkg_id.nv.clone())
+        .collect::<HashSet<_>>();
+
+      // partition out any packages that are "copy" packages
+      for i in (0..packages.len()).rev() {
+        if packages[i].copy_index > 0
+          // the system might not have resolved the package with a
+          // copy_index of 0, so we also need to check that
+          && copy_index_zero_nvs.contains(&packages[i].pkg_id.nv)
+        {
+          copy_packages.push(packages.swap_remove(i));
+        }
+      }
+      copy_packages
+    } else {
+      Vec::new()
+    };
 
     NpmPackagesPartitioned {
       packages,

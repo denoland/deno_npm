@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use deno_semver::npm::NpmPackageNv;
@@ -155,9 +156,15 @@ pub struct NpmPackageVersionInfo {
   #[serde(default)]
   pub dependencies: HashMap<String, String>,
   #[serde(default)]
+  pub optional_dependencies: HashMap<String, String>,
+  #[serde(default)]
   pub peer_dependencies: HashMap<String, String>,
   #[serde(default)]
   pub peer_dependencies_meta: HashMap<String, NpmPeerDependencyMeta>,
+  #[serde(default)]
+  pub os: Vec<String>,
+  #[serde(default)]
+  pub cpu: Vec<String>,
 }
 
 impl NpmPackageVersionInfo {
@@ -274,23 +281,29 @@ pub trait NpmRegistryApi: Sync + Send {
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 }
 
+/// A simple in-memory implementation of the NpmRegistryApi
+/// that can be used for testing purposes. This does not use
+/// `#[cfg(test)]` because that is not supported across crates.
+///
 /// Note: This test struct is not thread safe for setup
 /// purposes. Construct everything on the same thread.
-#[cfg(test)]
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Arc<parking_lot::Mutex<HashMap<String, NpmPackageInfo>>>,
+  package_infos: Arc<Mutex<HashMap<String, NpmPackageInfo>>>,
 }
 
-#[cfg(test)]
 impl TestNpmRegistryApi {
   pub fn add_package_info(&self, name: &str, info: NpmPackageInfo) {
-    let previous = self.package_infos.lock().insert(name.to_string(), info);
+    let previous = self
+      .package_infos
+      .lock()
+      .unwrap()
+      .insert(name.to_string(), info);
     assert!(previous.is_none());
   }
 
   pub fn ensure_package(&self, name: &str) {
-    if !self.package_infos.lock().contains_key(name) {
+    if !self.package_infos.lock().unwrap().contains_key(name) {
       self.add_package_info(
         name,
         NpmPackageInfo {
@@ -301,9 +314,24 @@ impl TestNpmRegistryApi {
     }
   }
 
+  pub fn with_package(&self, name: &str, f: impl FnOnce(&mut NpmPackageInfo)) {
+    self.ensure_package(name);
+    let mut infos = self.package_infos.lock().unwrap();
+    let info = infos.get_mut(name).unwrap();
+    f(info);
+  }
+
+  pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
+    self.with_package(package_name, |package| {
+      package
+        .dist_tags
+        .insert(tag.to_string(), Version::parse_from_npm(version).unwrap());
+    })
+  }
+
   pub fn ensure_package_version(&self, name: &str, version: &str) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.lock();
+    let mut infos = self.package_infos.lock().unwrap();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
     if !info.versions.contains_key(&version) {
@@ -317,79 +345,85 @@ impl TestNpmRegistryApi {
     }
   }
 
-  pub fn add_dependency(
+  pub fn with_version_info(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    f: impl FnOnce(&mut NpmPackageVersionInfo),
   ) {
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
+    let (name, version) = package;
+    self.ensure_package_version(name, version);
+    let mut infos = self.package_infos.lock().unwrap();
+    let info = infos.get_mut(name).unwrap();
+    let version = Version::parse_from_npm(version).unwrap();
+    let version_info = info.versions.get_mut(&version).unwrap();
+    f(version_info);
   }
 
-  pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_name).unwrap();
-    info
-      .dist_tags
-      .insert(tag.to_string(), Version::parse_from_npm(version).unwrap());
+  pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
+    self.with_version_info(package, |version| {
+      version
+        .dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    })
+  }
+
+  pub fn add_optional_dependency(
+    &self,
+    package: (&str, &str),
+    entry: (&str, &str),
+  ) {
+    self.with_version_info(package, |version| {
+      version
+        .dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+      version
+        .optional_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    })
   }
 
   pub fn add_peer_dependency(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    entry: (&str, &str),
   ) {
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .peer_dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
+    self.with_version_info(package, |version| {
+      version
+        .peer_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    });
   }
 
   pub fn add_optional_peer_dependency(
     &self,
-    package_from: (&str, &str),
-    package_to: (&str, &str),
+    package: (&str, &str),
+    entry: (&str, &str),
   ) {
-    let package_from = (
-      package_from.0,
-      Version::parse_from_npm(package_from.1).unwrap(),
-    );
-    let mut infos = self.package_infos.lock();
-    let info = infos.get_mut(package_from.0).unwrap();
-    let version = info.versions.get_mut(&package_from.1).unwrap();
-    version
-      .peer_dependencies
-      .insert(package_to.0.to_string(), package_to.1.to_string());
-    version.peer_dependencies_meta.insert(
-      package_to.0.to_string(),
-      NpmPeerDependencyMeta { optional: true },
-    );
+    self.with_version_info(package, |version| {
+      version
+        .peer_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+      version.peer_dependencies_meta.insert(
+        entry.0.to_string(),
+        NpmPeerDependencyMeta { optional: true },
+      );
+    });
   }
 }
 
-#[cfg(test)]
 #[async_trait]
 impl NpmRegistryApi for TestNpmRegistryApi {
   async fn package_info(
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
-    let infos = self.package_infos.lock();
-    Ok(Arc::new(infos.get(name).cloned().unwrap()))
+    let infos = self.package_infos.lock().unwrap();
+    Ok(Arc::new(
+      infos
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("Not found: {name}")),
+    ))
   }
 }
 
@@ -417,10 +451,7 @@ mod test {
           shasum: "test".to_string(),
           integrity: None,
         },
-        bin: None,
-        dependencies: Default::default(),
-        peer_dependencies: Default::default(),
-        peer_dependencies_meta: Default::default()
+        ..Default::default()
       }
     );
   }

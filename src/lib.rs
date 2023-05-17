@@ -3,10 +3,12 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::Version;
 use registry::NpmPackageVersionDistInfo;
+use resolution::SerializedNpmResolutionSnapshotPackage;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -210,10 +212,13 @@ pub struct NpmResolutionPackage {
   /// the resolution tree. This copy index indicates which
   /// copy of the package this is.
   pub copy_index: u8,
+  pub cpu: Vec<String>,
+  pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
+  pub optional_dependencies: HashSet<String>,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -222,22 +227,120 @@ impl std::fmt::Debug for NpmResolutionPackage {
     f.debug_struct("NpmResolutionPackage")
       .field("pkg_id", &self.pkg_id)
       .field("copy_index", &self.copy_index)
+      .field("cpu", &self.cpu)
+      .field("os", &self.os)
       .field("dist", &self.dist)
       .field(
         "dependencies",
         &self.dependencies.iter().collect::<BTreeMap<_, _>>(),
       )
+      .field("optional_dependencies", &{
+        let mut deps = self.optional_dependencies.iter().collect::<Vec<_>>();
+        deps.sort();
+        deps
+      })
       .finish()
   }
 }
 
 impl NpmResolutionPackage {
+  pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshotPackage {
+    SerializedNpmResolutionSnapshotPackage {
+      pkg_id: self.pkg_id.clone(),
+      cpu: self.cpu.clone(),
+      os: self.os.clone(),
+      dist: self.dist.clone(),
+      dependencies: self.dependencies.clone(),
+      optional_dependencies: self.optional_dependencies.clone(),
+    }
+  }
+
   pub fn get_package_cache_folder_id(&self) -> NpmPackageCacheFolderId {
     NpmPackageCacheFolderId {
       nv: self.pkg_id.nv.clone(),
       copy_index: self.copy_index,
     }
   }
+
+  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
+    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
+  }
+
+  pub fn matches_cpu(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.cpu, target)
+  }
+
+  pub fn matches_os(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.os, target)
+  }
+}
+
+/// System information used to determine which optional packages
+/// to download.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpmSystemInfo {
+  /// `process.platform` value from Node.js
+  pub os: String,
+  /// `process.arch` value from Node.js
+  pub cpu: String,
+}
+
+impl Default for NpmSystemInfo {
+  fn default() -> Self {
+    Self {
+      os: node_js_os(std::env::consts::OS),
+      cpu: node_js_cpu(std::env::consts::ARCH),
+    }
+  }
+}
+
+impl NpmSystemInfo {
+  pub fn from_rust(os: &str, cpu: &str) -> Self {
+    Self {
+      os: node_js_os(os),
+      cpu: node_js_cpu(cpu),
+    }
+  }
+}
+
+fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
+  if items.is_empty() {
+    return true;
+  }
+  let mut had_negation = false;
+  for item in items {
+    if item.starts_with('!') {
+      if &item[1..] == target {
+        return false;
+      }
+      had_negation = true;
+    } else if item == target {
+      return true;
+    }
+  }
+  had_negation
+}
+
+fn node_js_cpu(rust_arch: &str) -> String {
+  // possible values: https://nodejs.org/api/process.html#processarch
+  // 'arm', 'arm64', 'ia32', 'mips','mipsel', 'ppc', 'ppc64', 's390', 's390x', and 'x64'
+  match rust_arch {
+    "x86_64" => "x64",
+    "aarch64" => "arm64",
+    value => value,
+  }
+  .to_string()
+}
+
+fn node_js_os(rust_os: &str) -> String {
+  // possible values: https://nodejs.org/api/process.html#processplatform
+  // 'aix', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', and 'win32'
+  match rust_os {
+    "macos" => "darwin",
+    "windows" => "win32",
+    value => value,
+  }
+  .to_string()
 }
 
 #[cfg(test)]
@@ -245,7 +348,7 @@ mod test {
   use deno_semver::npm::NpmPackageNv;
   use deno_semver::Version;
 
-  use super::NpmPackageId;
+  use super::*;
 
   #[test]
   fn serialize_npm_package_id() {
@@ -297,5 +400,39 @@ mod test {
     let serialized = id.as_serialized();
     assert_eq!(serialized, "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1");
     assert_eq!(NpmPackageId::from_serialized(&serialized).unwrap(), id);
+  }
+
+  #[test]
+  fn test_matches_os_or_cpu_vec() {
+    assert!(matches_os_or_cpu_vec(&[], "x64"));
+    assert!(matches_os_or_cpu_vec(&["x64".to_string()], "x64"));
+    assert!(!matches_os_or_cpu_vec(&["!x64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["!arm64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(
+      &["!arm64".to_string(), "!x86".to_string()],
+      "x64"
+    ));
+    assert!(!matches_os_or_cpu_vec(
+      &["!arm64".to_string(), "!x86".to_string()],
+      "x86"
+    ));
+    assert!(!matches_os_or_cpu_vec(
+      &[
+        "!arm64".to_string(),
+        "!x86".to_string(),
+        "other".to_string()
+      ],
+      "x86"
+    ));
+
+    // not explicitly excluded and there's an include, so it's considered a match
+    assert!(matches_os_or_cpu_vec(
+      &[
+        "!arm64".to_string(),
+        "!x86".to_string(),
+        "other".to_string()
+      ],
+      "x64"
+    ));
   }
 }

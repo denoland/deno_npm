@@ -21,7 +21,6 @@ thiserror = "1.0.24"
 futures = "0.3.28"
 
 [dev-dependencies]
-parking_lot = "0.12.1"
 pretty_assertions = "1.0.0"
 serde_json = { version = "1.0.67", features = ["preserve_order"] }
 tokio = { version = "1.27.0", features = ["full"] }
