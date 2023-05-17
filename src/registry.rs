@@ -293,16 +293,6 @@ pub struct TestNpmRegistryApi {
 }
 
 impl TestNpmRegistryApi {
-  pub fn all_packages(&self) -> Vec<NpmPackageInfo> {
-    self
-      .package_infos
-      .lock()
-      .unwrap()
-      .values()
-      .cloned()
-      .collect()
-  }
-
   pub fn add_package_info(&self, name: &str, info: NpmPackageInfo) {
     let previous = self
       .package_infos
@@ -428,7 +418,12 @@ impl NpmRegistryApi for TestNpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
     let infos = self.package_infos.lock().unwrap();
-    Ok(Arc::new(infos.get(name).cloned().unwrap()))
+    Ok(Arc::new(
+      infos
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("Not found: {name}")),
+    ))
   }
 }
 
