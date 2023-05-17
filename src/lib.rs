@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::Version;
@@ -211,14 +212,13 @@ pub struct NpmResolutionPackage {
   /// the resolution tree. This copy index indicates which
   /// copy of the package this is.
   pub copy_index: u8,
-  /// If this package only appears in optional dependencies.
-  pub optional: bool,
   pub cpu: Vec<String>,
   pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
+  pub optional_dependencies: HashSet<String>,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -227,7 +227,6 @@ impl std::fmt::Debug for NpmResolutionPackage {
     f.debug_struct("NpmResolutionPackage")
       .field("pkg_id", &self.pkg_id)
       .field("copy_index", &self.copy_index)
-      .field("optional", &self.optional)
       .field("cpu", &self.cpu)
       .field("os", &self.os)
       .field("dist", &self.dist)
@@ -235,6 +234,11 @@ impl std::fmt::Debug for NpmResolutionPackage {
         "dependencies",
         &self.dependencies.iter().collect::<BTreeMap<_, _>>(),
       )
+      .field("optional_dependencies", &{
+        let mut deps = self.optional_dependencies.iter().collect::<Vec<_>>();
+        deps.sort();
+        deps
+      })
       .finish()
   }
 }
@@ -243,11 +247,11 @@ impl NpmResolutionPackage {
   pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshotPackage {
     SerializedNpmResolutionSnapshotPackage {
       pkg_id: self.pkg_id.clone(),
-      optional: self.optional,
       cpu: self.cpu.clone(),
       os: self.os.clone(),
       dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
+      optional_dependencies: self.optional_dependencies.clone(),
     }
   }
 
@@ -258,16 +262,15 @@ impl NpmResolutionPackage {
     }
   }
 
-  pub fn should_download(&self, system_info: &NpmSystemInfo) -> bool {
-    !self.optional
-      || self.cpu_matches(&system_info.cpu) && self.os_matches(&system_info.os)
+  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
+    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
   }
 
-  pub fn cpu_matches(&self, target: &str) -> bool {
+  pub fn matches_cpu(&self, target: &str) -> bool {
     matches_os_or_cpu_vec(&self.cpu, target)
   }
 
-  pub fn os_matches(&self, target: &str) -> bool {
+  pub fn matches_os(&self, target: &str) -> bool {
     matches_os_or_cpu_vec(&self.os, target)
   }
 }
@@ -431,30 +434,5 @@ mod test {
       ],
       "x64"
     ));
-  }
-
-  #[test]
-  fn npm_package_should_download() {
-    let system_info = NpmSystemInfo::default();
-    let mut pkg = NpmResolutionPackage {
-      pkg_id: NpmPackageId::from_serialized("pkg@1.0.0").unwrap(),
-      copy_index: 0,
-      optional: true,
-      cpu: vec![system_info.cpu.clone()],
-      os: vec![system_info.os.clone()],
-      dist: NpmPackageVersionDistInfo::default(),
-      dependencies: Default::default(),
-    };
-    assert!(pkg.should_download(&system_info));
-    pkg.optional = false;
-    assert!(pkg.should_download(&system_info));
-    pkg.cpu[0] = "test".to_string();
-    assert!(pkg.should_download(&system_info));
-    pkg.optional = true;
-    assert!(!pkg.should_download(&system_info));
-    pkg.cpu[0] = system_info.cpu.clone();
-    assert!(pkg.should_download(&system_info));
-    pkg.os[0] = "test".to_string();
-    assert!(!pkg.should_download(&system_info));
   }
 }
