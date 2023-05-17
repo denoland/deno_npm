@@ -1447,6 +1447,7 @@ mod test {
   use crate::registry::TestNpmRegistryApi;
   use crate::resolution::NpmResolutionSnapshotCreateOptions;
   use crate::resolution::SerializedNpmResolutionSnapshot;
+  use crate::NpmSystemInfo;
 
   use super::*;
 
@@ -3670,6 +3671,125 @@ mod test {
     );
   }
 
+  #[tokio::test]
+  async fn resolve_optional_deps() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+    api.with_version_info(("package-c", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string(), "darwin".to_string()];
+    });
+    api.with_version_info(("package-e", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "win32".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+        "package-e@1.0.0".to_string(),
+      ]
+    );
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+      ]
+    );
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "linux".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string()]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_to_required() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b1", "1.0.0");
+    api.ensure_package_version("package-b2", "1.0.0");
+    api.ensure_package_version("package-b3", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.ensure_package_version("package-e", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b1", "1"));
+    api.add_dependency(("package-b1", "1.0.0"), ("package-b2", "1"));
+    api.add_dependency(("package-b2", "1.0.0"), ("package-b3", "1"));
+    // deep down this is set back to being required, so it and its required
+    // dependency should be marked as required
+    api.add_dependency(("package-b3", "1.0.0"), ("package-c", "1"));
+    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+
+    api.with_version_info(("package-c", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+    api.with_version_info(("package-e", "1.0.0"), |info| {
+      info.os = vec!["win32".to_string()];
+    });
+
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec![
+        "package-a@1.0.0".to_string(),
+        "package-b1@1.0.0".to_string(),
+        "package-b2@1.0.0".to_string(),
+        "package-b3@1.0.0".to_string(),
+        "package-c@1.0.0".to_string(),
+        "package-d@1.0.0".to_string(),
+      ]
+    );
+  }
+
   #[derive(Debug, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
@@ -3681,8 +3801,24 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let (packages, package_reqs) =
-      run_resolver_and_get_raw_packages(api, reqs).await;
+    let snapshot = run_resolver_and_get_snapshot(api, reqs).await;
+    let mut packages = snapshot
+      .all_packages_for_every_system()
+      .cloned()
+      .collect::<Vec<_>>();
+    packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
+    let mut package_reqs = snapshot
+      .package_reqs
+      .into_iter()
+      .map(|(a, b)| {
+        (
+          a.to_string(),
+          snapshot.root_packages.get(&b).unwrap().as_serialized(),
+        )
+      })
+      .collect::<Vec<_>>();
+    package_reqs.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+
     let packages = packages
       .into_iter()
       .map(|pkg| TestNpmResolutionPackage {
@@ -3699,10 +3835,23 @@ mod test {
     (packages, package_reqs)
   }
 
-  async fn run_resolver_and_get_raw_packages(
+  fn package_names_with_info(
+    snapshot: &NpmResolutionSnapshot,
+    system_info: &NpmSystemInfo,
+  ) -> Vec<String> {
+    let mut packages = snapshot
+      .all_system_packages(system_info)
+      .into_iter()
+      .map(|p| p.pkg_id.as_serialized())
+      .collect::<Vec<_>>();
+    packages.sort();
+    packages
+  }
+
+  async fn run_resolver_and_get_snapshot(
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
-  ) -> (Vec<NpmResolutionPackage>, Vec<(String, String)>) {
+  ) -> NpmResolutionSnapshot {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
@@ -3756,22 +3905,6 @@ mod test {
       );
     }
 
-    let mut packages = snapshot
-      .all_packages_for_every_system()
-      .cloned()
-      .collect::<Vec<_>>();
-    packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
-    let mut package_reqs = snapshot
-      .package_reqs
-      .into_iter()
-      .map(|(a, b)| {
-        (
-          a.to_string(),
-          snapshot.root_packages.get(&b).unwrap().as_serialized(),
-        )
-      })
-      .collect::<Vec<_>>();
-    package_reqs.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
-    (packages, package_reqs)
+    snapshot
   }
 }
