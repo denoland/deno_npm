@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::Version;
 use registry::NpmPackageVersionDistInfo;
+use resolution::SerializedNpmResolutionSnapshotPackage;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -239,6 +240,17 @@ impl std::fmt::Debug for NpmResolutionPackage {
 }
 
 impl NpmResolutionPackage {
+  pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshotPackage {
+    SerializedNpmResolutionSnapshotPackage {
+      pkg_id: self.pkg_id.clone(),
+      optional: self.optional,
+      cpu: self.cpu.clone(),
+      os: self.os.clone(),
+      dist: self.dist.clone(),
+      dependencies: self.dependencies.clone(),
+    }
+  }
+
   pub fn get_package_cache_folder_id(&self) -> NpmPackageCacheFolderId {
     NpmPackageCacheFolderId {
       nv: self.pkg_id.nv.clone(),

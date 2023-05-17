@@ -250,14 +250,7 @@ impl NpmResolutionSnapshot {
       packages: self
         .packages
         .values()
-        .map(|package| SerializedNpmResolutionSnapshotPackage {
-          pkg_id: package.pkg_id.clone(),
-          optional: package.optional,
-          cpu: package.cpu.clone(),
-          os: package.os.clone(),
-          dist: package.dist.clone(),
-          dependencies: package.dependencies.clone(),
-        })
+        .map(|package| package.as_serialized())
         .collect(),
     }
   }

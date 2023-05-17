@@ -290,6 +290,10 @@ pub struct TestNpmRegistryApi {
 
 #[cfg(test)]
 impl TestNpmRegistryApi {
+  pub fn all_packages(&self) -> Vec<NpmPackageInfo> {
+    self.package_infos.lock().values().cloned().collect()
+  }
+
   pub fn add_package_info(&self, name: &str, info: NpmPackageInfo) {
     let previous = self.package_infos.lock().insert(name.to_string(), info);
     assert!(previous.is_none());
