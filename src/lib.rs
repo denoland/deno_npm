@@ -425,7 +425,7 @@ mod test {
       "x86"
     ));
 
-    // not explicitly excluded so it's considered a match
+    // not explicitly excluded and there's an include, so it's considered a match
     assert!(matches_os_or_cpu_vec(
       &[
         "!arm64".to_string(),

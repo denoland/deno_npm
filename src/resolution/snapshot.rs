@@ -478,16 +478,17 @@ impl NpmResolutionSnapshot {
         let dep = self.packages.get(dep_id).unwrap();
 
         if pkg.optional_dependencies.contains(key) {
-          if pkg.matches_system(system_info) {
+          if dep.matches_system(system_info) {
             pending.push_back(dep);
-            visited_ids.insert(&dep_id);
+            visited_ids.insert(dep_id);
           }
         } else {
           pending.push_back(dep);
-          visited_ids.insert(&dep_id);
+          visited_ids.insert(dep_id);
         }
       }
     }
+
     packages
   }
 
@@ -496,14 +497,31 @@ impl NpmResolutionSnapshot {
     system_info: &NpmSystemInfo,
   ) -> NpmPackagesPartitioned {
     let mut packages = self.all_system_packages(system_info);
-    let mut copy_packages = Vec::with_capacity(packages.len() / 2); // at most 1 copy for every package
 
-    // partition out any packages that are "copy" packages
-    for i in (0..packages.len()).rev() {
-      if packages[i].copy_index > 0 {
-        copy_packages.push(packages.swap_remove(i));
+    // in most scenarios, there won't ever be any copy packages so skip
+    // the extra allocations if so
+    let copy_packages = if packages.iter().any(|p| p.copy_index > 0) {
+      let mut copy_packages = Vec::with_capacity(packages.len() / 2); // at most 1 copy for every package
+      let copy_index_zero_nvs = packages
+        .iter()
+        .filter(|p| p.copy_index == 0)
+        .map(|p| p.pkg_id.nv.clone())
+        .collect::<HashSet<_>>();
+
+      // partition out any packages that are "copy" packages
+      for i in (0..packages.len()).rev() {
+        if packages[i].copy_index > 0
+          // the system might not have resolved the package with a
+          // copy_index of 0, so we also need to check that
+          && copy_index_zero_nvs.contains(&packages[i].pkg_id.nv)
+        {
+          copy_packages.push(packages.swap_remove(i));
+        }
       }
-    }
+      copy_packages
+    } else {
+      Vec::new()
+    };
 
     NpmPackagesPartitioned {
       packages,
