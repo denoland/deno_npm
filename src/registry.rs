@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use deno_semver::npm::NpmPackageNv;
@@ -280,27 +281,39 @@ pub trait NpmRegistryApi: Sync + Send {
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 }
 
+/// A simple in-memory implementation of the NpmRegistryApi
+/// that can be used for testing purposes. This does not use
+/// `#[cfg(test)]` because that is not supported across crates.
+///
 /// Note: This test struct is not thread safe for setup
 /// purposes. Construct everything on the same thread.
-#[cfg(test)]
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Arc<parking_lot::Mutex<HashMap<String, NpmPackageInfo>>>,
+  package_infos: Arc<Mutex<HashMap<String, NpmPackageInfo>>>,
 }
 
-#[cfg(test)]
 impl TestNpmRegistryApi {
   pub fn all_packages(&self) -> Vec<NpmPackageInfo> {
-    self.package_infos.lock().values().cloned().collect()
+    self
+      .package_infos
+      .lock()
+      .unwrap()
+      .values()
+      .cloned()
+      .collect()
   }
 
   pub fn add_package_info(&self, name: &str, info: NpmPackageInfo) {
-    let previous = self.package_infos.lock().insert(name.to_string(), info);
+    let previous = self
+      .package_infos
+      .lock()
+      .unwrap()
+      .insert(name.to_string(), info);
     assert!(previous.is_none());
   }
 
   pub fn ensure_package(&self, name: &str) {
-    if !self.package_infos.lock().contains_key(name) {
+    if !self.package_infos.lock().unwrap().contains_key(name) {
       self.add_package_info(
         name,
         NpmPackageInfo {
@@ -313,7 +326,7 @@ impl TestNpmRegistryApi {
 
   pub fn with_package(&self, name: &str, f: impl FnOnce(&mut NpmPackageInfo)) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.lock();
+    let mut infos = self.package_infos.lock().unwrap();
     let info = infos.get_mut(name).unwrap();
     f(info);
   }
@@ -328,7 +341,7 @@ impl TestNpmRegistryApi {
 
   pub fn ensure_package_version(&self, name: &str, version: &str) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.lock();
+    let mut infos = self.package_infos.lock().unwrap();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
     if !info.versions.contains_key(&version) {
@@ -349,7 +362,7 @@ impl TestNpmRegistryApi {
   ) {
     let (name, version) = package;
     self.ensure_package_version(name, version);
-    let mut infos = self.package_infos.lock();
+    let mut infos = self.package_infos.lock().unwrap();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
     let version_info = info.versions.get_mut(&version).unwrap();
@@ -408,14 +421,13 @@ impl TestNpmRegistryApi {
   }
 }
 
-#[cfg(test)]
 #[async_trait]
 impl NpmRegistryApi for TestNpmRegistryApi {
   async fn package_info(
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
-    let infos = self.package_infos.lock();
+    let infos = self.package_infos.lock().unwrap();
     Ok(Arc::new(infos.get(name).cloned().unwrap()))
   }
 }
