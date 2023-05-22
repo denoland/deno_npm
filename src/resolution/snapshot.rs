@@ -80,7 +80,7 @@ impl NpmPackagesPartitioned {
 
 /// A serialized snapshot that has been verified to be non-corrupt
 /// and valid.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ValidSerializedNpmResolutionSnapshot(
   // keep private -- once verified the caller
   // shouldn't be able to modify it
@@ -288,21 +288,20 @@ impl NpmResolutionSnapshot {
   /// a package.json while the pending are specifiers found in the graph)
   pub async fn resolve_pending(
     self,
-    package_reqs: Vec<NpmPackageReq>,
+    package_reqs: &[NpmPackageReq],
   ) -> Result<Self, NpmResolutionError> {
     // convert the snapshot to a traversable graph
     let (mut graph, api, version_resolver) = Graph::from_snapshot(self);
     let pending_unresolved = graph.take_pending_unresolved();
 
-    let package_reqs = package_reqs
-      .into_iter()
-      .filter(|r| !graph.has_package_req(r));
+    let package_reqs =
+      package_reqs.iter().filter(|r| !graph.has_package_req(r));
     let pending_unresolved = pending_unresolved
       .into_iter()
       .filter(|p| !graph.has_root_package(p));
 
-    enum ReqOrNv {
-      Req(NpmPackageReq),
+    enum ReqOrNv<'a> {
+      Req(&'a NpmPackageReq),
       Nv(Rc<NpmPackageNv>),
     }
 
