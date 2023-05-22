@@ -335,7 +335,7 @@ impl NpmResolutionSnapshot {
     while let Some(result) = top_level_packages.next().await {
       let (req_or_nv, info) = result?;
       match req_or_nv {
-        ReqOrNv::Req(req) => resolver.add_package_req(&req, &info)?,
+        ReqOrNv::Req(req) => resolver.add_package_req(req, &info)?,
         ReqOrNv::Nv(nv) => resolver.add_root_package(&nv, &info)?,
       }
     }
