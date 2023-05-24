@@ -1055,9 +1055,20 @@ impl<'a> GraphDependencyResolver<'a> {
               match maybe_new_id {
                 Some(new_id) => {
                   if let Some(unresolved_optional_peers) =
-                    self.unresolved_optional_peers.remove(&parent_nv)
+                    self.unresolved_optional_peers.get_mut(&parent_nv)
                   {
-                    for optional_peer in unresolved_optional_peers {
+                    // todo(dsherret): use drain_retain once it's not in nightly rust
+                    let mut peers =
+                      VecDeque::with_capacity(unresolved_optional_peers.len());
+                    for i in (0..unresolved_optional_peers.len()).rev() {
+                      if unresolved_optional_peers[i].specifier
+                        == dep.bare_specifier
+                      {
+                        peers.push_front(unresolved_optional_peers.remove(i));
+                      }
+                    }
+
+                    for optional_peer in peers {
                       let peer_parent = GraphPathNodeOrRoot::Node(
                         optional_peer.graph_path.clone(),
                       );
@@ -2099,11 +2110,16 @@ mod test {
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b", "1.0.0");
     api.ensure_package_version("package-peer", "1.0.0");
+    api.ensure_package_version("package-peer-unresolved", "1.0.0");
     api.add_dependency(("package-a", "1.0.0"), ("package-b", "^1"));
     api.add_dependency(("package-a", "1.0.0"), ("package-peer", "^1"));
     api.add_optional_peer_dependency(
       ("package-b", "1.0.0"),
       ("package-peer", "*"),
+    );
+    api.add_optional_peer_dependency(
+      ("package-b", "1.0.0"),
+      ("package-peer-unresolved", "*"),
     );
 
     let (packages, package_reqs) = run_resolver_and_get_output(
