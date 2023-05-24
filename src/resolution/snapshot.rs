@@ -71,10 +71,8 @@ pub struct NpmPackagesPartitioned {
 }
 
 impl NpmPackagesPartitioned {
-  pub fn into_all(self) -> Vec<NpmResolutionPackage> {
-    let mut packages = self.packages;
-    packages.extend(self.copy_packages);
-    packages
+  pub fn iter_all(&self) -> impl Iterator<Item = &NpmResolutionPackage> {
+    self.packages.iter().chain(self.copy_packages.iter())
   }
 }
 
@@ -89,7 +87,7 @@ pub struct ValidSerializedNpmResolutionSnapshot(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshotPackage {
-  pub pkg_id: NpmPackageId,
+  pub id: NpmPackageId,
   pub cpu: Vec<String>,
   pub os: Vec<String>,
   pub dist: NpmPackageVersionDistInfo,
@@ -124,7 +122,7 @@ impl SerializedNpmResolutionSnapshot {
     // then the packages
     let mut package_ids = HashSet::with_capacity(self.packages.len());
     for package in &self.packages {
-      package_ids.insert(&package.pkg_id);
+      package_ids.insert(&package.id);
       verify_ids.extend(package.dependencies.values());
     }
 
@@ -206,15 +204,15 @@ impl NpmResolutionSnapshot {
     // then the packages
     for package in snapshot.packages {
       packages_by_name
-        .entry(package.pkg_id.nv.name.to_string())
+        .entry(package.id.nv.name.to_string())
         .or_default()
-        .push(package.pkg_id.clone());
+        .push(package.id.clone());
 
-      let copy_index = copy_index_resolver.resolve(&package.pkg_id);
+      let copy_index = copy_index_resolver.resolve(&package.id);
       packages.insert(
-        package.pkg_id.clone(),
+        package.id.clone(),
         NpmResolutionPackage {
-          pkg_id: package.pkg_id,
+          id: package.id,
           copy_index,
           cpu: package.cpu,
           os: package.os,
@@ -422,7 +420,7 @@ impl NpmResolutionSnapshot {
       return Ok(self.packages.get(id).unwrap());
     }
 
-    if referrer_package.pkg_id.nv.name == name {
+    if referrer_package.id.nv.name == name {
       return Ok(referrer_package);
     }
 
@@ -504,7 +502,7 @@ impl NpmResolutionSnapshot {
       let copy_index_zero_nvs = packages
         .iter()
         .filter(|p| p.copy_index == 0)
-        .map(|p| p.pkg_id.nv.clone())
+        .map(|p| p.id.nv.clone())
         .collect::<HashSet<_>>();
 
       // partition out any packages that are "copy" packages
@@ -512,7 +510,7 @@ impl NpmResolutionSnapshot {
         if packages[i].copy_index > 0
           // the system might not have resolved the package with a
           // copy_index of 0, so we also need to check that
-          && copy_index_zero_nvs.contains(&packages[i].pkg_id.nv)
+          && copy_index_zero_nvs.contains(&packages[i].id.nv)
         {
           copy_packages.push(packages.swap_remove(i));
         }

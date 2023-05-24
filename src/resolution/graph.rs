@@ -623,7 +623,7 @@ impl Graph {
         (*pkg_id).clone(),
         NpmResolutionPackage {
           copy_index: copy_index_resolver.resolve(pkg_id),
-          pkg_id: (*pkg_id).clone(),
+          id: (*pkg_id).clone(),
           cpu: version_info.cpu.clone(),
           os: version_info.os.clone(),
           dist: version_info.dist.clone(),
@@ -3822,7 +3822,7 @@ mod test {
       .all_packages_for_every_system()
       .cloned()
       .collect::<Vec<_>>();
-    packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
+    packages.sort_by(|a, b| a.id.cmp(&b.id));
     let mut package_reqs = snapshot
       .package_reqs
       .into_iter()
@@ -3838,7 +3838,7 @@ mod test {
     let packages = packages
       .into_iter()
       .map(|pkg| TestNpmResolutionPackage {
-        pkg_id: pkg.pkg_id.as_serialized(),
+        pkg_id: pkg.id.as_serialized(),
         copy_index: pkg.copy_index,
         dependencies: pkg
           .dependencies
@@ -3858,7 +3858,7 @@ mod test {
     let mut packages = snapshot
       .all_system_packages(system_info)
       .into_iter()
-      .map(|p| p.pkg_id.as_serialized())
+      .map(|p| p.id.as_serialized())
       .collect::<Vec<_>>();
     packages.sort();
     packages
@@ -3872,7 +3872,7 @@ mod test {
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
       let mut snapshot = snapshot.as_serialized();
-      snapshot.packages.sort_by(|a, b| a.pkg_id.cmp(&b.pkg_id));
+      snapshot.packages.sort_by(|a, b| a.id.cmp(&b.id));
       snapshot
     }
 

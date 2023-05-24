@@ -206,7 +206,7 @@ impl std::fmt::Display for NpmPackageCacheFolderId {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmResolutionPackage {
-  pub pkg_id: NpmPackageId,
+  pub id: NpmPackageId,
   /// The peer dependency resolution can differ for the same
   /// package (name and version) depending on where it is in
   /// the resolution tree. This copy index indicates which
@@ -225,7 +225,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     // custom debug implementation for deterministic output in the tests
     f.debug_struct("NpmResolutionPackage")
-      .field("pkg_id", &self.pkg_id)
+      .field("pkg_id", &self.id)
       .field("copy_index", &self.copy_index)
       .field("cpu", &self.cpu)
       .field("os", &self.os)
@@ -246,7 +246,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
 impl NpmResolutionPackage {
   pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshotPackage {
     SerializedNpmResolutionSnapshotPackage {
-      pkg_id: self.pkg_id.clone(),
+      id: self.id.clone(),
       cpu: self.cpu.clone(),
       os: self.os.clone(),
       dist: self.dist.clone(),
@@ -257,7 +257,7 @@ impl NpmResolutionPackage {
 
   pub fn get_package_cache_folder_id(&self) -> NpmPackageCacheFolderId {
     NpmPackageCacheFolderId {
-      nv: self.pkg_id.nv.clone(),
+      nv: self.id.nv.clone(),
       copy_index: self.copy_index,
     }
   }
