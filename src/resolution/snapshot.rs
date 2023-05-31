@@ -140,7 +140,7 @@ impl SerializedNpmResolutionSnapshot {
   /// that is done in `into_valid`.
   ///
   /// Note: It will still do the verification in debug.
-  pub fn unsafe_into_valid(self) -> ValidSerializedNpmResolutionSnapshot {
+  pub fn into_valid_unsafe(self) -> ValidSerializedNpmResolutionSnapshot {
     if cfg!(debug) {
       self.into_valid().unwrap()
     } else {
