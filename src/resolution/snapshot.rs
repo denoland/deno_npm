@@ -78,7 +78,7 @@ impl NpmPackagesPartitioned {
 
 /// A serialized snapshot that has been verified to be non-corrupt
 /// and valid.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ValidSerializedNpmResolutionSnapshot(
   // keep private -- once verified the caller
   // shouldn't be able to modify it
