@@ -85,6 +85,16 @@ pub struct ValidSerializedNpmResolutionSnapshot(
   SerializedNpmResolutionSnapshot,
 );
 
+impl ValidSerializedNpmResolutionSnapshot {
+  pub fn as_serialized(&self) -> &SerializedNpmResolutionSnapshot {
+    &self.0
+  }
+
+  pub fn into_serialized(self) -> SerializedNpmResolutionSnapshot {
+    self.0
+  }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
@@ -248,9 +258,9 @@ impl NpmResolutionSnapshot {
     }
   }
 
-  /// Gets the snapshot as a serialized snapshot.
-  pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshot {
-    SerializedNpmResolutionSnapshot {
+  /// Gets the snapshot as a valid serialized snapshot.
+  pub fn as_valid_serialized(&self) -> ValidSerializedNpmResolutionSnapshot {
+    ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
       root_packages: self
         .package_reqs
         .iter()
@@ -264,7 +274,7 @@ impl NpmResolutionSnapshot {
         .values()
         .map(|package| package.as_serialized())
         .collect(),
-    }
+    })
   }
 
   /// Gets if this snapshot is empty.
