@@ -3871,7 +3871,7 @@ mod test {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
-      let mut snapshot = snapshot.as_serialized();
+      let mut snapshot = snapshot.as_valid_serialized().into_serialized();
       snapshot.packages.sort_by(|a, b| a.id.cmp(&b.id));
       snapshot
     }
