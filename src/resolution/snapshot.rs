@@ -135,6 +135,18 @@ impl SerializedNpmResolutionSnapshot {
 
     Ok(ValidSerializedNpmResolutionSnapshot(self))
   }
+
+  /// Trusts that the serialized snapshot is valid and skips runtime verification
+  /// that is done in `into_valid`.
+  ///
+  /// Note: It will still do the verification in debug.
+  pub fn unsafe_into_valid(self) -> ValidSerializedNpmResolutionSnapshot {
+    if cfg!(debug) {
+      self.into_valid().unwrap()
+    } else {
+      ValidSerializedNpmResolutionSnapshot(self)
+    }
+  }
 }
 
 impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
