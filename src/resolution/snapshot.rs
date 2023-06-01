@@ -32,6 +32,7 @@ use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
+use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
 
 #[derive(Debug, Error, Clone)]
@@ -93,13 +94,69 @@ impl ValidSerializedNpmResolutionSnapshot {
   pub fn into_serialized(self) -> SerializedNpmResolutionSnapshot {
     self.0
   }
+
+  /// Filters out any optional dependencies that don't match for the
+  /// given system. The resulting valid serialized snapshot will then not
+  /// have any optional dependencies that don't match the given system.
+  pub fn for_system(&self, system_info: &NpmSystemInfo) -> Self {
+    let mut final_packages = Vec::with_capacity(self.0.packages.len());
+    let mut pending = VecDeque::with_capacity(self.0.packages.len());
+    let mut visited_ids = HashSet::with_capacity(self.0.packages.len());
+    // create a hashmap for faster lookups
+    let packages = self
+      .0
+      .packages
+      .iter()
+      .map(|pkg| (&pkg.id, pkg))
+      .collect::<HashMap<_, _>>();
+
+    // add the root packages
+    for pkg_id in self.0.root_packages.values() {
+      if visited_ids.insert(pkg_id) {
+        pending.push_back(packages.get(pkg_id).unwrap());
+      }
+    }
+
+    while let Some(pkg) = pending.pop_front() {
+      let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
+        id: pkg.id.clone(),
+        dist: pkg.dist.clone(),
+        dependencies: HashMap::with_capacity(pkg.dependencies.len()),
+        // the fields below are stripped from the output
+        system: Default::default(),
+        optional_dependencies: Default::default(),
+      };
+      for (key, dep_id) in &pkg.dependencies {
+        if visited_ids.contains(&dep_id) {
+          continue;
+        }
+        let dep = packages.get(dep_id).unwrap();
+
+        let matches_system = !pkg.optional_dependencies.contains(key)
+          || dep.system.matches_system(system_info);
+        if matches_system {
+          new_pkg.dependencies.insert(key.clone(), dep_id.clone());
+          pending.push_back(dep);
+          visited_ids.insert(dep_id);
+        }
+      }
+      final_packages.push(new_pkg);
+    }
+
+    ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
+      packages: final_packages,
+      // the root packages are always included since they're
+      // what the user imports
+      root_packages: self.0.root_packages.clone(),
+    })
+  }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
-  pub cpu: Vec<String>,
-  pub os: Vec<String>,
+  #[serde(flatten)]
+  pub system: NpmResolutionPackageSystemInfo,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
@@ -236,8 +293,7 @@ impl NpmResolutionSnapshot {
         NpmResolutionPackage {
           id: package.id,
           copy_index,
-          cpu: package.cpu,
-          os: package.os,
+          system: package.system,
           dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
@@ -479,13 +535,11 @@ impl NpmResolutionSnapshot {
     let mut pending = VecDeque::with_capacity(self.packages.len());
     let mut visited_ids = HashSet::with_capacity(self.packages.len());
 
-    pending.extend(
-      self
-        .root_packages
-        .values()
-        .map(|pkg_id| self.packages.get(pkg_id).unwrap()),
-    );
-    visited_ids.extend(self.root_packages.values());
+    for pkg_id in self.root_packages.values() {
+      if visited_ids.insert(pkg_id) {
+        pending.push_back(self.packages.get(pkg_id).unwrap());
+      }
+    }
 
     while let Some(pkg) = pending.pop_front() {
       packages.push(pkg.clone());
@@ -496,12 +550,9 @@ impl NpmResolutionSnapshot {
         }
         let dep = self.packages.get(dep_id).unwrap();
 
-        if pkg.optional_dependencies.contains(key) {
-          if dep.matches_system(system_info) {
-            pending.push_back(dep);
-            visited_ids.insert(dep_id);
-          }
-        } else {
+        let matches_system = !pkg.optional_dependencies.contains(key)
+          || dep.system.matches_system(system_info);
+        if matches_system {
           pending.push_back(dep);
           visited_ids.insert(dep_id);
         }
