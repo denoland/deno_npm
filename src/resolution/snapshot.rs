@@ -94,62 +94,6 @@ impl ValidSerializedNpmResolutionSnapshot {
   pub fn into_serialized(self) -> SerializedNpmResolutionSnapshot {
     self.0
   }
-
-  /// Filters out any optional dependencies that don't match for the
-  /// given system. The resulting valid serialized snapshot will then not
-  /// have any optional dependencies that don't match the given system.
-  pub fn for_system(&self, system_info: &NpmSystemInfo) -> Self {
-    let mut final_packages = Vec::with_capacity(self.0.packages.len());
-    let mut pending = VecDeque::with_capacity(self.0.packages.len());
-    let mut visited_ids = HashSet::with_capacity(self.0.packages.len());
-    // create a hashmap for faster lookups
-    let packages = self
-      .0
-      .packages
-      .iter()
-      .map(|pkg| (&pkg.id, pkg))
-      .collect::<HashMap<_, _>>();
-
-    // add the root packages
-    for pkg_id in self.0.root_packages.values() {
-      if visited_ids.insert(pkg_id) {
-        pending.push_back(packages.get(pkg_id).unwrap());
-      }
-    }
-
-    while let Some(pkg) = pending.pop_front() {
-      let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
-        id: pkg.id.clone(),
-        dist: pkg.dist.clone(),
-        dependencies: HashMap::with_capacity(pkg.dependencies.len()),
-        // the fields below are stripped from the output
-        system: Default::default(),
-        optional_dependencies: Default::default(),
-      };
-      for (key, dep_id) in &pkg.dependencies {
-        if visited_ids.contains(&dep_id) {
-          continue;
-        }
-        let dep = packages.get(dep_id).unwrap();
-
-        let matches_system = !pkg.optional_dependencies.contains(key)
-          || dep.system.matches_system(system_info);
-        if matches_system {
-          new_pkg.dependencies.insert(key.clone(), dep_id.clone());
-          pending.push_back(dep);
-          visited_ids.insert(dep_id);
-        }
-      }
-      final_packages.push(new_pkg);
-    }
-
-    ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
-      packages: final_packages,
-      // the root packages are always included since they're
-      // what the user imports
-      root_packages: self.0.root_packages.clone(),
-    })
-  }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -329,6 +273,65 @@ impl NpmResolutionSnapshot {
         .packages
         .values()
         .map(|package| package.as_serialized())
+        .collect(),
+    })
+  }
+
+  /// Filters out any optional dependencies that don't match for the
+  /// given system. The resulting valid serialized snapshot will then not
+  /// have any optional dependencies that don't match the given system.
+  pub fn as_valid_serialized_for_system(
+    &self,
+    system_info: &NpmSystemInfo,
+  ) -> ValidSerializedNpmResolutionSnapshot {
+    let mut final_packages = Vec::with_capacity(self.packages.len());
+    let mut pending = VecDeque::with_capacity(self.packages.len());
+    let mut visited_ids = HashSet::with_capacity(self.packages.len());
+
+    // add the root packages
+    for pkg_id in self.root_packages.values() {
+      if visited_ids.insert(pkg_id) {
+        pending.push_back(self.packages.get(pkg_id).unwrap());
+      }
+    }
+
+    while let Some(pkg) = pending.pop_front() {
+      let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
+        id: pkg.id.clone(),
+        dist: pkg.dist.clone(),
+        dependencies: HashMap::with_capacity(pkg.dependencies.len()),
+        // the fields below are stripped from the output
+        system: Default::default(),
+        optional_dependencies: Default::default(),
+      };
+      for (key, dep_id) in &pkg.dependencies {
+        if visited_ids.contains(&dep_id) {
+          continue;
+        }
+        let dep = self.packages.get(dep_id).unwrap();
+
+        let matches_system = !pkg.optional_dependencies.contains(key)
+          || dep.system.matches_system(system_info);
+        if matches_system {
+          new_pkg.dependencies.insert(key.clone(), dep_id.clone());
+          pending.push_back(dep);
+          visited_ids.insert(dep_id);
+        }
+      }
+      final_packages.push(new_pkg);
+    }
+
+    ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
+      packages: final_packages,
+      // the root packages are always included since they're
+      // what the user imports
+      root_packages: self
+        .package_reqs
+        .iter()
+        .map(|(req, nv)| {
+          let id = self.root_packages.get(nv).unwrap();
+          (req.clone(), id.clone())
+        })
         .collect(),
     })
   }
