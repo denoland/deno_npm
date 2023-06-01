@@ -28,6 +28,7 @@ use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
+use crate::NpmResolutionPackageSystemInfo;
 
 use super::common::NpmVersionResolver;
 use super::common::LATEST_VERSION_REQ;
@@ -624,8 +625,10 @@ impl Graph {
         NpmResolutionPackage {
           copy_index: copy_index_resolver.resolve(pkg_id),
           id: (*pkg_id).clone(),
-          cpu: version_info.cpu.clone(),
-          os: version_info.os.clone(),
+          system: NpmResolutionPackageSystemInfo {
+            cpu: version_info.cpu.clone(),
+            os: version_info.os.clone(),
+          },
           dist: version_info.dist.clone(),
           dependencies,
           optional_dependencies: version_info
@@ -3861,6 +3864,16 @@ mod test {
       .map(|p| p.id.as_serialized())
       .collect::<Vec<_>>();
     packages.sort();
+    let mut serialized_pkgs = snapshot
+      .as_valid_serialized_for_system(system_info)
+      .into_serialized()
+      .packages
+      .into_iter()
+      .map(|p| p.id.as_serialized())
+      .collect::<Vec<_>>();
+    serialized_pkgs.sort();
+    // ensure the output of both of these are the same
+    assert_eq!(serialized_pkgs, packages);
     packages
   }
 

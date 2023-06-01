@@ -204,6 +204,26 @@ impl std::fmt::Display for NpmPackageCacheFolderId {
   }
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpmResolutionPackageSystemInfo {
+  pub os: Vec<String>,
+  pub cpu: Vec<String>,
+}
+
+impl NpmResolutionPackageSystemInfo {
+  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
+    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
+  }
+
+  pub fn matches_cpu(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.cpu, target)
+  }
+
+  pub fn matches_os(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.os, target)
+  }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmResolutionPackage {
   pub id: NpmPackageId,
@@ -212,8 +232,8 @@ pub struct NpmResolutionPackage {
   /// the resolution tree. This copy index indicates which
   /// copy of the package this is.
   pub copy_index: u8,
-  pub cpu: Vec<String>,
-  pub os: Vec<String>,
+  #[serde(flatten)]
+  pub system: NpmResolutionPackageSystemInfo,
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
@@ -227,8 +247,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
     f.debug_struct("NpmResolutionPackage")
       .field("pkg_id", &self.id)
       .field("copy_index", &self.copy_index)
-      .field("cpu", &self.cpu)
-      .field("os", &self.os)
+      .field("system", &self.system)
       .field("dist", &self.dist)
       .field(
         "dependencies",
@@ -247,8 +266,7 @@ impl NpmResolutionPackage {
   pub fn as_serialized(&self) -> SerializedNpmResolutionSnapshotPackage {
     SerializedNpmResolutionSnapshotPackage {
       id: self.id.clone(),
-      cpu: self.cpu.clone(),
-      os: self.os.clone(),
+      system: self.system.clone(),
       dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
@@ -260,18 +278,6 @@ impl NpmResolutionPackage {
       nv: self.id.nv.clone(),
       copy_index: self.copy_index,
     }
-  }
-
-  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
-    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
-  }
-
-  pub fn matches_cpu(&self, target: &str) -> bool {
-    matches_os_or_cpu_vec(&self.cpu, target)
-  }
-
-  pub fn matches_os(&self, target: &str) -> bool {
-    matches_os_or_cpu_vec(&self.os, target)
   }
 }
 
