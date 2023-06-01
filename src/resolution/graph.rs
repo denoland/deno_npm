@@ -3864,6 +3864,16 @@ mod test {
       .map(|p| p.id.as_serialized())
       .collect::<Vec<_>>();
     packages.sort();
+    let mut serialized_pkgs = snapshot
+      .as_valid_serialized_for_system(system_info)
+      .into_serialized()
+      .packages
+      .into_iter()
+      .map(|p| p.id.as_serialized())
+      .collect::<Vec<_>>();
+    serialized_pkgs.sort();
+    // ensure the output of both of these are the same
+    assert_eq!(serialized_pkgs, packages);
     packages
   }
 

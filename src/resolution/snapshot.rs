@@ -746,6 +746,9 @@ fn name_without_path(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+  use crate::registry::TestNpmRegistryApi;
+  use pretty_assertions::assert_eq;
+
   use super::*;
 
   #[test]
@@ -798,5 +801,117 @@ mod tests {
         .resolve(&NpmPackageId::from_serialized("package-b@1.0.0").unwrap()),
       0
     );
+  }
+
+  #[test]
+  fn test_as_valid_serialized_for_system() {
+    let api = TestNpmRegistryApi::default();
+    let original_serialized = SerializedNpmResolutionSnapshot {
+      root_packages: root_pkgs(&[("a@1", "a@1.0.0")]),
+      packages: vec![
+        SerializedNpmResolutionSnapshotPackage {
+          id: NpmPackageId::from_serialized("a@1.0.0").unwrap(),
+          dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
+          system: Default::default(),
+          dist: Default::default(),
+          optional_dependencies: HashSet::from(["c".to_string()]),
+        },
+        SerializedNpmResolutionSnapshotPackage {
+          id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
+          dependencies: Default::default(),
+          system: Default::default(),
+          dist: Default::default(),
+          optional_dependencies: Default::default(),
+        },
+        SerializedNpmResolutionSnapshotPackage {
+          id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
+          dependencies: deps(&[("d", "d@1.0.0")]),
+          system: NpmResolutionPackageSystemInfo {
+            os: vec!["win32".to_string()],
+            cpu: vec!["x64".to_string()],
+          },
+          dist: Default::default(),
+          optional_dependencies: Default::default(),
+        },
+        SerializedNpmResolutionSnapshotPackage {
+          id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
+          dependencies: Default::default(),
+          system: Default::default(),
+          dist: Default::default(),
+          optional_dependencies: Default::default(),
+        },
+      ],
+    }
+    .into_valid()
+    .unwrap();
+    let snapshot =
+      NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
+        api: Arc::new(api),
+        snapshot: original_serialized.clone(),
+        types_node_version_req: None,
+      });
+    // test providing a matching system
+    {
+      let mut actual = snapshot
+        .as_valid_serialized_for_system(&NpmSystemInfo {
+          os: "win32".to_string(),
+          cpu: "x64".to_string(),
+        })
+        .into_serialized();
+      actual.packages.sort_by(|a, b| a.id.cmp(&b.id));
+      let mut expected = original_serialized.clone().into_serialized();
+      for pkg in expected.packages.iter_mut() {
+        pkg.system = Default::default();
+        pkg.optional_dependencies.clear();
+      }
+      expected.packages.sort_by(|a, b| a.id.cmp(&b.id));
+      assert_eq!(actual, expected);
+    }
+    // test providing a non-matching system
+    {
+      let mut actual = snapshot
+        .as_valid_serialized_for_system(&NpmSystemInfo {
+          os: "darwin".to_string(),
+          cpu: "x64".to_string(),
+        })
+        .into_serialized();
+      actual.packages.sort_by(|a, b| a.id.cmp(&b.id));
+      let mut expected = original_serialized.into_serialized();
+      for pkg in expected.packages.iter_mut() {
+        pkg.system = Default::default();
+        pkg.optional_dependencies.clear();
+      }
+      expected.packages.sort_by(|a, b| a.id.cmp(&b.id));
+      // these are sorted, so remove the c and d packages
+      expected.packages.remove(3);
+      expected.packages.remove(2);
+      // remove c as a dependency from a
+      assert!(expected.packages[0].dependencies.remove("c").is_some());
+      assert_eq!(actual, expected);
+    }
+  }
+
+  fn deps(deps: &[(&str, &str)]) -> HashMap<String, NpmPackageId> {
+    deps
+      .iter()
+      .map(|(key, value)| {
+        (
+          key.to_string(),
+          NpmPackageId::from_serialized(value).unwrap(),
+        )
+      })
+      .collect()
+  }
+
+  fn root_pkgs(pkgs: &[(&str, &str)]) -> HashMap<NpmPackageReq, NpmPackageId> {
+    pkgs
+      .iter()
+      .map(|(key, value)| {
+        (
+          NpmPackageReq::from_str(key).unwrap(),
+          NpmPackageId::from_serialized(value).unwrap(),
+        )
+      })
+      .collect()
   }
 }

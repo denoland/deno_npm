@@ -206,8 +206,8 @@ impl std::fmt::Display for NpmPackageCacheFolderId {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmResolutionPackageSystemInfo {
-  pub cpu: Vec<String>,
   pub os: Vec<String>,
+  pub cpu: Vec<String>,
 }
 
 impl NpmResolutionPackageSystemInfo {
