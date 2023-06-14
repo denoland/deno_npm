@@ -305,17 +305,15 @@ impl NpmResolutionSnapshot {
         optional_dependencies: Default::default(),
       };
       for (key, dep_id) in &pkg.dependencies {
-        if visited_ids.contains(&dep_id) {
-          continue;
-        }
         let dep = self.packages.get(dep_id).unwrap();
 
         let matches_system = !pkg.optional_dependencies.contains(key)
           || dep.system.matches_system(system_info);
         if matches_system {
           new_pkg.dependencies.insert(key.clone(), dep_id.clone());
-          pending.push_back(dep);
-          visited_ids.insert(dep_id);
+          if visited_ids.insert(dep_id) {
+            pending.push_back(dep);
+          }
         }
       }
       final_packages.push(new_pkg);
@@ -825,7 +823,7 @@ mod tests {
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
-          dependencies: deps(&[("d", "d@1.0.0")]),
+          dependencies: deps(&[("b", "b@1.0.0"), ("d", "d@1.0.0")]),
           system: NpmResolutionPackageSystemInfo {
             os: vec!["win32".to_string()],
             cpu: vec!["x64".to_string()],
