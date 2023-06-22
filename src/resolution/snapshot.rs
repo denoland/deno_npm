@@ -740,7 +740,6 @@ fn name_without_path(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-  use crate::registry::TestNpmRegistryApi;
   use pretty_assertions::assert_eq;
 
   use super::*;
