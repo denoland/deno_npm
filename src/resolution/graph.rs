@@ -3910,8 +3910,7 @@ mod test {
     let snapshot = graph.into_snapshot(&api, version_resolver).await.unwrap();
 
     {
-      let (graph, version_resolver) =
-        Graph::from_snapshot(snapshot.clone());
+      let (graph, version_resolver) = Graph::from_snapshot(snapshot.clone());
       let new_snapshot =
         graph.into_snapshot(&api, version_resolver).await.unwrap();
       assert_eq!(
