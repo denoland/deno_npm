@@ -172,16 +172,8 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
   }
 }
 
-pub struct NpmResolutionSnapshotCreateOptions {
-  pub snapshot: ValidSerializedNpmResolutionSnapshot,
-  /// Known good version requirement to use for the `@types/node` package
-  /// when the version is unspecified or "latest".
-  pub types_node_version_req: Option<VersionReq>,
-}
-
 #[derive(Clone)]
 pub struct NpmResolutionSnapshot {
-  pub(super) version_resolver: NpmVersionResolver,
   /// The unique package requirements map to a single npm package name and version.
   pub(super) package_reqs: HashMap<NpmPackageReq, NpmPackageNv>,
   // Each root level npm package name and version maps to an exact npm package node id.
@@ -194,8 +186,8 @@ pub struct NpmResolutionSnapshot {
 }
 
 impl NpmResolutionSnapshot {
-  pub fn new(options: NpmResolutionSnapshotCreateOptions) -> Self {
-    let snapshot = options.snapshot.0;
+  pub fn new(snapshot: ValidSerializedNpmResolutionSnapshot) -> Self {
+    let snapshot = snapshot.0;
     let mut package_reqs =
       HashMap::<NpmPackageReq, NpmPackageNv>::with_capacity(
         snapshot.root_packages.len(),
@@ -243,9 +235,6 @@ impl NpmResolutionSnapshot {
     }
 
     Self {
-      version_resolver: NpmVersionResolver {
-        types_node_version_req: options.types_node_version_req,
-      },
       package_reqs,
       root_packages,
       packages_by_name,
@@ -346,79 +335,12 @@ impl NpmResolutionSnapshot {
     // this is `into_empty()` instead of something like `clear()` in order
     // to reduce the chance of a mistake forgetting to clear a collection
     Self {
-      version_resolver: self.version_resolver,
       package_reqs: Default::default(),
       root_packages: Default::default(),
       packages_by_name: Default::default(),
       packages: Default::default(),
       pending_unresolved_packages: Default::default(),
     }
-  }
-
-  /// Resolves any pending packages in the snapshot along with the provided
-  /// package requirements (in the CLI, these are package requirements from
-  /// a package.json while the pending are specifiers found in the graph)
-  pub async fn resolve_pending(
-    self,
-    api: &dyn NpmRegistryApi,
-    package_reqs: &[NpmPackageReq],
-  ) -> Result<Self, NpmResolutionError> {
-    // convert the snapshot to a traversable graph
-    let (mut graph, version_resolver) = Graph::from_snapshot(self);
-    let pending_unresolved = graph.take_pending_unresolved();
-
-    let package_reqs =
-      package_reqs.iter().filter(|r| !graph.has_package_req(r));
-    let pending_unresolved = pending_unresolved
-      .into_iter()
-      .filter(|p| !graph.has_root_package(p));
-
-    enum ReqOrNv<'a> {
-      Req(&'a NpmPackageReq),
-      Nv(Rc<NpmPackageNv>),
-    }
-
-    let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
-      let api = &api;
-      package_reqs
-        .map(|req| {
-          Either::Left(async {
-            let info = api.package_info(&req.name).await?;
-            Result::<_, NpmRegistryPackageInfoLoadError>::Ok((
-              ReqOrNv::Req(req),
-              info,
-            ))
-          })
-        })
-        .chain(pending_unresolved.map(|nv| {
-          Either::Right(async {
-            let info = api.package_info(&nv.name).await?;
-            Ok((ReqOrNv::Nv(nv), info))
-          })
-        }))
-    });
-
-    // go over the top level package names first (npm package reqs and pending unresolved),
-    // then down the tree one level at a time through all the branches
-    let mut resolver =
-      GraphDependencyResolver::new(&mut graph, api, &version_resolver);
-
-    // The package reqs and ids should already be sorted
-    // in the order they should be resolved in.
-    while let Some(result) = top_level_packages.next().await {
-      let (req_or_nv, info) = result?;
-      match req_or_nv {
-        ReqOrNv::Req(req) => resolver.add_package_req(req, &info)?,
-        ReqOrNv::Nv(nv) => resolver.add_root_package(&nv, &info)?,
-      }
-    }
-    drop(top_level_packages); // stop borrow of api
-
-    resolver.resolve_pending().await?;
-
-    let snapshot = graph.into_snapshot(api, version_resolver).await?;
-    debug_assert!(!snapshot.has_pending());
-    Ok(snapshot)
   }
 
   /// Resolve a package from a package requirement.
@@ -620,41 +542,6 @@ impl NpmResolutionSnapshot {
     maybe_best_id.cloned()
   }
 
-  pub fn resolve_package_req_as_pending(
-    &mut self,
-    pkg_req: &NpmPackageReq,
-    package_info: &NpmPackageInfo,
-  ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
-    let version_req =
-      pkg_req.version_req.as_ref().unwrap_or(&*LATEST_VERSION_REQ);
-    let version_info = match self.packages_by_name.get(&package_info.name) {
-      Some(existing_versions) => {
-        self.version_resolver.resolve_best_package_version_info(
-          version_req,
-          package_info,
-          existing_versions.iter().map(|p| &p.nv.version),
-        )?
-      }
-      None => self.version_resolver.resolve_best_package_version_info(
-        version_req,
-        package_info,
-        Vec::new().iter(),
-      )?,
-    };
-    let nv = NpmPackageNv {
-      name: package_info.name.to_string(),
-      version: version_info.version.clone(),
-    };
-    debug!(
-      "Resolved {}@{} to {}",
-      pkg_req.name,
-      version_req.version_text(),
-      nv,
-    );
-    self.add_pending_pkg(pkg_req.clone(), nv.clone());
-    Ok(nv)
-  }
-
   fn add_pending_pkg(&mut self, pkg_req: NpmPackageReq, nv: NpmPackageNv) {
     self.package_reqs.insert(pkg_req, nv.clone());
     let packages_with_name =
@@ -720,6 +607,145 @@ impl SnapshotPackageCopyIndexResolver {
       self.packages_to_copy_index.insert(node_id.clone(), index);
       index
     }
+  }
+}
+
+pub struct NpmResolutionSnapshotPendingResolverOptions<
+  'a,
+  TNpmRegistryApi: NpmRegistryApi,
+> {
+  pub api: &'a TNpmRegistryApi,
+  /// Known good version requirement to use for the `@types/node` package
+  /// when the version is unspecified or "latest".
+  pub types_node_version_req: Option<VersionReq>,
+}
+
+/// Resolves pending packages in the npm snapshot.
+pub struct NpmResolutionSnapshotPendingResolver<
+  'a,
+  TNpmRegistryApi: NpmRegistryApi,
+> {
+  version_resolver: NpmVersionResolver,
+  api: &'a TNpmRegistryApi,
+}
+
+impl<'a, TNpmRegistryApi: NpmRegistryApi>
+  NpmResolutionSnapshotPendingResolver<'a, TNpmRegistryApi>
+{
+  pub fn new(
+    options: NpmResolutionSnapshotPendingResolverOptions<'a, TNpmRegistryApi>,
+  ) -> Self {
+    Self {
+      api: options.api,
+      version_resolver: NpmVersionResolver {
+        types_node_version_req: options.types_node_version_req,
+      },
+    }
+  }
+
+  pub fn resolve_package_req_as_pending(
+    &self,
+    snapshot: &mut NpmResolutionSnapshot,
+    pkg_req: &NpmPackageReq,
+    package_info: &NpmPackageInfo,
+  ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
+    let version_req =
+      pkg_req.version_req.as_ref().unwrap_or(&*LATEST_VERSION_REQ);
+    let version_info = match snapshot.packages_by_name.get(&package_info.name) {
+      Some(existing_versions) => {
+        self.version_resolver.resolve_best_package_version_info(
+          version_req,
+          package_info,
+          existing_versions.iter().map(|p| &p.nv.version),
+        )?
+      }
+      None => self.version_resolver.resolve_best_package_version_info(
+        version_req,
+        package_info,
+        Vec::new().iter(),
+      )?,
+    };
+    let nv = NpmPackageNv {
+      name: package_info.name.to_string(),
+      version: version_info.version.clone(),
+    };
+    debug!(
+      "Resolved {}@{} to {}",
+      pkg_req.name,
+      version_req.version_text(),
+      nv,
+    );
+    snapshot.add_pending_pkg(pkg_req.clone(), nv.clone());
+    Ok(nv)
+  }
+
+  /// Resolves any pending packages in the snapshot along with the provided
+  /// package requirements (in the CLI, these are package requirements from
+  /// a package.json while the pending are specifiers found in the graph)
+  pub async fn resolve_pending(
+    &self,
+    snapshot: NpmResolutionSnapshot,
+    package_reqs: &[NpmPackageReq],
+  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
+    // convert the snapshot to a traversable graph
+    let mut graph = Graph::from_snapshot(snapshot);
+    let pending_unresolved = graph.take_pending_unresolved();
+
+    let package_reqs =
+      package_reqs.iter().filter(|r| !graph.has_package_req(r));
+    let pending_unresolved = pending_unresolved
+      .into_iter()
+      .filter(|p| !graph.has_root_package(p));
+
+    enum ReqOrNv<'a> {
+      Req(&'a NpmPackageReq),
+      Nv(Rc<NpmPackageNv>),
+    }
+
+    let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
+      let api = &self.api;
+      package_reqs
+        .map(|req| {
+          Either::Left(async {
+            let info = api.package_info(&req.name).await?;
+            Result::<_, NpmRegistryPackageInfoLoadError>::Ok((
+              ReqOrNv::Req(req),
+              info,
+            ))
+          })
+        })
+        .chain(pending_unresolved.map(|nv| {
+          Either::Right(async {
+            let info = api.package_info(&nv.name).await?;
+            Ok((ReqOrNv::Nv(nv), info))
+          })
+        }))
+    });
+
+    // go over the top level package names first (npm package reqs and pending unresolved),
+    // then down the tree one level at a time through all the branches
+    let mut resolver = GraphDependencyResolver::new(
+      &mut graph,
+      self.api,
+      &self.version_resolver,
+    );
+
+    // The package reqs and ids should already be sorted
+    // in the order they should be resolved in.
+    while let Some(result) = top_level_packages.next().await {
+      let (req_or_nv, info) = result?;
+      match req_or_nv {
+        ReqOrNv::Req(req) => resolver.add_package_req(req, &info)?,
+        ReqOrNv::Nv(nv) => resolver.add_root_package(&nv, &info)?,
+      }
+    }
+    drop(top_level_packages); // stop borrow of api
+
+    resolver.resolve_pending().await?;
+
+    let snapshot = graph.into_snapshot(self.api).await?;
+    debug_assert!(!snapshot.has_pending());
+    Ok(snapshot)
   }
 }
 
@@ -836,11 +862,7 @@ mod tests {
     }
     .into_valid()
     .unwrap();
-    let snapshot =
-      NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
-        snapshot: original_serialized.clone(),
-        types_node_version_req: None,
-      });
+    let snapshot = NpmResolutionSnapshot::new(original_serialized.clone());
     // test providing a matching system
     {
       let mut actual = snapshot

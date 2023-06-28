@@ -333,9 +333,7 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(
-    snapshot: NpmResolutionSnapshot,
-  ) -> (Self, NpmVersionResolver) {
+  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
     fn get_or_create_graph_node(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -419,7 +417,7 @@ impl Graph {
       );
       graph.root_packages.insert(Rc::new(id), node_id);
     }
-    (graph, snapshot.version_resolver)
+    graph
   }
 
   pub fn take_pending_unresolved(&mut self) -> Vec<Rc<NpmPackageNv>> {
@@ -559,10 +557,9 @@ impl Graph {
     parent.children.insert(specifier.to_string(), child_id);
   }
 
-  pub async fn into_snapshot(
+  pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
     self,
-    api: &dyn NpmRegistryApi,
-    version_resolver: NpmVersionResolver,
+    api: &TNpmRegistryApi,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     let packages_to_pkg_ids = self
       .nodes
@@ -640,7 +637,6 @@ impl Graph {
     }
 
     Ok(NpmResolutionSnapshot {
-      version_resolver,
       root_packages: self
         .root_packages
         .into_iter()
@@ -765,9 +761,9 @@ struct UnresolvedOptionalPeer {
   graph_path: Rc<GraphPath>,
 }
 
-pub struct GraphDependencyResolver<'a> {
+pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   graph: &'a mut Graph,
-  api: &'a dyn NpmRegistryApi,
+  api: &'a TNpmRegistryApi,
   version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   unresolved_optional_peers:
@@ -775,10 +771,12 @@ pub struct GraphDependencyResolver<'a> {
   dep_entry_cache: DepEntryCache,
 }
 
-impl<'a> GraphDependencyResolver<'a> {
+impl<'a, TNpmRegistryApi: NpmRegistryApi>
+  GraphDependencyResolver<'a, TNpmRegistryApi>
+{
   pub fn new(
     graph: &'a mut Graph,
-    api: &'a dyn NpmRegistryApi,
+    api: &'a TNpmRegistryApi,
     version_resolver: &'a NpmVersionResolver,
   ) -> Self {
     Self {
@@ -1457,7 +1455,6 @@ mod test {
   use pretty_assertions::assert_eq;
 
   use crate::registry::TestNpmRegistryApi;
-  use crate::resolution::NpmResolutionSnapshotCreateOptions;
   use crate::resolution::SerializedNpmResolutionSnapshot;
   use crate::NpmSystemInfo;
 
@@ -3887,12 +3884,8 @@ mod test {
       snapshot
     }
 
-    let snapshot =
-      NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
-        snapshot: Default::default(),
-        types_node_version_req: None,
-      });
-    let (mut graph, version_resolver) = Graph::from_snapshot(snapshot);
+    let snapshot = NpmResolutionSnapshot::new(Default::default());
+    let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
@@ -3907,22 +3900,19 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(&api, version_resolver).await.unwrap();
+    let snapshot = graph.into_snapshot(&api).await.unwrap();
 
     {
-      let (graph, version_resolver) = Graph::from_snapshot(snapshot.clone());
-      let new_snapshot =
-        graph.into_snapshot(&api, version_resolver).await.unwrap();
+      let graph = Graph::from_snapshot(snapshot.clone());
+      let new_snapshot = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let (graph, version_resolver) =
-        Graph::from_snapshot(new_snapshot.clone());
-      let new_snapshot2 =
-        graph.into_snapshot(&api, version_resolver).await.unwrap();
+      let graph = Graph::from_snapshot(new_snapshot.clone());
+      let new_snapshot2 = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
