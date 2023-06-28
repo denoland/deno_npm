@@ -177,7 +177,7 @@ impl PartialOrd for NpmPackageId {
 
 /// Represents an npm package as it might be found in a cache folder
 /// where duplicate copies of the same package may exist.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NpmPackageCacheFolderId {
   pub nv: NpmPackageNv,
   /// Peer dependency resolution may require us to have duplicate copies
