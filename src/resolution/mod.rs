@@ -8,6 +8,7 @@ pub use graph::NpmResolutionError;
 pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;
 pub use snapshot::NpmResolutionSnapshotPendingResolver;
+pub use snapshot::NpmResolutionSnapshotPendingResolverOptions;
 pub use snapshot::PackageIdNotFoundError;
 pub use snapshot::PackageNotFoundFromReferrerError;
 pub use snapshot::PackageNvNotFoundError;

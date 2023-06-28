@@ -333,7 +333,7 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(snapshot: &NpmResolutionSnapshot) -> Self {
+  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
     fn get_or_create_graph_node(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -393,13 +393,13 @@ impl Graph {
         .collect(),
       package_reqs: snapshot
         .package_reqs
-        .iter()
-        .map(|(k, v)| (k.clone(), Rc::new(v.clone())))
+        .into_iter()
+        .map(|(k, v)| (k, Rc::new(v)))
         .collect(),
       pending_unresolved_packages: snapshot
         .pending_unresolved_packages
-        .iter()
-        .map(|nv| Rc::new(nv.clone()))
+        .into_iter()
+        .map(Rc::new)
         .collect(),
       nodes: Default::default(),
       package_name_versions: Default::default(),
@@ -408,14 +408,14 @@ impl Graph {
     };
     let mut created_package_ids =
       HashMap::with_capacity(snapshot.packages.len());
-    for (id, resolved_id) in &snapshot.root_packages {
+    for (id, resolved_id) in snapshot.root_packages {
       let node_id = get_or_create_graph_node(
         &mut graph,
-        resolved_id,
+        &resolved_id,
         &snapshot.packages,
         &mut created_package_ids,
       );
-      graph.root_packages.insert(Rc::new(id.clone()), node_id);
+      graph.root_packages.insert(Rc::new(id), node_id);
     }
     graph
   }
@@ -3885,7 +3885,7 @@ mod test {
     }
 
     let snapshot = NpmResolutionSnapshot::new(Default::default());
-    let mut graph = Graph::from_snapshot(&snapshot);
+    let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
@@ -3903,7 +3903,7 @@ mod test {
     let snapshot = graph.into_snapshot(&api).await.unwrap();
 
     {
-      let graph = Graph::from_snapshot(&snapshot);
+      let graph = Graph::from_snapshot(snapshot.clone());
       let new_snapshot = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
@@ -3911,7 +3911,7 @@ mod test {
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let graph = Graph::from_snapshot(&new_snapshot);
+      let graph = Graph::from_snapshot(new_snapshot.clone());
       let new_snapshot2 = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),

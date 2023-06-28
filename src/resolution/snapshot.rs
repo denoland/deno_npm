@@ -684,7 +684,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   /// a package.json while the pending are specifiers found in the graph)
   pub async fn resolve_pending(
     &self,
-    snapshot: &NpmResolutionSnapshot,
+    snapshot: NpmResolutionSnapshot,
     package_reqs: &[NpmPackageReq],
   ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     // convert the snapshot to a traversable graph
