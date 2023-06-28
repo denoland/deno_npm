@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
@@ -336,7 +335,7 @@ pub struct Graph {
 impl Graph {
   pub fn from_snapshot(
     snapshot: NpmResolutionSnapshot,
-  ) -> (Self, Arc<dyn NpmRegistryApi>, NpmVersionResolver) {
+  ) -> (Self, NpmVersionResolver) {
     fn get_or_create_graph_node(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -420,7 +419,7 @@ impl Graph {
       );
       graph.root_packages.insert(Rc::new(id), node_id);
     }
-    (graph, snapshot.api, snapshot.version_resolver)
+    (graph, snapshot.version_resolver)
   }
 
   pub fn take_pending_unresolved(&mut self) -> Vec<Rc<NpmPackageNv>> {
@@ -562,7 +561,7 @@ impl Graph {
 
   pub async fn into_snapshot(
     self,
-    api: Arc<dyn NpmRegistryApi>,
+    api: &dyn NpmRegistryApi,
     version_resolver: NpmVersionResolver,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     let packages_to_pkg_ids = self
@@ -641,7 +640,6 @@ impl Graph {
     }
 
     Ok(NpmResolutionSnapshot {
-      api,
       version_resolver,
       root_packages: self
         .root_packages
@@ -3891,16 +3889,15 @@ mod test {
 
     let snapshot =
       NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
-        api: Arc::new(api),
         snapshot: Default::default(),
         types_node_version_req: None,
       });
-    let (mut graph, api, version_resolver) = Graph::from_snapshot(snapshot);
+    let (mut graph, version_resolver) = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
     let mut resolver =
-      GraphDependencyResolver::new(&mut graph, &*api, &npm_version_resolver);
+      GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
 
     for req in reqs {
       let req = NpmPackageReqReference::from_str(req).unwrap().req;
@@ -3910,23 +3907,22 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(api, version_resolver).await.unwrap();
+    let snapshot = graph.into_snapshot(&api, version_resolver).await.unwrap();
 
     {
-      let (graph, api, version_resolver) =
-        Graph::from_snapshot(snapshot.clone());
+      let (graph, version_resolver) = Graph::from_snapshot(snapshot.clone());
       let new_snapshot =
-        graph.into_snapshot(api, version_resolver).await.unwrap();
+        graph.into_snapshot(&api, version_resolver).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let (graph, api, version_resolver) =
+      let (graph, version_resolver) =
         Graph::from_snapshot(new_snapshot.clone());
       let new_snapshot2 =
-        graph.into_snapshot(api, version_resolver).await.unwrap();
+        graph.into_snapshot(&api, version_resolver).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),

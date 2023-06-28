@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
@@ -174,7 +173,6 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
 }
 
 pub struct NpmResolutionSnapshotCreateOptions {
-  pub api: Arc<dyn NpmRegistryApi>,
   pub snapshot: ValidSerializedNpmResolutionSnapshot,
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
@@ -183,7 +181,6 @@ pub struct NpmResolutionSnapshotCreateOptions {
 
 #[derive(Clone)]
 pub struct NpmResolutionSnapshot {
-  pub(super) api: Arc<dyn NpmRegistryApi>,
   pub(super) version_resolver: NpmVersionResolver,
   /// The unique package requirements map to a single npm package name and version.
   pub(super) package_reqs: HashMap<NpmPackageReq, NpmPackageNv>,
@@ -246,7 +243,6 @@ impl NpmResolutionSnapshot {
     }
 
     Self {
-      api: options.api,
       version_resolver: NpmVersionResolver {
         types_node_version_req: options.types_node_version_req,
       },
@@ -350,7 +346,6 @@ impl NpmResolutionSnapshot {
     // this is `into_empty()` instead of something like `clear()` in order
     // to reduce the chance of a mistake forgetting to clear a collection
     Self {
-      api: self.api,
       version_resolver: self.version_resolver,
       package_reqs: Default::default(),
       root_packages: Default::default(),
@@ -365,10 +360,11 @@ impl NpmResolutionSnapshot {
   /// a package.json while the pending are specifiers found in the graph)
   pub async fn resolve_pending(
     self,
+    api: &dyn NpmRegistryApi,
     package_reqs: &[NpmPackageReq],
   ) -> Result<Self, NpmResolutionError> {
     // convert the snapshot to a traversable graph
-    let (mut graph, api, version_resolver) = Graph::from_snapshot(self);
+    let (mut graph, version_resolver) = Graph::from_snapshot(self);
     let pending_unresolved = graph.take_pending_unresolved();
 
     let package_reqs =
@@ -405,7 +401,7 @@ impl NpmResolutionSnapshot {
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
     let mut resolver =
-      GraphDependencyResolver::new(&mut graph, &*api, &version_resolver);
+      GraphDependencyResolver::new(&mut graph, api, &version_resolver);
 
     // The package reqs and ids should already be sorted
     // in the order they should be resolved in.
@@ -744,7 +740,6 @@ fn name_without_path(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-  use crate::registry::TestNpmRegistryApi;
   use pretty_assertions::assert_eq;
 
   use super::*;
@@ -803,7 +798,6 @@ mod tests {
 
   #[test]
   fn test_as_valid_serialized_for_system() {
-    let api = TestNpmRegistryApi::default();
     let original_serialized = SerializedNpmResolutionSnapshot {
       root_packages: root_pkgs(&[("a@1", "a@1.0.0")]),
       packages: vec![
@@ -844,7 +838,6 @@ mod tests {
     .unwrap();
     let snapshot =
       NpmResolutionSnapshot::new(NpmResolutionSnapshotCreateOptions {
-        api: Arc::new(api),
         snapshot: original_serialized.clone(),
         types_node_version_req: None,
       });
