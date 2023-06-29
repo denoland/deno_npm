@@ -172,7 +172,7 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
   }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NpmResolutionSnapshot {
   /// The unique package requirements map to a single npm package name and version.
   pub(super) package_reqs: HashMap<NpmPackageReq, NpmPackageNv>,
