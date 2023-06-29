@@ -1,3 +1,5 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+
 enum OneDirectionalLinkedListItem<'a, T> {
   Root,
   Item(&'a T),
