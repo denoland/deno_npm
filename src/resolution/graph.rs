@@ -1169,6 +1169,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         ancestor_path,
         peer_dep,
         peer_package_info,
+        // exclude the current resolving specifier so that we don't find the
+        // peer dependency in the current slot, which might be out of date
         Some(specifier),
       )?;
 
