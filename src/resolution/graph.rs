@@ -3758,54 +3758,71 @@ mod test {
     api.add_peer_dependency(("package-b", "1.0.0"), ("package-c", "1"));
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "1"));
 
-    let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-c@1.0.0__package-b@1.0.0___package-c@1.0.0_package-b@1.0.0__package-c@1.0.0___package-b@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            (
-              "package-b".to_string(),
-              "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
-            ),
-            (
-              "package-c".to_string(),
-              "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
-            )
-          ])
-        },
-        TestNpmResolutionPackage {
-          // This is stored like so:
-          //   b (id: 0) -> c (id: 1) -> b (id: 0)
-          // So it's circular. Storing a circular dependency serialized here is a
-          // little difficult, so when this is encountered we assume it's circular.
-          // I have a feeling this is not exactly correct, but perhaps it is good enough
-          // and edge cases won't be seen in the wild...
-          pkg_id: "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-c".to_string(),
-            "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
-          )]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
+    let expected_packages = vec![
+      TestNpmResolutionPackage {
+        pkg_id: "package-a@1.0.0_package-c@1.0.0__package-b@1.0.0___package-c@1.0.0_package-b@1.0.0__package-c@1.0.0___package-b@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([
+          (
             "package-b".to_string(),
             "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
-          )]),
-        },
-      ]
-    );
+          ),
+          (
+            "package-c".to_string(),
+            "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
+          )
+        ])
+      },
+      TestNpmResolutionPackage {
+        // This is stored like so:
+        //   b (id: 0) -> c (id: 1) -> b (id: 0)
+        // So it's circular. Storing a circular dependency serialized here is a
+        // little difficult, so when this is encountered we assume it's circular.
+        // I have a feeling this is not exactly correct, but perhaps it is good enough
+        // and edge cases won't be seen in the wild...
+        pkg_id: "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-c".to_string(),
+          "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-c@1.0.0_package-b@1.0.0__package-c@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-b".to_string(),
+          "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
+        )]),
+      },
+    ];
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api.clone(), vec!["npm:package-a@1.0.0"])
+        .await;
+    assert_eq!(packages, expected_packages.clone());
     assert_eq!(
       package_reqs,
       vec![(
         "package-a@1.0.0".to_string(),
         "package-a@1.0.0_package-c@1.0.0__package-b@1.0.0___package-c@1.0.0_package-b@1.0.0__package-c@1.0.0___package-b@1.0.0".to_string()
+      )]
+    );
+
+    // now try with b at the top level
+    let (packages, package_reqs) = run_resolver_and_get_output(
+      api,
+      vec!["npm:package-a@1.0.0", "npm:package-b@1.0.0"],
+    )
+    .await;
+    assert_eq!(packages, expected_packages.clone());
+    assert_eq!(
+      package_reqs,
+      vec![(
+        "package-a@1.0.0".to_string(),
+        "package-a@1.0.0_package-c@1.0.0__package-b@1.0.0___package-c@1.0.0_package-b@1.0.0__package-c@1.0.0___package-b@1.0.0".to_string()
+      ), (
+        "package-b@1.0.0".to_string(),
+        "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string()
       )]
     );
   }
@@ -3929,7 +3946,7 @@ mod test {
     );
   }
 
-  #[derive(Debug, PartialEq, Eq)]
+  #[derive(Debug, Clone, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
     pub copy_index: u8,
