@@ -26,6 +26,7 @@ use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
+use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 use crate::NpmResolutionPackageSystemInfo;
 
@@ -334,11 +335,12 @@ pub struct Graph {
 
 impl Graph {
   pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
-    fn get_or_create_graph_node(
+    fn get_or_create_graph_node<'a>(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
       packages: &HashMap<NpmPackageId, NpmResolutionPackage>,
       created_package_ids: &mut HashMap<NpmPackageId, NodeId>,
+      ancestor_ids: &'a OneDirectionalLinkedList<'a, NpmPackageId>,
     ) -> NodeId {
       if let Some(id) = created_package_ids.get(pkg_id) {
         return *id;
@@ -346,6 +348,7 @@ impl Graph {
 
       let node_id = graph.create_node(&pkg_id.nv);
       created_package_ids.insert(pkg_id.clone(), node_id);
+      let ancestor_ids_with_current = ancestor_ids.push(pkg_id);
 
       let peer_dep_ids = pkg_id
         .peer_dependencies
@@ -356,6 +359,7 @@ impl Graph {
             peer_dep,
             packages,
             created_package_ids,
+            &ancestor_ids_with_current,
           ))
         })
         .collect::<Vec<_>>();
@@ -367,16 +371,33 @@ impl Graph {
       let resolution = match packages.get(pkg_id) {
         Some(package) => package,
         None => {
-          // todo: needs to be more robust as this is random
-          packages
-            .values()
-            .find(|package| package.id.nv == pkg_id.nv)
+          // when this occurs, it means that the pkg_id is circular. For example:
+          //   package-b@1.0.0_package-c@1.0.0__package-b@1.0.0
+          //                                    ^ attempting to resolve this
+          // In this case, we go up the ancestors to see if we can find a matching nv.
+          let id = ancestor_ids
+            .iter()
+            .find(|id| id.nv == pkg_id.nv && packages.contains_key(id))
             .unwrap_or_else(|| {
-              // we verify in other places that references in a snapshot
-              // should be valid (ex. when creating a snapshot), so we should
-              // never get here and if so that indicates a bug elsewhere
-              panic!("not found package id: {}", pkg_id.as_serialized());
-            })
+              // If a matching nv is not found in the ancestors, then we fall
+              // back to searching the entire collection of packages for a matching
+              // nv and just select the first one even though that might not be exactly
+              // correct. I suspect this scenario will be super rare to occur.
+              let mut packages_with_same_nv = packages
+                .keys()
+                .filter(|id| id.nv == pkg_id.nv)
+                .collect::<Vec<_>>();
+              packages_with_same_nv.sort();
+              if packages_with_same_nv.is_empty() {
+                // we verify in other places that references in a snapshot
+                // should be valid (ex. when creating a snapshot), so we should
+                // never get here and if so that indicates a bug elsewhere
+                panic!("not found package id: {}", pkg_id.as_serialized());
+              } else {
+                packages_with_same_nv.remove(0)
+              }
+            });
+          packages.get(id).unwrap()
         }
       };
       for (name, child_id) in &resolution.dependencies {
@@ -385,6 +406,7 @@ impl Graph {
           child_id,
           packages,
           created_package_ids,
+          &ancestor_ids_with_current,
         );
         graph.set_child_of_parent_node(node_id, name, child_node_id);
       }
@@ -422,6 +444,7 @@ impl Graph {
         &resolved_id,
         &snapshot.packages,
         &mut created_package_ids,
+        &Default::default(),
       );
       graph.root_packages.insert(Rc::new(id), node_id);
     }
@@ -3755,6 +3778,12 @@ mod test {
           ])
         },
         TestNpmResolutionPackage {
+          // This is stored like so:
+          //   b (id: 0) -> c (id: 1) -> b (id: 0)
+          // So it's circular. Storing a circular dependency serialized here is a
+          // little difficult, so when this is encountered we assume it's circular.
+          // I have a feeling this is not exactly correct, but perhaps it is good enough
+          // and edge cases won't be seen in the wild...
           pkg_id: "package-b@1.0.0_package-c@1.0.0__package-b@1.0.0".to_string(),
           copy_index: 0,
           dependencies: BTreeMap::from([(

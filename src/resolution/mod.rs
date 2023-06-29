@@ -1,3 +1,4 @@
+mod collections;
 mod common;
 mod graph;
 mod snapshot;
