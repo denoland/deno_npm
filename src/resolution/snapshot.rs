@@ -952,7 +952,7 @@ mod tests {
     }
     .into_valid()
     .unwrap();
-    let snapshot = NpmResolutionSnapshot::new(original_serialized.clone());
+    let snapshot = NpmResolutionSnapshot::new(original_serialized);
 
     let pkg = snapshot
       .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
