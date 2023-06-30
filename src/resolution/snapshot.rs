@@ -371,7 +371,7 @@ impl NpmResolutionSnapshot {
     self
       .packages_by_name
       .get(&pkg_cache_folder_id.nv.name)
-      .map(|ids| {
+      .and_then(|ids| {
         for id in ids {
           if id.nv == pkg_cache_folder_id.nv {
             if let Some(pkg) = self.packages.get(id) {
@@ -383,8 +383,7 @@ impl NpmResolutionSnapshot {
         }
         None
       })
-      .flatten()
-      .map(|pkg| Ok(pkg))
+      .map(Ok)
       .unwrap_or_else(|| {
         Err(PackageCacheFolderIdNotFoundError(
           pkg_cache_folder_id.clone(),
