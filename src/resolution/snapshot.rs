@@ -49,6 +49,12 @@ pub struct PackageReqNotFoundError(pub NpmPackageReq);
 pub struct PackageNvNotFoundError(pub NpmPackageNv);
 
 #[derive(Debug, Error, Clone)]
+#[error(
+  "Could not find referenced package folder id '{0}' in the list of packages."
+)]
+pub struct PackageCacheFolderIdNotFoundError(pub NpmPackageCacheFolderId);
+
+#[derive(Debug, Error, Clone)]
 pub enum PackageNotFoundFromReferrerError {
   #[error("Could not find referrer npm package '{0}'.")]
   Referrer(NpmPackageCacheFolderId),
@@ -355,6 +361,34 @@ impl NpmResolutionSnapshot {
         .map_err(|_| PackageReqNotFoundError(req.clone())),
       None => Err(PackageReqNotFoundError(req.clone())),
     }
+  }
+
+  /// Resolve a package from a package cache folder id.
+  pub fn resolve_pkg_from_pkg_cache_folder_id(
+    &self,
+    pkg_cache_folder_id: &NpmPackageCacheFolderId,
+  ) -> Result<&NpmResolutionPackage, PackageCacheFolderIdNotFoundError> {
+    self
+      .packages_by_name
+      .get(&pkg_cache_folder_id.nv.name)
+      .and_then(|ids| {
+        for id in ids {
+          if id.nv == pkg_cache_folder_id.nv {
+            if let Some(pkg) = self.packages.get(id) {
+              if pkg.copy_index == pkg_cache_folder_id.copy_index {
+                return Some(pkg);
+              }
+            }
+          }
+        }
+        None
+      })
+      .map(Ok)
+      .unwrap_or_else(|| {
+        Err(PackageCacheFolderIdNotFoundError(
+          pkg_cache_folder_id.clone(),
+        ))
+      })
   }
 
   /// Resolve a package from a deno module.
@@ -766,6 +800,7 @@ fn name_without_path(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+  use deno_semver::Version;
   use pretty_assertions::assert_eq;
 
   use super::*;
@@ -901,6 +936,72 @@ mod tests {
       // remove c as a dependency from a
       assert!(expected.packages[0].dependencies.remove("c").is_some());
       assert_eq!(actual, expected);
+    }
+  }
+
+  #[test]
+  fn resolve_pkg_from_pkg_cache_folder_id() {
+    let original_serialized = SerializedNpmResolutionSnapshot {
+      root_packages: root_pkgs(&[("a@1", "a@1.0.0")]),
+      packages: vec![
+        pkg_with_id("a@1.0.0"),
+        pkg_with_id("a@1.0.0_b@1.0.0"),
+        pkg_with_id("a@1.1.0"),
+        pkg_with_id("b@1.0.0"),
+      ],
+    }
+    .into_valid()
+    .unwrap();
+    let snapshot = NpmResolutionSnapshot::new(original_serialized);
+
+    let pkg = snapshot
+      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+        "a", "1.0.0", 0,
+      ))
+      .unwrap();
+    assert_eq!(pkg.id.as_serialized(), "a@1.0.0");
+    assert_eq!(pkg.copy_index, 0);
+
+    let pkg = snapshot
+      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+        "a", "1.0.0", 1,
+      ))
+      .unwrap();
+    assert_eq!(pkg.id.as_serialized(), "a@1.0.0_b@1.0.0");
+    assert_eq!(pkg.copy_index, 1);
+    assert!(snapshot
+      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+        "a", "1.0.0", 2,
+      ))
+      .is_err());
+    assert!(snapshot
+      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+        "b", "1.0.0", 2,
+      ))
+      .is_err());
+  }
+
+  fn npm_cache_folder_id(
+    name: &str,
+    version: &str,
+    copy_index: u8,
+  ) -> NpmPackageCacheFolderId {
+    NpmPackageCacheFolderId {
+      nv: NpmPackageNv {
+        name: name.to_string(),
+        version: Version::parse_standard(version).unwrap(),
+      },
+      copy_index,
+    }
+  }
+
+  fn pkg_with_id(id: &str) -> SerializedNpmResolutionSnapshotPackage {
+    SerializedNpmResolutionSnapshotPackage {
+      id: NpmPackageId::from_serialized(id).unwrap(),
+      dependencies: Default::default(),
+      system: Default::default(),
+      dist: Default::default(),
+      optional_dependencies: Default::default(),
     }
   }
 
