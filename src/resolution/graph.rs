@@ -969,7 +969,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     if !has_deps {
       // ensure this is set if not, as it's an optimization
-      let mut node = self.graph.borrow_node_mut(node_id);
+      let node = self.graph.borrow_node_mut(node_id);
       node.no_peers = true;
     }
 
