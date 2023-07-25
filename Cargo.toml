@@ -12,10 +12,9 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.70"
 async-trait = "0.1.68"
-deno_semver = "0.2.1"
+deno_semver = "0.3.0"
 monch = "0.4.1"
 log = "0.4"
-once_cell = "1.17.1"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 thiserror = "1.0.24"
 futures = "0.3.28"

@@ -31,7 +31,6 @@ use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 use crate::NpmResolutionPackageSystemInfo;
 
 use super::common::NpmVersionResolver;
-use super::common::LATEST_VERSION_REQ;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
@@ -872,10 +871,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     let (pkg_id, node_id) = self.resolve_node_from_info(
       &package_req.name,
-      package_req
-        .version_req
-        .as_ref()
-        .unwrap_or(&*LATEST_VERSION_REQ),
+      &package_req.version_req,
       package_info,
       None,
     )?;
