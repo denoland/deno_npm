@@ -63,7 +63,6 @@ dependencies = [
  "futures",
  "log",
  "monch",
- "once_cell",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -73,11 +72,10 @@ dependencies = [
 
 [[package]]
 name = "deno_semver"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e2d677702f75c9ff62afc3e06d24a4affa661d6a6cdbf3ca705af8a9170c71d"
+version = "0.2.2"
 dependencies = [
  "monch",
+ "once_cell",
  "serde",
  "thiserror",
  "url",

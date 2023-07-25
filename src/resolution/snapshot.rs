@@ -18,7 +18,6 @@ use serde::Serialize;
 use thiserror::Error;
 
 use super::common::NpmVersionResolver;
-use super::common::LATEST_VERSION_REQ;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
@@ -683,8 +682,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     pkg_req: &NpmPackageReq,
     package_info: &NpmPackageInfo,
   ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
-    let version_req =
-      pkg_req.version_req.as_ref().unwrap_or(&*LATEST_VERSION_REQ);
+    let version_req = &pkg_req.version_req;
     let version_info = match snapshot.packages_by_name.get(&package_info.name) {
       Some(existing_versions) => {
         self.version_resolver.resolve_best_package_version_info(

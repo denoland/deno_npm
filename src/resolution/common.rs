@@ -1,16 +1,13 @@
 // Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
 
 use deno_semver::npm::NpmPackageNv;
+use deno_semver::npm::WILDCARD_VERSION_REQ;
 use deno_semver::Version;
 use deno_semver::VersionReq;
-use once_cell::sync::Lazy;
 use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
-
-pub static LATEST_VERSION_REQ: Lazy<VersionReq> =
-  Lazy::new(|| VersionReq::parse_from_specifier("latest").unwrap());
 
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone)]
@@ -89,7 +86,7 @@ impl NpmVersionResolver {
       let mut maybe_best_version: Option<&'a NpmPackageVersionInfo> = None;
       for version_info in info.versions.values() {
         let version = &version_info.version;
-        if version_req.matches(version) {
+        if self.version_req_satisfies(version_req, version, info)? {
           let is_best_version = maybe_best_version
             .as_ref()
             .map(|best_version| best_version.version.cmp(version).is_lt())
@@ -128,7 +125,24 @@ impl NpmVersionResolver {
         let version_info = self.tag_to_version_info(package_info, tag)?;
         Ok(version_info.version == *version)
       }
-      None => Ok(version_req.matches(version)),
+      None => {
+        // For when someone just specifies @types/node, we want to pull in a
+        // "known good" version of @types/node that works well with Deno and
+        // not necessarily the latest version. For example, we might only be
+        // compatible with Node vX, but then Node vY is published so we wouldn't
+        // want to pull that in.
+        // Note: If the user doesn't want this behavior, then they can specify an
+        // explicit version.
+        if package_info.name == "@types/node"
+          && *version_req == *WILDCARD_VERSION_REQ
+        {
+          if let Some(version_req) = &self.types_node_version_req {
+            return Ok(version_req.matches(version));
+          }
+        }
+
+        Ok(version_req.matches(version))
+      }
     }
   }
 
@@ -158,19 +172,6 @@ impl NpmVersionResolver {
     info: &'a NpmPackageInfo,
     tag: &str,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
-    // For when someone just specifies @types/node, we want to pull in a
-    // "known good" version of @types/node that works well with Deno and
-    // not necessarily the latest version. For example, we might only be
-    // compatible with Node vX, but then Node vY is published so we wouldn't
-    // want to pull that in.
-    // Note: If the user doesn't want this behavior, then they can specify an
-    // explicit version.
-    if tag == "latest" && info.name == "@types/node" {
-      if let Some(version_req) = &self.types_node_version_req {
-        return self.get_resolved_package_version_and_info(version_req, info);
-      }
-    }
-
     if let Some(version) = info.dist_tags.get(tag) {
       match info.versions.get(version) {
         Some(info) => Ok(info),
@@ -200,7 +201,8 @@ mod test {
   #[test]
   fn test_get_resolved_package_version_and_info() {
     // dist tag where version doesn't exist
-    let package_ref = NpmPackageReqReference::from_str("npm:test").unwrap();
+    let package_ref =
+      NpmPackageReqReference::from_str("npm:test@latest").unwrap();
     let package_info = NpmPackageInfo {
       name: "test".to_string(),
       versions: HashMap::new(),
@@ -213,11 +215,7 @@ mod test {
       types_node_version_req: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
-      package_ref
-        .req
-        .version_req
-        .as_ref()
-        .unwrap_or(&*LATEST_VERSION_REQ),
+      &package_ref.req.version_req,
       &package_info,
     );
     assert_eq!(
@@ -226,7 +224,8 @@ mod test {
     );
 
     // dist tag where version is a pre-release
-    let package_ref = NpmPackageReqReference::from_str("npm:test").unwrap();
+    let package_ref =
+      NpmPackageReqReference::from_str("npm:test@latest").unwrap();
     let package_info = NpmPackageInfo {
       name: "test".to_string(),
       versions: HashMap::from([
@@ -248,11 +247,7 @@ mod test {
       )]),
     };
     let result = resolver.get_resolved_package_version_and_info(
-      package_ref
-        .req
-        .version_req
-        .as_ref()
-        .unwrap_or(&*LATEST_VERSION_REQ),
+      &package_ref.req.version_req,
       &package_info,
     );
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-alpha");
@@ -293,11 +288,7 @@ mod test {
       ),
     };
     let result = resolver.get_resolved_package_version_and_info(
-      package_ref
-        .req
-        .version_req
-        .as_ref()
-        .unwrap_or(&*LATEST_VERSION_REQ),
+      &package_ref.req.version_req,
       &package_info,
     );
     assert_eq!(result.unwrap().version.to_string(), "1.0.0");
