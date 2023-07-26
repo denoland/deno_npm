@@ -683,23 +683,31 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     package_info: &NpmPackageInfo,
   ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
     let version_req = &pkg_req.version_req;
-    let version_info = match snapshot.packages_by_name.get(&package_info.name) {
-      Some(existing_versions) => {
-        self.version_resolver.resolve_best_package_version_info(
+    let nv = if let Some(nv) = snapshot.package_reqs.get(pkg_req) {
+      // if a version requirement was previously resolved, don't resolve it again
+      nv.clone()
+    } else {
+      let version_info = match snapshot.packages_by_name.get(&package_info.name)
+      {
+        Some(existing_versions) => {
+          self.version_resolver.resolve_best_package_version_info(
+            version_req,
+            package_info,
+            existing_versions.iter().map(|p| &p.nv.version),
+          )?
+        }
+        None => self.version_resolver.resolve_best_package_version_info(
           version_req,
           package_info,
-          existing_versions.iter().map(|p| &p.nv.version),
-        )?
-      }
-      None => self.version_resolver.resolve_best_package_version_info(
-        version_req,
-        package_info,
-        Vec::new().iter(),
-      )?,
-    };
-    let nv = NpmPackageNv {
-      name: package_info.name.to_string(),
-      version: version_info.version.clone(),
+          Vec::new().iter(),
+        )?,
+      };
+      let nv = NpmPackageNv {
+        name: package_info.name.to_string(),
+        version: version_info.version.clone(),
+      };
+      snapshot.add_pending_pkg(pkg_req.clone(), nv.clone());
+      nv
     };
     debug!(
       "Resolved {}@{} to {}",
@@ -707,7 +715,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_req.version_text(),
       nv,
     );
-    snapshot.add_pending_pkg(pkg_req.clone(), nv.clone());
     Ok(nv)
   }
 
