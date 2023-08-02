@@ -6,6 +6,7 @@ mod snapshot;
 pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;
 pub use graph::NpmResolutionError;
+pub use snapshot::incomplete_snapshot_from_lockfile;
 pub use snapshot::snapshot_from_lockfile;
 pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;

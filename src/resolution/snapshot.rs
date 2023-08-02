@@ -822,51 +822,73 @@ pub enum SnapshotFromLockfileError {
   PackageIdNotFound(#[from] PackageIdNotFoundError),
 }
 
-/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
-pub async fn snapshot_from_lockfile(
+struct IncompletePackageInfo {
+  id: NpmPackageId,
+  dependencies: HashMap<String, NpmPackageId>,
+}
+
+pub struct IncompleteSnapshot {
+  root_packages: HashMap<NpmPackageReq, NpmPackageId>,
+  packages: Vec<IncompletePackageInfo>,
+}
+
+/// Constructs [`IncompleteSnapshot`] from the given [`Lockfile`]. The returned
+/// snapshot will then be passed to [`snapshot_from_lockfile`] to get a completely
+/// resolved snapshot.
+///
+/// The reason why this function is not combined with [`snapshot_from_lockfile`]
+/// is because we want `lockfile` to not live across the `.await` points. This
+/// becomes problematic if `lockfile` is wrapped in [`std::sync::Mutex`] or
+/// similar, which doesn't implement [`Send`].
+pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
+) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
+  let mut root_packages = HashMap::<NpmPackageReq, NpmPackageId>::with_capacity(
+    lockfile.content.npm.specifiers.len(),
+  );
+  // collect the specifiers to version mappings
+  for (key, value) in &lockfile.content.npm.specifiers {
+    let package_req = NpmPackageReq::from_str(key)?;
+    let package_id = NpmPackageId::from_serialized(value)?;
+    root_packages.insert(package_req, package_id.clone());
+  }
+
+  // now fill the packages except for the dist information
+  let mut packages = Vec::with_capacity(lockfile.content.npm.packages.len());
+  for (key, package) in &lockfile.content.npm.packages {
+    let id = NpmPackageId::from_serialized(key)?;
+
+    // collect the dependencies
+    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
+    for (name, specifier) in &package.dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      dependencies.insert(name.clone(), dep_id);
+    }
+
+    packages.push(IncompletePackageInfo { id, dependencies });
+  }
+
+  Ok(IncompleteSnapshot {
+    root_packages,
+    packages,
+  })
+}
+
+/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
+///
+/// You should call [`incomplete_snapshot_from_lockfile`] first to get an
+/// [`IncompleteSnapshot`] instance that's passed as the first argument for this
+/// function.
+pub async fn snapshot_from_lockfile(
+  incomplete_snapshot: IncompleteSnapshot,
   api: &dyn NpmRegistryApi,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
-  let (root_packages, mut packages) = {
-    let mut root_packages =
-      HashMap::<NpmPackageReq, NpmPackageId>::with_capacity(
-        lockfile.content.npm.specifiers.len(),
-      );
-    // collect the specifiers to version mappings
-    for (key, value) in &lockfile.content.npm.specifiers {
-      let package_req = NpmPackageReq::from_str(key)?;
-      let package_id = NpmPackageId::from_serialized(value)?;
-      root_packages.insert(package_req, package_id.clone());
-    }
-
-    // now fill the packages except for the dist information
-    let mut packages = Vec::with_capacity(lockfile.content.npm.packages.len());
-    for (key, package) in &lockfile.content.npm.packages {
-      let id = NpmPackageId::from_serialized(key)?;
-
-      // collect the dependencies
-      let mut dependencies = HashMap::with_capacity(package.dependencies.len());
-      for (name, specifier) in &package.dependencies {
-        let dep_id = NpmPackageId::from_serialized(specifier)?;
-        dependencies.insert(name.clone(), dep_id);
-      }
-
-      packages.push(SerializedNpmResolutionSnapshotPackage {
-        id,
-        dependencies,
-
-        // Setting empty values to the rest of the fields temporarily.
-        // We will populate them below.
-        system: Default::default(),
-        dist: Default::default(),
-        optional_dependencies: Default::default(),
-      });
-    }
-    (root_packages, packages)
-  };
-
-  // now that the lockfile is dropped, fetch the package version information
-  let pkg_nvs = packages.iter().map(|p| p.id.nv.clone()).collect::<Vec<_>>();
+  // fetch the package version information
+  let pkg_nvs = incomplete_snapshot
+    .packages
+    .iter()
+    .map(|p| p.id.nv.clone())
+    .collect::<Vec<_>>();
   let get_version_infos = || {
     FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
       let package_info = api
@@ -880,23 +902,30 @@ pub async fn snapshot_from_lockfile(
   };
   let mut version_infos = get_version_infos();
   let mut i = 0;
+  let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
   while let Some(result) = version_infos.next().await {
     match result {
       Ok(version_info) => {
-        let package = &mut packages[i];
-        package.dist = version_info.dist;
-        package.system = NpmResolutionPackageSystemInfo {
-          cpu: version_info.cpu,
-          os: version_info.os,
-        };
-        package.optional_dependencies =
-          version_info.optional_dependencies.into_keys().collect();
+        packages.push(SerializedNpmResolutionSnapshotPackage {
+          id: incomplete_snapshot.packages[i].id.clone(),
+          dependencies: incomplete_snapshot.packages[i].dependencies.clone(),
+          dist: version_info.dist,
+          system: NpmResolutionPackageSystemInfo {
+            cpu: version_info.cpu,
+            os: version_info.os,
+          },
+          optional_dependencies: version_info
+            .optional_dependencies
+            .into_keys()
+            .collect(),
+        });
       }
       Err(err) => {
         if api.mark_force_reload() {
           // reset and try again
           version_infos = get_version_infos();
           i = 0;
+          packages.clear();
           continue;
         } else {
           return Err(err);
@@ -912,7 +941,7 @@ pub async fn snapshot_from_lockfile(
 
   let snapshot = SerializedNpmResolutionSnapshot {
     packages,
-    root_packages,
+    root_packages: incomplete_snapshot.root_packages,
   }
   .into_valid()?;
   Ok(snapshot)
@@ -1166,6 +1195,10 @@ mod tests {
     )
     .unwrap();
 
-    assert!(snapshot_from_lockfile(&lockfile, &api).await.is_ok());
+    let incomplete_snapshot =
+      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    assert!(snapshot_from_lockfile(incomplete_snapshot, &api)
+      .await
+      .is_ok());
   }
 }
