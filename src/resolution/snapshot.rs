@@ -1156,11 +1156,12 @@ mod tests {
   #[tokio::test]
   async fn test_snapshot_from_lockfile() {
     let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("emoji-regex", "10.2.1");
     api.ensure_package_version("chalk", "5.3.0");
 
     let lockfile = Lockfile::with_lockfile_content(
       PathBuf::from("/deno.lock"),
-      include_str!("testdata/npm_chalk_5_3.lock"),
+      include_str!("testdata/npm.lock"),
       false,
     )
     .unwrap();
