@@ -920,8 +920,12 @@ pub async fn snapshot_from_lockfile(
 
 #[cfg(test)]
 mod tests {
+  use std::path::PathBuf;
+
   use deno_semver::Version;
   use pretty_assertions::assert_eq;
+
+  use crate::registry::TestNpmRegistryApi;
 
   use super::*;
 
@@ -1147,5 +1151,20 @@ mod tests {
         )
       })
       .collect()
+  }
+
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("chalk", "5.3.0");
+
+    let lockfile = Lockfile::with_lockfile_content(
+      PathBuf::from("/deno.lock"),
+      include_str!("testdata/npm_chalk_5_3.lock"),
+      false,
+    )
+    .unwrap();
+
+    assert!(snapshot_from_lockfile(&lockfile, &api).await.is_ok());
   }
 }
