@@ -7,10 +7,13 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use deno_lockfile::Lockfile;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
+use deno_semver::npm::NpmPackageReqParseError;
 use deno_semver::VersionReq;
 use futures::future::Either;
+use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use log::debug;
 use serde::Deserialize;
@@ -21,6 +24,7 @@ use super::common::NpmVersionResolver;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
+use super::NpmPackageVersionNotFound;
 use super::NpmPackageVersionResolutionError;
 
 use crate::registry::NpmPackageInfo;
@@ -29,6 +33,7 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
+use crate::NpmPackageNodeIdDeserializationError;
 use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
@@ -801,6 +806,116 @@ fn name_without_path(name: &str) -> &str {
   } else {
     name
   }
+}
+
+#[derive(Debug, Error)]
+pub enum SnapshotFromLockfileError {
+  #[error(transparent)]
+  ReqParse(#[from] NpmPackageReqParseError),
+  #[error(transparent)]
+  NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
+  #[error(transparent)]
+  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
+  #[error(transparent)]
+  VersionNotFound(#[from] NpmPackageVersionNotFound),
+  #[error(transparent)]
+  PackageIdNotFound(#[from] PackageIdNotFoundError),
+}
+
+/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
+pub async fn snapshot_from_lockfile(
+  lockfile: &Lockfile,
+  api: &dyn NpmRegistryApi,
+) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
+  let (root_packages, mut packages) = {
+    let mut root_packages =
+      HashMap::<NpmPackageReq, NpmPackageId>::with_capacity(
+        lockfile.content.npm.specifiers.len(),
+      );
+    // collect the specifiers to version mappings
+    for (key, value) in &lockfile.content.npm.specifiers {
+      let package_req = NpmPackageReq::from_str(key)?;
+      let package_id = NpmPackageId::from_serialized(value)?;
+      root_packages.insert(package_req, package_id.clone());
+    }
+
+    // now fill the packages except for the dist information
+    let mut packages = Vec::with_capacity(lockfile.content.npm.packages.len());
+    for (key, package) in &lockfile.content.npm.packages {
+      let id = NpmPackageId::from_serialized(key)?;
+
+      // collect the dependencies
+      let mut dependencies = HashMap::with_capacity(package.dependencies.len());
+      for (name, specifier) in &package.dependencies {
+        let dep_id = NpmPackageId::from_serialized(specifier)?;
+        dependencies.insert(name.clone(), dep_id);
+      }
+
+      packages.push(SerializedNpmResolutionSnapshotPackage {
+        id,
+        dependencies,
+
+        // Setting empty values to the rest of the fields temporarily.
+        // We will populate them below.
+        system: Default::default(),
+        dist: Default::default(),
+        optional_dependencies: Default::default(),
+      });
+    }
+    (root_packages, packages)
+  };
+
+  // now that the lockfile is dropped, fetch the package version information
+  let pkg_nvs = packages.iter().map(|p| p.id.nv.clone()).collect::<Vec<_>>();
+  let get_version_infos = || {
+    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
+      let package_info = api
+        .package_info(&nv.name)
+        .await
+        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
+      package_info
+        .version_info(nv)
+        .map_err(SnapshotFromLockfileError::VersionNotFound)
+    }))
+  };
+  let mut version_infos = get_version_infos();
+  let mut i = 0;
+  while let Some(result) = version_infos.next().await {
+    match result {
+      Ok(version_info) => {
+        let package = &mut packages[i];
+        package.dist = version_info.dist;
+        package.system = NpmResolutionPackageSystemInfo {
+          cpu: version_info.cpu,
+          os: version_info.os,
+        };
+        package.optional_dependencies =
+          version_info.optional_dependencies.into_keys().collect();
+      }
+      Err(err) => {
+        if api.mark_force_reload() {
+          // reset and try again
+          version_infos = get_version_infos();
+          i = 0;
+          continue;
+        } else {
+          return Err(err);
+        }
+      }
+    }
+
+    i += 1;
+  }
+
+  // clear the cache to reduce space for cache
+  api.clear_cache();
+
+  let snapshot = SerializedNpmResolutionSnapshot {
+    packages,
+    root_packages,
+  }
+  .into_valid()?;
+  Ok(snapshot)
 }
 
 #[cfg(test)]
