@@ -13,7 +13,7 @@ license = "MIT"
 anyhow = "1.0.70"
 async-trait = "0.1.68"
 deno_semver = "0.3.0"
-deno_lockfile = "0.14.1"
+deno_lockfile = "0.15.0"
 monch = "0.4.1"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
@@ -24,6 +24,3 @@ futures = "0.3.28"
 pretty_assertions = "1.0.0"
 serde_json = { version = "1.0.67", features = ["preserve_order"] }
 tokio = { version = "1.27.0", features = ["full"] }
-
-[patch.crates-io]
-deno_lockfile = { git = "https://github.com/magurotuna/deno_lockfile.git", rev = "71d60975b89193ce2b8a68ebaee47882bb602afa" }
