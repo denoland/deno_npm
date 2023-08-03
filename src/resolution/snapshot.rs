@@ -7,10 +7,13 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use deno_lockfile::Lockfile;
 use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmPackageReq;
+use deno_semver::npm::NpmPackageReqParseError;
 use deno_semver::VersionReq;
 use futures::future::Either;
+use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use log::debug;
 use serde::Deserialize;
@@ -21,6 +24,7 @@ use super::common::NpmVersionResolver;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
+use super::NpmPackageVersionNotFound;
 use super::NpmPackageVersionResolutionError;
 
 use crate::registry::NpmPackageInfo;
@@ -29,6 +33,7 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
+use crate::NpmPackageNodeIdDeserializationError;
 use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
@@ -803,10 +808,162 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
+#[derive(Debug, Error)]
+pub enum SnapshotFromLockfileError {
+  #[error("Unable to parse npm specifier: {key}")]
+  ReqParse {
+    key: String,
+    #[source]
+    source: NpmPackageReqParseError,
+  },
+  #[error(transparent)]
+  NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
+  #[error(transparent)]
+  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
+  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  VersionNotFound {
+    #[from]
+    source: NpmPackageVersionNotFound,
+  },
+  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
+  PackageIdNotFound(#[from] PackageIdNotFoundError),
+}
+
+struct IncompletePackageInfo {
+  id: NpmPackageId,
+  dependencies: HashMap<String, NpmPackageId>,
+}
+
+pub struct IncompleteSnapshot {
+  root_packages: HashMap<NpmPackageReq, NpmPackageId>,
+  packages: Vec<IncompletePackageInfo>,
+}
+
+/// Constructs [`IncompleteSnapshot`] from the given [`Lockfile`]. The returned
+/// snapshot will then be passed to [`snapshot_from_lockfile`] to get a completely
+/// resolved snapshot.
+///
+/// The reason why this function is not combined with [`snapshot_from_lockfile`]
+/// is because we want `lockfile` to not live across the `.await` points. This
+/// becomes problematic if `lockfile` is wrapped in [`std::sync::Mutex`] or
+/// similar, which doesn't implement [`Send`].
+pub fn incomplete_snapshot_from_lockfile(
+  lockfile: &Lockfile,
+) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
+  let mut root_packages = HashMap::<NpmPackageReq, NpmPackageId>::with_capacity(
+    lockfile.content.npm.specifiers.len(),
+  );
+  // collect the specifiers to version mappings
+  for (key, value) in &lockfile.content.npm.specifiers {
+    let package_req = NpmPackageReq::from_str(key).map_err(|e| {
+      SnapshotFromLockfileError::ReqParse {
+        key: key.to_string(),
+        source: e,
+      }
+    })?;
+    let package_id = NpmPackageId::from_serialized(value)?;
+    root_packages.insert(package_req, package_id.clone());
+  }
+
+  // now fill the packages except for the dist information
+  let mut packages = Vec::with_capacity(lockfile.content.npm.packages.len());
+  for (key, package) in &lockfile.content.npm.packages {
+    let id = NpmPackageId::from_serialized(key)?;
+
+    // collect the dependencies
+    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
+    for (name, specifier) in &package.dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      dependencies.insert(name.clone(), dep_id);
+    }
+
+    packages.push(IncompletePackageInfo { id, dependencies });
+  }
+
+  Ok(IncompleteSnapshot {
+    root_packages,
+    packages,
+  })
+}
+
+/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
+///
+/// You should call [`incomplete_snapshot_from_lockfile`] first to get an
+/// [`IncompleteSnapshot`] instance that's passed as the first argument for this
+/// function.
+pub async fn snapshot_from_lockfile(
+  incomplete_snapshot: IncompleteSnapshot,
+  api: &dyn NpmRegistryApi,
+) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
+  // fetch the package version information
+  let pkg_nvs = incomplete_snapshot
+    .packages
+    .iter()
+    .map(|p| p.id.nv.clone())
+    .collect::<Vec<_>>();
+  let get_version_infos = || {
+    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
+      let package_info = api
+        .package_info(&nv.name)
+        .await
+        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
+      package_info
+        .version_info(nv)
+        .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
+    }))
+  };
+  let mut version_infos = get_version_infos();
+  let mut i = 0;
+  let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
+  while let Some(result) = version_infos.next().await {
+    match result {
+      Ok(version_info) => {
+        packages.push(SerializedNpmResolutionSnapshotPackage {
+          id: incomplete_snapshot.packages[i].id.clone(),
+          dependencies: incomplete_snapshot.packages[i].dependencies.clone(),
+          dist: version_info.dist,
+          system: NpmResolutionPackageSystemInfo {
+            cpu: version_info.cpu,
+            os: version_info.os,
+          },
+          optional_dependencies: version_info
+            .optional_dependencies
+            .into_keys()
+            .collect(),
+        });
+      }
+      Err(err) => {
+        if api.mark_force_reload() {
+          // reset and try again
+          version_infos = get_version_infos();
+          i = 0;
+          packages.clear();
+          continue;
+        } else {
+          return Err(err);
+        }
+      }
+    }
+
+    i += 1;
+  }
+
+  let snapshot = SerializedNpmResolutionSnapshot {
+    packages,
+    root_packages: incomplete_snapshot.root_packages,
+  }
+  .into_valid()?;
+  Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
+  use std::path::PathBuf;
+
   use deno_semver::Version;
   use pretty_assertions::assert_eq;
+
+  use crate::registry::TestNpmRegistryApi;
 
   use super::*;
 
@@ -1032,5 +1189,25 @@ mod tests {
         )
       })
       .collect()
+  }
+
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("emoji-regex", "10.2.1");
+    api.ensure_package_version("chalk", "5.3.0");
+
+    let lockfile = Lockfile::with_lockfile_content(
+      PathBuf::from("/deno.lock"),
+      include_str!("testdata/npm.lock"),
+      false,
+    )
+    .unwrap();
+
+    let incomplete_snapshot =
+      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    assert!(snapshot_from_lockfile(incomplete_snapshot, &api)
+      .await
+      .is_ok());
   }
 }

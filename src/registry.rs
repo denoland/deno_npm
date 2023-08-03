@@ -268,6 +268,13 @@ pub enum NpmRegistryPackageInfoLoadError {
 
 // todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
 // in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
+/// A trait for getting package information from the npm registry.
+///
+/// An implementer may want to override the default implementation of
+/// [`mark_force_reload`] mathoc if it has a cache mechanism.
+///
+/// [`mark_force_reload`]: NpmRegistryApi::mark_force_reload
+/// [`clear_cache`]: NpmRegistryApi::clear_cache
 #[async_trait]
 pub trait NpmRegistryApi: Sync + Send {
   /// Gets the package information from the npm registry.
@@ -279,6 +286,16 @@ pub trait NpmRegistryApi: Sync + Send {
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
+
+  /// Marks that new requests for package information should retrieve it
+  /// from the npm registry
+  ///
+  /// Returns true if both of the following conditions are met:
+  /// - the implementer has a cache mechanism
+  /// - "force reload" flag is successfully set for the first time
+  fn mark_force_reload(&self) -> bool {
+    false
+  }
 }
 
 /// A simple in-memory implementation of the NpmRegistryApi
