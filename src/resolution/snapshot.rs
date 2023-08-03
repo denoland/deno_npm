@@ -936,9 +936,6 @@ pub async fn snapshot_from_lockfile(
     i += 1;
   }
 
-  // clear the cache to reduce space for cache
-  api.clear_cache();
-
   let snapshot = SerializedNpmResolutionSnapshot {
     packages,
     root_packages: incomplete_snapshot.root_packages,
