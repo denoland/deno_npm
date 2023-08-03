@@ -810,15 +810,22 @@ fn name_without_path(name: &str) -> &str {
 
 #[derive(Debug, Error)]
 pub enum SnapshotFromLockfileError {
-  #[error(transparent)]
-  ReqParse(#[from] NpmPackageReqParseError),
+  #[error("Unable to parse npm specifier: {key}")]
+  ReqParse {
+    key: String,
+    #[source]
+    source: NpmPackageReqParseError,
+  },
   #[error(transparent)]
   NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
   #[error(transparent)]
   PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
-  #[error(transparent)]
-  VersionNotFound(#[from] NpmPackageVersionNotFound),
-  #[error(transparent)]
+  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  VersionNotFound {
+    #[from]
+    source: NpmPackageVersionNotFound,
+  },
+  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
   PackageIdNotFound(#[from] PackageIdNotFoundError),
 }
 
@@ -848,7 +855,12 @@ pub fn incomplete_snapshot_from_lockfile(
   );
   // collect the specifiers to version mappings
   for (key, value) in &lockfile.content.npm.specifiers {
-    let package_req = NpmPackageReq::from_str(key)?;
+    let package_req = NpmPackageReq::from_str(key).map_err(|e| {
+      SnapshotFromLockfileError::ReqParse {
+        key: key.to_string(),
+        source: e,
+      }
+    })?;
     let package_id = NpmPackageId::from_serialized(value)?;
     root_packages.insert(package_req, package_id.clone());
   }
@@ -897,7 +909,7 @@ pub async fn snapshot_from_lockfile(
         .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
       package_info
         .version_info(nv)
-        .map_err(SnapshotFromLockfileError::VersionNotFound)
+        .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
     }))
   };
   let mut version_infos = get_version_infos();
