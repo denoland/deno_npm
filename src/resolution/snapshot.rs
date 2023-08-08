@@ -8,9 +8,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use deno_lockfile::Lockfile;
-use deno_semver::npm::NpmPackageNv;
-use deno_semver::npm::NpmPackageReq;
-use deno_semver::npm::NpmPackageReqParseError;
+use deno_semver::package::PackageNv;
+use deno_semver::package::PackageReq;
+use deno_semver::package::PackageReqParseError;
 use deno_semver::VersionReq;
 use futures::future::Either;
 use futures::stream::FuturesOrdered;
@@ -46,11 +46,11 @@ pub struct PackageIdNotFoundError(pub NpmPackageId);
 #[error(
   "Could not find referenced package constraint '{0}' in the list of packages."
 )]
-pub struct PackageReqNotFoundError(pub NpmPackageReq);
+pub struct PackageReqNotFoundError(pub PackageReq);
 
 #[derive(Debug, Error, Clone)]
 #[error("Could not find referenced package '{0}' in the list of packages.")]
-pub struct PackageNvNotFoundError(pub NpmPackageNv);
+pub struct PackageNvNotFoundError(pub PackageNv);
 
 #[derive(Debug, Error, Clone)]
 #[error(
@@ -120,7 +120,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SerializedNpmResolutionSnapshot {
   /// Resolved npm specifiers to package id mappings.
-  pub root_packages: HashMap<NpmPackageReq, NpmPackageId>,
+  pub root_packages: HashMap<PackageReq, NpmPackageId>,
   /// Collection of resolved packages in the dependency graph.
   pub packages: Vec<SerializedNpmResolutionSnapshotPackage>,
 }
@@ -185,27 +185,25 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
 #[derive(Debug, Clone)]
 pub struct NpmResolutionSnapshot {
   /// The unique package requirements map to a single npm package name and version.
-  pub(super) package_reqs: HashMap<NpmPackageReq, NpmPackageNv>,
+  pub(super) package_reqs: HashMap<PackageReq, PackageNv>,
   // Each root level npm package name and version maps to an exact npm package node id.
-  pub(super) root_packages: HashMap<NpmPackageNv, NpmPackageId>,
+  pub(super) root_packages: HashMap<PackageNv, NpmPackageId>,
   pub(super) packages_by_name: HashMap<String, Vec<NpmPackageId>>,
   pub(super) packages: HashMap<NpmPackageId, NpmResolutionPackage>,
   /// Ordered list based on resolution of packages whose dependencies
   /// have not yet been resolved
-  pub(super) pending_unresolved_packages: Vec<NpmPackageNv>,
+  pub(super) pending_unresolved_packages: Vec<PackageNv>,
 }
 
 impl NpmResolutionSnapshot {
   pub fn new(snapshot: ValidSerializedNpmResolutionSnapshot) -> Self {
     let snapshot = snapshot.0;
-    let mut package_reqs =
-      HashMap::<NpmPackageReq, NpmPackageNv>::with_capacity(
-        snapshot.root_packages.len(),
-      );
-    let mut root_packages =
-      HashMap::<NpmPackageNv, NpmPackageId>::with_capacity(
-        snapshot.root_packages.len(),
-      );
+    let mut package_reqs = HashMap::<PackageReq, PackageNv>::with_capacity(
+      snapshot.root_packages.len(),
+    );
+    let mut root_packages = HashMap::<PackageNv, NpmPackageId>::with_capacity(
+      snapshot.root_packages.len(),
+    );
     let mut packages_by_name =
       HashMap::<String, Vec<NpmPackageId>>::with_capacity(
         snapshot.packages.len(),
@@ -356,7 +354,7 @@ impl NpmResolutionSnapshot {
   /// Resolve a package from a package requirement.
   pub fn resolve_pkg_from_pkg_req(
     &self,
-    req: &NpmPackageReq,
+    req: &PackageReq,
   ) -> Result<&NpmResolutionPackage, PackageReqNotFoundError> {
     match self.package_reqs.get(req) {
       Some(id) => self
@@ -398,7 +396,7 @@ impl NpmResolutionSnapshot {
   /// Resolve a package from a deno module.
   pub fn resolve_package_from_deno_module(
     &self,
-    nv: &NpmPackageNv,
+    nv: &PackageNv,
   ) -> Result<&NpmResolutionPackage, PackageNvNotFoundError> {
     match self.root_packages.get(nv) {
       Some(id) => Ok(self.packages.get(id).unwrap()),
@@ -408,11 +406,11 @@ impl NpmResolutionSnapshot {
 
   pub fn top_level_packages(
     &self,
-  ) -> hash_map::Values<NpmPackageNv, NpmPackageId> {
+  ) -> hash_map::Values<PackageNv, NpmPackageId> {
     self.root_packages.values()
   }
 
-  pub fn package_reqs(&self) -> &HashMap<NpmPackageReq, NpmPackageNv> {
+  pub fn package_reqs(&self) -> &HashMap<PackageReq, PackageNv> {
     &self.package_reqs
   }
 
@@ -580,7 +578,7 @@ impl NpmResolutionSnapshot {
     maybe_best_id.cloned()
   }
 
-  fn add_pending_pkg(&mut self, pkg_req: NpmPackageReq, nv: NpmPackageNv) {
+  fn add_pending_pkg(&mut self, pkg_req: PackageReq, nv: PackageNv) {
     self.package_reqs.insert(pkg_req, nv.clone());
     let packages_with_name =
       self.packages_by_name.entry(nv.name.clone()).or_default();
@@ -596,7 +594,7 @@ impl NpmResolutionSnapshot {
 
 pub struct SnapshotPackageCopyIndexResolver {
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
-  package_name_version_to_copy_count: HashMap<NpmPackageNv, u8>,
+  package_name_version_to_copy_count: HashMap<PackageNv, u8>,
 }
 
 impl SnapshotPackageCopyIndexResolver {
@@ -684,9 +682,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   pub fn resolve_package_req_as_pending(
     &self,
     snapshot: &mut NpmResolutionSnapshot,
-    pkg_req: &NpmPackageReq,
+    pkg_req: &PackageReq,
     package_info: &NpmPackageInfo,
-  ) -> Result<NpmPackageNv, NpmPackageVersionResolutionError> {
+  ) -> Result<PackageNv, NpmPackageVersionResolutionError> {
     let version_req = &pkg_req.version_req;
     let nv = if let Some(nv) = snapshot.package_reqs.get(pkg_req) {
       // if a version requirement was previously resolved, don't resolve it again
@@ -707,7 +705,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           Vec::new().iter(),
         )?,
       };
-      let nv = NpmPackageNv {
+      let nv = PackageNv {
         name: package_info.name.to_string(),
         version: version_info.version.clone(),
       };
@@ -729,7 +727,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   pub async fn resolve_pending(
     &self,
     snapshot: NpmResolutionSnapshot,
-    package_reqs: &[NpmPackageReq],
+    package_reqs: &[PackageReq],
   ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     // convert the snapshot to a traversable graph
     let mut graph = Graph::from_snapshot(snapshot);
@@ -742,8 +740,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .filter(|p| !graph.has_root_package(p));
 
     enum ReqOrNv<'a> {
-      Req(&'a NpmPackageReq),
-      Nv(Rc<NpmPackageNv>),
+      Req(&'a PackageReq),
+      Nv(Rc<PackageNv>),
     }
 
     let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
@@ -814,7 +812,7 @@ pub enum SnapshotFromLockfileError {
   ReqParse {
     key: String,
     #[source]
-    source: NpmPackageReqParseError,
+    source: PackageReqParseError,
   },
   #[error(transparent)]
   NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
@@ -835,7 +833,7 @@ struct IncompletePackageInfo {
 }
 
 pub struct IncompleteSnapshot {
-  root_packages: HashMap<NpmPackageReq, NpmPackageId>,
+  root_packages: HashMap<PackageReq, NpmPackageId>,
   packages: Vec<IncompletePackageInfo>,
 }
 
@@ -850,12 +848,12 @@ pub struct IncompleteSnapshot {
 pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
 ) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
-  let mut root_packages = HashMap::<NpmPackageReq, NpmPackageId>::with_capacity(
+  let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
     lockfile.content.npm.specifiers.len(),
   );
   // collect the specifiers to version mappings
   for (key, value) in &lockfile.content.npm.specifiers {
-    let package_req = NpmPackageReq::from_str(key).map_err(|e| {
+    let package_req = PackageReq::from_str(key).map_err(|e| {
       SnapshotFromLockfileError::ReqParse {
         key: key.to_string(),
         source: e,
@@ -1149,7 +1147,7 @@ mod tests {
     copy_index: u8,
   ) -> NpmPackageCacheFolderId {
     NpmPackageCacheFolderId {
-      nv: NpmPackageNv {
+      nv: PackageNv {
         name: name.to_string(),
         version: Version::parse_standard(version).unwrap(),
       },
@@ -1179,12 +1177,12 @@ mod tests {
       .collect()
   }
 
-  fn root_pkgs(pkgs: &[(&str, &str)]) -> HashMap<NpmPackageReq, NpmPackageId> {
+  fn root_pkgs(pkgs: &[(&str, &str)]) -> HashMap<PackageReq, NpmPackageId> {
     pkgs
       .iter()
       .map(|(key, value)| {
         (
-          NpmPackageReq::from_str(key).unwrap(),
+          PackageReq::from_str(key).unwrap(),
           NpmPackageId::from_serialized(value).unwrap(),
         )
       })

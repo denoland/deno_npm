@@ -1,9 +1,9 @@
 // Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
 
-use deno_semver::npm::NpmPackageNv;
-use deno_semver::npm::WILDCARD_VERSION_REQ;
+use deno_semver::package::PackageNv;
 use deno_semver::Version;
 use deno_semver::VersionReq;
+use deno_semver::WILDCARD_VERSION_REQ;
 use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
@@ -12,7 +12,7 @@ use crate::registry::NpmPackageVersionInfo;
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone)]
 #[error("Could not find version '{}' for npm package '{}'.", .0.version, .0.name)]
-pub struct NpmPackageVersionNotFound(pub NpmPackageNv);
+pub struct NpmPackageVersionNotFound(pub PackageNv);
 
 #[derive(Debug, Error, Clone)]
 pub enum NpmPackageVersionResolutionError {
@@ -63,7 +63,7 @@ impl NpmVersionResolver {
       match package_info.versions.get(version) {
         Some(version_info) => Ok(version_info),
         None => Err(NpmPackageVersionResolutionError::VersionNotFound(
-          NpmPackageVersionNotFound(NpmPackageNv {
+          NpmPackageVersionNotFound(PackageNv {
             name: package_info.name.clone(),
             version: version.clone(),
           }),
@@ -194,15 +194,14 @@ impl NpmVersionResolver {
 mod test {
   use std::collections::HashMap;
 
-  use deno_semver::npm::NpmPackageReqReference;
+  use deno_semver::package::PackageReq;
 
   use super::*;
 
   #[test]
   fn test_get_resolved_package_version_and_info() {
     // dist tag where version doesn't exist
-    let package_ref =
-      NpmPackageReqReference::from_str("npm:test@latest").unwrap();
+    let package_req = PackageReq::from_str("test@latest").unwrap();
     let package_info = NpmPackageInfo {
       name: "test".to_string(),
       versions: HashMap::new(),
@@ -215,7 +214,7 @@ mod test {
       types_node_version_req: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
-      &package_ref.req.version_req,
+      &package_req.version_req,
       &package_info,
     );
     assert_eq!(
@@ -224,8 +223,7 @@ mod test {
     );
 
     // dist tag where version is a pre-release
-    let package_ref =
-      NpmPackageReqReference::from_str("npm:test@latest").unwrap();
+    let package_req = PackageReq::from_str("test@latest").unwrap();
     let package_info = NpmPackageInfo {
       name: "test".to_string(),
       versions: HashMap::from([
@@ -247,7 +245,7 @@ mod test {
       )]),
     };
     let result = resolver.get_resolved_package_version_and_info(
-      &package_ref.req.version_req,
+      &package_req.version_req,
       &package_info,
     );
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-alpha");
@@ -257,8 +255,7 @@ mod test {
   fn test_types_node_version() {
     // this will use the 1.0.0 version because that's what was specified
     // for the "types_node_version_req" even though the latest is 1.1.0
-    let package_ref =
-      NpmPackageReqReference::from_str("npm:@types/node").unwrap();
+    let package_req = PackageReq::from_str("@types/node").unwrap();
     let package_info = NpmPackageInfo {
       name: "@types/node".to_string(),
       versions: HashMap::from([
@@ -288,7 +285,7 @@ mod test {
       ),
     };
     let result = resolver.get_resolved_package_version_and_info(
-      &package_ref.req.version_req,
+      &package_req.version_req,
       &package_info,
     );
     assert_eq!(result.unwrap().version.to_string(), "1.0.0");
