@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use deno_semver::npm::NpmPackageNv;
+use deno_semver::package::PackageNv;
 use deno_semver::Version;
 use registry::NpmPackageVersionDistInfo;
 use resolution::SerializedNpmResolutionSnapshotPackage;
@@ -27,7 +27,7 @@ pub struct NpmPackageNodeIdDeserializationError {
 /// the resolved name, version, and peer dependency resolution identifiers.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NpmPackageId {
-  pub nv: NpmPackageNv,
+  pub nv: PackageNv,
   pub peer_dependencies: Vec<NpmPackageId>,
 }
 
@@ -144,7 +144,7 @@ impl NpmPackageId {
         Ok((
           input,
           NpmPackageId {
-            nv: NpmPackageNv { name, version },
+            nv: PackageNv { name, version },
             peer_dependencies,
           },
         ))
@@ -179,7 +179,7 @@ impl PartialOrd for NpmPackageId {
 /// where duplicate copies of the same package may exist.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NpmPackageCacheFolderId {
-  pub nv: NpmPackageNv,
+  pub nv: PackageNv,
   /// Peer dependency resolution may require us to have duplicate copies
   /// of the same package.
   pub copy_index: u8,
@@ -351,51 +351,30 @@ fn node_js_os(rust_os: &str) -> String {
 
 #[cfg(test)]
 mod test {
-  use deno_semver::npm::NpmPackageNv;
-  use deno_semver::Version;
-
   use super::*;
 
   #[test]
   fn serialize_npm_package_id() {
     let id = NpmPackageId {
-      nv: NpmPackageNv {
-        name: "pkg-a".to_string(),
-        version: Version::parse_from_npm("1.2.3").unwrap(),
-      },
+      nv: PackageNv::from_str("pkg-a@1.2.3").unwrap(),
       peer_dependencies: vec![
         NpmPackageId {
-          nv: NpmPackageNv {
-            name: "pkg-b".to_string(),
-            version: Version::parse_from_npm("3.2.1").unwrap(),
-          },
+          nv: PackageNv::from_str("pkg-b@3.2.1").unwrap(),
           peer_dependencies: vec![
             NpmPackageId {
-              nv: NpmPackageNv {
-                name: "pkg-c".to_string(),
-                version: Version::parse_from_npm("1.3.2").unwrap(),
-              },
+              nv: PackageNv::from_str("pkg-c@1.3.2").unwrap(),
               peer_dependencies: vec![],
             },
             NpmPackageId {
-              nv: NpmPackageNv {
-                name: "pkg-d".to_string(),
-                version: Version::parse_from_npm("2.3.4").unwrap(),
-              },
+              nv: PackageNv::from_str("pkg-d@2.3.4").unwrap(),
               peer_dependencies: vec![],
             },
           ],
         },
         NpmPackageId {
-          nv: NpmPackageNv {
-            name: "pkg-e".to_string(),
-            version: Version::parse_from_npm("2.3.1").unwrap(),
-          },
+          nv: PackageNv::from_str("pkg-e@2.3.1").unwrap(),
           peer_dependencies: vec![NpmPackageId {
-            nv: NpmPackageNv {
-              name: "pkg-f".to_string(),
-              version: Version::parse_from_npm("2.3.1").unwrap(),
-            },
+            nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
             peer_dependencies: vec![],
           }],
         },

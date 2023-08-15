@@ -10,8 +10,8 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
 
-use deno_semver::npm::NpmPackageNv;
-use deno_semver::npm::NpmPackageReq;
+use deno_semver::package::PackageNv;
+use deno_semver::package::PackageReq;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
@@ -77,7 +77,7 @@ enum ResolvedIdPeerDep {
   /// change from under it.
   ParentReference {
     parent: GraphPathNodeOrRoot,
-    child_pkg_nv: Rc<NpmPackageNv>,
+    child_pkg_nv: Rc<PackageNv>,
   },
   /// A node that was created during snapshotting and is not being used in any path.
   SnapshotNodeId(NodeId),
@@ -113,7 +113,7 @@ impl ResolvedIdPeerDep {
 /// will become fully resolved to an `NpmPackageId`.
 #[derive(Clone)]
 struct ResolvedId {
-  nv: Rc<NpmPackageNv>,
+  nv: Rc<PackageNv>,
   peer_dependencies: Vec<ResolvedIdPeerDep>,
 }
 
@@ -201,7 +201,7 @@ impl NodeIdRef {
 #[derive(Clone)]
 enum GraphPathNodeOrRoot {
   Node(Rc<GraphPath>),
-  Root(Rc<NpmPackageNv>),
+  Root(Rc<PackageNv>),
 }
 
 /// Path through the graph that represents a traversal through the graph doing
@@ -214,14 +214,14 @@ struct GraphPath {
   specifier: String,
   // we could consider not storing this here and instead reference the resolved
   // nodes, but we should performance profile this code first
-  nv: Rc<NpmPackageNv>,
+  nv: Rc<PackageNv>,
   /// Descendants in the path that circularly link to an ancestor in a child. These
   /// descendants should be kept up to date and always point to this node.
   linked_circular_descendants: RefCell<Vec<Rc<GraphPath>>>,
 }
 
 impl GraphPath {
-  pub fn for_root(node_id: NodeId, nv: Rc<NpmPackageNv>) -> Rc<Self> {
+  pub fn for_root(node_id: NodeId, nv: Rc<PackageNv>) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -248,7 +248,7 @@ impl GraphPath {
     self: &Rc<GraphPath>,
     node_id: NodeId,
     specifier: String,
-    nv: Rc<NpmPackageNv>,
+    nv: Rc<PackageNv>,
   ) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Node(self.clone())),
@@ -260,7 +260,7 @@ impl GraphPath {
   }
 
   /// Gets if there is an ancestor with the same name & version along this path.
-  pub fn find_ancestor(&self, nv: &NpmPackageNv) -> Option<Rc<GraphPath>> {
+  pub fn find_ancestor(&self, nv: &PackageNv) -> Option<Rc<GraphPath>> {
     let mut maybe_next_node = self.previous_node.as_ref();
     while let Some(GraphPathNodeOrRoot::Node(next_node)) = maybe_next_node {
       // we've visited this before, so stop
@@ -317,11 +317,11 @@ impl<'a> Iterator for GraphPathAncestorIterator<'a> {
 
 pub struct Graph {
   /// Each requirement is mapped to a specific name and version.
-  package_reqs: HashMap<NpmPackageReq, Rc<NpmPackageNv>>,
+  package_reqs: HashMap<PackageReq, Rc<PackageNv>>,
   /// Then each name and version is mapped to an exact node id.
   /// Note: Uses a BTreeMap in order to create some determinism
   /// when creating the snapshot.
-  root_packages: BTreeMap<Rc<NpmPackageNv>, NodeId>,
+  root_packages: BTreeMap<Rc<PackageNv>, NodeId>,
   package_name_versions: HashMap<String, HashSet<Version>>,
   nodes: HashMap<NodeId, Node>,
   resolved_node_ids: ResolvedNodeIds,
@@ -329,7 +329,7 @@ pub struct Graph {
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
   /// Packages that the resolver should resolve first.
-  pending_unresolved_packages: Vec<Rc<NpmPackageNv>>,
+  pending_unresolved_packages: Vec<Rc<PackageNv>>,
 }
 
 impl Graph {
@@ -450,15 +450,15 @@ impl Graph {
     graph
   }
 
-  pub fn take_pending_unresolved(&mut self) -> Vec<Rc<NpmPackageNv>> {
+  pub fn take_pending_unresolved(&mut self) -> Vec<Rc<PackageNv>> {
     std::mem::take(&mut self.pending_unresolved_packages)
   }
 
-  pub fn has_package_req(&self, req: &NpmPackageReq) -> bool {
+  pub fn has_package_req(&self, req: &PackageReq) -> bool {
     self.package_reqs.contains_key(req)
   }
 
-  pub fn has_root_package(&self, id: &NpmPackageNv) -> bool {
+  pub fn has_root_package(&self, id: &PackageNv) -> bool {
     self.root_packages.contains_key(id)
   }
 
@@ -568,7 +568,7 @@ impl Graph {
     (true, node_id)
   }
 
-  fn create_node(&mut self, pkg_nv: &NpmPackageNv) -> NodeId {
+  fn create_node(&mut self, pkg_nv: &PackageNv) -> NodeId {
     let node_id = NodeId(self.nodes.len() as u32);
     let node = Node {
       children: Default::default(),
@@ -775,12 +775,12 @@ impl Graph {
 }
 
 #[derive(Default)]
-struct DepEntryCache(HashMap<Rc<NpmPackageNv>, Rc<Vec<NpmDependencyEntry>>>);
+struct DepEntryCache(HashMap<Rc<PackageNv>, Rc<Vec<NpmDependencyEntry>>>);
 
 impl DepEntryCache {
   pub fn store(
     &mut self,
-    nv: Rc<NpmPackageNv>,
+    nv: Rc<PackageNv>,
     version_info: &NpmPackageVersionInfo,
   ) -> Result<Rc<Vec<NpmDependencyEntry>>, Box<NpmDependencyEntryError>> {
     debug_assert_eq!(nv.version, version_info.version);
@@ -794,7 +794,7 @@ impl DepEntryCache {
     Ok(deps)
   }
 
-  pub fn get(&self, id: &NpmPackageNv) -> Option<&Rc<Vec<NpmDependencyEntry>>> {
+  pub fn get(&self, id: &PackageNv) -> Option<&Rc<Vec<NpmDependencyEntry>>> {
     self.0.get(id)
   }
 }
@@ -810,7 +810,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   unresolved_optional_peers:
-    HashMap<Rc<NpmPackageNv>, Vec<UnresolvedOptionalPeer>>,
+    HashMap<Rc<PackageNv>, Vec<UnresolvedOptionalPeer>>,
   dep_entry_cache: DepEntryCache,
 }
 
@@ -834,7 +834,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   pub fn add_root_package(
     &mut self,
-    package_nv: &NpmPackageNv,
+    package_nv: &PackageNv,
     package_info: &NpmPackageInfo,
   ) -> Result<(), NpmResolutionError> {
     if self.graph.root_packages.contains_key(package_nv) {
@@ -862,7 +862,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   pub fn add_package_req(
     &mut self,
-    package_req: &NpmPackageReq,
+    package_req: &PackageReq,
     package_info: &NpmPackageInfo,
   ) -> Result<(), NpmResolutionError> {
     if self.graph.package_reqs.contains_key(package_req) {
@@ -935,7 +935,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     version_req: &VersionReq,
     package_info: &NpmPackageInfo,
     parent_id: Option<NodeId>,
-  ) -> Result<(Rc<NpmPackageNv>, NodeId), NpmResolutionError> {
+  ) -> Result<(Rc<PackageNv>, NodeId), NpmResolutionError> {
     let info = self.version_resolver.resolve_best_package_version_info(
       version_req,
       package_info,
@@ -947,7 +947,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .iter(),
     )?;
     let resolved_id = ResolvedId {
-      nv: Rc::new(NpmPackageNv {
+      nv: Rc::new(PackageNv {
         name: package_info.name.to_string(),
         version: info.version.clone(),
       }),
@@ -1285,7 +1285,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     // path from the node above the resolved dep to just above the peer dep
     path: &[&Rc<GraphPath>],
-    peer_deps: &[(&ResolvedIdPeerDep, Rc<NpmPackageNv>)],
+    peer_deps: &[(&ResolvedIdPeerDep, Rc<PackageNv>)],
   ) {
     debug_assert!(!path.is_empty());
 
@@ -1487,7 +1487,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &self,
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
-    children: impl Iterator<Item = (NodeId, &'nv Rc<NpmPackageNv>)>,
+    children: impl Iterator<Item = (NodeId, &'nv Rc<PackageNv>)>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
     for (child_id, pkg_id) in children {
       if pkg_id.name == peer_dep.name
@@ -1506,7 +1506,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
 #[cfg(test)]
 mod test {
-  use deno_semver::npm::NpmPackageReqReference;
   use pretty_assertions::assert_eq;
 
   use crate::registry::TestNpmRegistryApi;
@@ -1520,7 +1519,7 @@ mod test {
     let mut ids = ResolvedNodeIds::default();
     let node_id = NodeId(0);
     let resolved_id = ResolvedId {
-      nv: Rc::new(NpmPackageNv::from_str("package@1.1.1").unwrap()),
+      nv: Rc::new(PackageNv::from_str("package@1.1.1").unwrap()),
       peer_dependencies: Vec::new(),
     };
     ids.set(node_id, resolved_id.clone());
@@ -1529,7 +1528,7 @@ mod test {
     assert_eq!(ids.get_node_id(&resolved_id), Some(node_id));
 
     let resolved_id_new = ResolvedId {
-      nv: Rc::new(NpmPackageNv::from_str("package@1.1.2").unwrap()),
+      nv: Rc::new(PackageNv::from_str("package@1.1.2").unwrap()),
       peer_dependencies: Vec::new(),
     };
     ids.set(node_id, resolved_id_new.clone());
@@ -1552,7 +1551,7 @@ mod test {
     api.add_dependency(("package-c", "0.1.0"), ("package-d", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1"]).await;
     assert_eq!(
       packages,
       vec![
@@ -1599,7 +1598,7 @@ mod test {
     api.add_dependency(("package-b", "2.0.0"), ("package-a", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -1638,7 +1637,7 @@ mod test {
 
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec!["npm:package-a@1.0", "npm:package-peer@1.0"],
+      vec!["package-a@1.0", "package-peer@1.0"],
     )
     .await;
     assert_eq!(
@@ -1695,7 +1694,7 @@ mod test {
     api.add_peer_dependency(("package-b", "1.0.0"), ("package-peer", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -1757,7 +1756,7 @@ mod test {
     api.add_peer_dependency(("package-b", "1.0.0"), ("package-peer", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -1826,7 +1825,7 @@ mod test {
       api,
       // the peer dependency is specified here at the top of the tree
       // so it should resolve to 4.0.0 instead of 4.1.0
-      vec!["npm:package-a@1", "npm:package-peer@4.0.0"],
+      vec!["package-a@1", "package-peer@4.0.0"],
     )
     .await;
     assert_eq!(
@@ -1903,7 +1902,7 @@ mod test {
     api.add_peer_dependency(("package-c", "3.0.0"), ("package-peer", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.1.1"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.1.1"]).await;
     assert_eq!(
       packages,
       vec![
@@ -1975,7 +1974,7 @@ mod test {
     api.add_peer_dependency(("package-c", "3.0.0"), ("package-peer", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1"]).await;
     assert_eq!(
       packages,
       vec![
@@ -2044,7 +2043,7 @@ mod test {
     );
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1"]).await;
     assert_eq!(
       packages,
       vec![
@@ -2095,7 +2094,7 @@ mod test {
 
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec!["npm:package-a@1", "npm:package-peer@4.0.0"],
+      vec!["package-a@1", "package-peer@4.0.0"],
     )
     .await;
     assert_eq!(
@@ -2175,11 +2174,9 @@ mod test {
       ("package-peer-unresolved", "*"),
     );
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-a@1", "npm:package-b@1"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1", "package-b@1"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -2238,11 +2235,9 @@ mod test {
     api.add_dependency(("package-b", "1.0.0"), ("package-a", "1.0.0"));
     api.add_dependency(("package-b", "1.0.0"), ("package-peer", "2.0.0"));
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-a@1", "npm:package-b@1"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1", "package-b@1"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -2297,11 +2292,9 @@ mod test {
       ("package-peer", "*"),
     );
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-a@1", "npm:package-peer@1"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1", "package-peer@1"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -2351,11 +2344,7 @@ mod test {
 
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec![
-        "npm:package-a@1",
-        "npm:package-b@1",
-        "npm:package-peer@1.0.0",
-      ],
+      vec!["package-a@1", "package-b@1", "package-peer@1.0.0"],
     )
     .await;
     assert_eq!(
@@ -2431,7 +2420,7 @@ mod test {
     api.add_peer_dependency(("package-a", "1.0.0"), ("package-peer", "2"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1"]).await;
     assert_eq!(
       packages,
       vec![
@@ -2475,7 +2464,7 @@ mod test {
     );
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -2528,11 +2517,7 @@ mod test {
 
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec![
-        "npm:package-0@1.0",
-        "npm:package-peer-a@2",
-        "npm:package-peer-b@3",
-      ],
+      vec!["package-0@1.0", "package-peer-a@2", "package-peer-b@3"],
     )
     .await;
     assert_eq!(
@@ -2619,11 +2604,9 @@ mod test {
       ("package-peer-b", "^5.4"), // will be auto-resolved
     );
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-0@1.1.1", "npm:package-e@3"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-0@1.1.1", "package-e@3"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -2730,7 +2713,7 @@ mod test {
     api.add_peer_dependency(("package-b", "2.0.0"), ("package-a", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -2774,11 +2757,9 @@ mod test {
       api.add_dependency(("package-b", "2.0.0"), ("package-peer", "5"));
       api.add_peer_dependency(("package-dep", "3.0.0"), ("package-peer", "*"));
 
-      let (packages, package_reqs) = run_resolver_and_get_output(
-        api,
-        vec!["npm:package-a@1", "npm:package-b@2"],
-      )
-      .await;
+      let (packages, package_reqs) =
+        run_resolver_and_get_output(api, vec!["package-a@1", "package-b@2"])
+          .await;
       assert_eq!(
         packages,
         vec![
@@ -2863,11 +2844,9 @@ mod test {
     api.add_dependency(("package-a", "1.0.0"), ("package-peer", "1"));
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "1"));
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-a@1.0", "npm:package-b@1.0"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0", "package-b@1.0"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -2935,11 +2914,9 @@ mod test {
     api.add_dependency(("package-b", "1.0.0"), ("package-peer", "=1.1.0"));
     api.add_dependency(("package-c", "1.0.0"), ("package-a", "1"));
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["npm:package-a@1.0", "npm:package-b@1.0"],
-    )
-    .await;
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0", "package-b@1.0"])
+        .await;
     assert_eq!(
       packages,
       vec![
@@ -3024,7 +3001,7 @@ mod test {
     api.add_dist_tag("package-d", "other-tag", "1.0.0");
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3085,7 +3062,7 @@ mod test {
     api.add_dependency(("package-a", "1.0.0"), ("package-a", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![TestNpmResolutionPackage {
@@ -3109,7 +3086,7 @@ mod test {
     api.add_dependency(("package-a", "1.0.0"), ("package-a", "^0.5"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3143,7 +3120,7 @@ mod test {
     api.add_peer_dependency(("package-b", "2.0.0"), ("package-a", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3182,7 +3159,7 @@ mod test {
     api.add_peer_dependency(("package-b", "2.0.0"), ("package-a", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3229,7 +3206,7 @@ mod test {
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-a", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3276,7 +3253,7 @@ mod test {
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3335,7 +3312,7 @@ mod test {
     api.add_peer_dependency(("package-d", "1.0.0"), ("package-0", "*"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-0@1.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-0@1.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3440,7 +3417,7 @@ mod test {
 
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec!["npm:package-0@1.0", "npm:package-peer@1.0"],
+      vec!["package-0@1.0", "package-peer@1.0"],
     )
     .await;
     assert_eq!(
@@ -3521,7 +3498,7 @@ mod test {
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3590,7 +3567,7 @@ mod test {
     api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3682,7 +3659,7 @@ mod test {
     api.add_peer_dependency(("package-e", "1.0.0"), ("package-a", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
     assert_eq!(
       packages,
       vec![
@@ -3795,8 +3772,7 @@ mod test {
       },
     ];
     let (packages, package_reqs) =
-      run_resolver_and_get_output(api.clone(), vec!["npm:package-a@1.0.0"])
-        .await;
+      run_resolver_and_get_output(api.clone(), vec!["package-a@1.0.0"]).await;
     assert_eq!(packages, expected_packages.clone());
     assert_eq!(
       package_reqs,
@@ -3809,7 +3785,7 @@ mod test {
     // now try with b at the top level
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
-      vec!["npm:package-a@1.0.0", "npm:package-b@1.0.0"],
+      vec!["package-a@1.0.0", "package-b@1.0.0"],
     )
     .await;
     assert_eq!(packages, expected_packages.clone());
@@ -3845,7 +3821,7 @@ mod test {
     });
 
     let snapshot =
-      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_snapshot(api, vec!["package-a@1.0.0"]).await;
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
@@ -3922,7 +3898,7 @@ mod test {
     });
 
     let snapshot =
-      run_resolver_and_get_snapshot(api, vec!["npm:package-a@1.0.0"]).await;
+      run_resolver_and_get_snapshot(api, vec!["package-a@1.0.0"]).await;
 
     let packages = package_names_with_info(
       &snapshot,
@@ -4033,7 +4009,7 @@ mod test {
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
 
     for req in reqs {
-      let req = NpmPackageReqReference::from_str(req).unwrap().req;
+      let req = PackageReq::from_str(req).unwrap();
       resolver
         .add_package_req(&req, &api.package_info(&req.name).await.unwrap())
         .unwrap();

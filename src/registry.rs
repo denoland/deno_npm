@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use deno_semver::npm::NpmPackageNv;
 use deno_semver::npm::NpmVersionReqParseError;
+use deno_semver::package::PackageNv;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use serde::Deserialize;
@@ -53,7 +53,7 @@ pub struct NpmPackageInfo {
 impl NpmPackageInfo {
   pub fn version_info(
     &self,
-    nv: &NpmPackageNv,
+    nv: &PackageNv,
   ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
     match self.versions.get(&nv.version).cloned() {
       Some(version_info) => Ok(version_info),
@@ -68,7 +68,7 @@ impl NpmPackageInfo {
 )]
 pub struct NpmDependencyEntryError {
   /// Name and version of the package that has this dependency.
-  pub parent_nv: NpmPackageNv,
+  pub parent_nv: PackageNv,
   /// Bare specifier.
   pub key: String,
   /// Version requirement text.
@@ -196,7 +196,7 @@ impl NpmPackageVersionInfo {
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
         Box::new(NpmDependencyEntryError {
-          parent_nv: NpmPackageNv {
+          parent_nv: PackageNv {
             name: nv.0.to_string(),
             version: nv.1.clone(),
           },
@@ -271,10 +271,7 @@ pub enum NpmRegistryPackageInfoLoadError {
 /// A trait for getting package information from the npm registry.
 ///
 /// An implementer may want to override the default implementation of
-/// [`mark_force_reload`] mathoc if it has a cache mechanism.
-///
-/// [`mark_force_reload`]: NpmRegistryApi::mark_force_reload
-/// [`clear_cache`]: NpmRegistryApi::clear_cache
+/// [`mark_force_reload`] method if it has a cache mechanism.
 #[async_trait]
 pub trait NpmRegistryApi: Sync + Send {
   /// Gets the package information from the npm registry.
