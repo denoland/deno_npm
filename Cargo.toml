@@ -13,7 +13,7 @@ license = "MIT"
 anyhow = "1.0.70"
 async-trait = "0.1.68"
 deno_semver = "0.4.0"
-deno_lockfile = "0.16.0"
+deno_lockfile = "0.17.0"
 monch = "0.4.3"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
