@@ -82,6 +82,13 @@ impl NpmVersionResolver {
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
     if let Some(tag) = version_req.tag() {
       self.tag_to_version_info(info, tag)
+      // When the version is *, if there is a latest tag, use it directly.
+      // No need to care about @types/node here, because it'll be handled specially below.
+    } else if *version_req == *WILDCARD_VERSION_REQ
+      && info.dist_tags.contains_key("latest")
+      && info.name != "@types/node"
+    {
+      self.tag_to_version_info(info, "latest")
     } else {
       let mut maybe_best_version: Option<&'a NpmPackageVersionInfo> = None;
       for version_info in info.versions.values() {
@@ -289,5 +296,41 @@ mod test {
       &package_info,
     );
     assert_eq!(result.unwrap().version.to_string(), "1.0.0");
+  }
+
+  #[test]
+  fn test_wildcard_version_req() {
+    let package_req = PackageReq::from_str("some-pkg").unwrap();
+    let package_info = NpmPackageInfo {
+      name: "some-pkg".to_string(),
+      versions: HashMap::from([
+        (
+          Version::parse_from_npm("1.0.0-rc.1").unwrap(),
+          NpmPackageVersionInfo {
+            version: Version::parse_from_npm("1.0.0-rc.1").unwrap(),
+            ..Default::default()
+          },
+        ),
+        (
+          Version::parse_from_npm("2.0.0").unwrap(),
+          NpmPackageVersionInfo {
+            version: Version::parse_from_npm("2.0.0").unwrap(),
+            ..Default::default()
+          },
+        ),
+      ]),
+      dist_tags: HashMap::from([(
+        "latest".to_string(),
+        Version::parse_from_npm("1.0.0-rc.1").unwrap(),
+      )]),
+    };
+    let resolver = NpmVersionResolver {
+      types_node_version_req: None,
+    };
+    let result = resolver.get_resolved_package_version_and_info(
+      &package_req.version_req,
+      &package_info,
+    );
+    assert_eq!(result.unwrap().version.to_string(), "1.0.0-rc.1");
   }
 }
