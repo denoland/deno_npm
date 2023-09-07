@@ -39,23 +39,19 @@ use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find referenced package '{}' in the list of packages.", self.0.as_serialized())]
+#[error("Could not find '{}' in the list of packages.", self.0.as_serialized())]
 pub struct PackageIdNotFoundError(pub NpmPackageId);
 
 #[derive(Debug, Error, Clone)]
-#[error(
-  "Could not find referenced package constraint '{0}' in the list of packages."
-)]
+#[error("Could not find constraint '{0}' in the list of packages.")]
 pub struct PackageReqNotFoundError(pub PackageReq);
 
 #[derive(Debug, Error, Clone)]
-#[error("Could not find referenced package '{0}' in the list of packages.")]
+#[error("Could not find '{0}' in the list of packages.")]
 pub struct PackageNvNotFoundError(pub PackageNv);
 
 #[derive(Debug, Error, Clone)]
-#[error(
-  "Could not find referenced package folder id '{0}' in the list of packages."
-)]
+#[error("Could not find package folder id '{0}' in the list of packages.")]
 pub struct PackageCacheFolderIdNotFoundError(pub NpmPackageCacheFolderId);
 
 #[derive(Debug, Error, Clone)]
@@ -849,23 +845,27 @@ pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
 ) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
   let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
-    lockfile.content.npm.specifiers.len(),
+    lockfile.content.packages.specifiers.len(),
   );
   // collect the specifiers to version mappings
-  for (key, value) in &lockfile.content.npm.specifiers {
-    let package_req = PackageReq::from_str(key).map_err(|e| {
-      SnapshotFromLockfileError::ReqParse {
-        key: key.to_string(),
-        source: e,
+  for (key, value) in &lockfile.content.packages.specifiers {
+    if let Some(key) = key.strip_prefix("npm:") {
+      if let Some(value) = value.strip_prefix("npm:") {
+        let package_req = PackageReq::from_str(key).map_err(|e| {
+          SnapshotFromLockfileError::ReqParse {
+            key: key.to_string(),
+            source: e,
+          }
+        })?;
+        let package_id = NpmPackageId::from_serialized(value)?;
+        root_packages.insert(package_req, package_id.clone());
       }
-    })?;
-    let package_id = NpmPackageId::from_serialized(value)?;
-    root_packages.insert(package_req, package_id.clone());
+    }
   }
 
   // now fill the packages except for the dist information
-  let mut packages = Vec::with_capacity(lockfile.content.npm.packages.len());
-  for (key, package) in &lockfile.content.npm.packages {
+  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
+  for (key, package) in &lockfile.content.packages.npm {
     let id = NpmPackageId::from_serialized(key)?;
 
     // collect the dependencies
@@ -1190,14 +1190,33 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn test_snapshot_from_lockfile() {
+  async fn test_snapshot_from_lockfile_v2() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("emoji-regex", "10.2.1");
     api.ensure_package_version("chalk", "5.3.0");
 
     let lockfile = Lockfile::with_lockfile_content(
       PathBuf::from("/deno.lock"),
-      include_str!("testdata/npm.lock"),
+      r#"{
+        "version": "2",
+        "remote": {},
+        "npm": {
+          "specifiers": {
+            "chalk@5": "chalk@5.3.0",
+            "emoji-regex": "emoji-regex@10.2.1"
+          },
+          "packages": {
+            "chalk@5.3.0": {
+              "integrity": "sha512-dLitG79d+GV1Nb/VYcCDFivJeK1hiukt9QjRNVOsUtTy1rR1YJsmpGGTZ3qJos+uw7WmWF4wUwBd9jxjocFC2w==",
+              "dependencies": {}
+            },
+            "emoji-regex@10.2.1": {
+              "integrity": "sha512-97g6QgOk8zlDRdgq1WxwgTMgEWGVAQvB5Fdpgc1MkNy56la5SKP9GsMXKDOdqwn90/41a8yPwIGk1Y6WVbeMQA==",
+              "dependencies": {}
+            }
+          }
+        }
+      }"#,
       false,
     )
     .unwrap();
@@ -1207,5 +1226,58 @@ mod tests {
     assert!(snapshot_from_lockfile(incomplete_snapshot, &api)
       .await
       .is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile_v3() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("emoji-regex", "10.2.1");
+    api.ensure_package_version("chalk", "5.3.0");
+
+    let lockfile = Lockfile::with_lockfile_content(
+      PathBuf::from("/deno.lock"),
+      r#"{
+        "version": "3",
+        "remote": {},
+        "packages": {
+          "specifiers": {
+            "npm:chalk@5": "npm:chalk@5.3.0",
+            "npm:emoji-regex": "npm:emoji-regex@10.2.1",
+            "deno:path": "deno:@std/path@1.0.0"
+          },
+          "npm": {
+            "chalk@5.3.0": {
+              "integrity": "sha512-dLitG79d+GV1Nb/VYcCDFivJeK1hiukt9QjRNVOsUtTy1rR1YJsmpGGTZ3qJos+uw7WmWF4wUwBd9jxjocFC2w==",
+              "dependencies": {}
+            },
+            "emoji-regex@10.2.1": {
+              "integrity": "sha512-97g6QgOk8zlDRdgq1WxwgTMgEWGVAQvB5Fdpgc1MkNy56la5SKP9GsMXKDOdqwn90/41a8yPwIGk1Y6WVbeMQA==",
+              "dependencies": {}
+            }
+          }
+        }
+      }"#,
+      false,
+    )
+    .unwrap();
+
+    let incomplete_snapshot =
+      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    let snapshot = snapshot_from_lockfile(incomplete_snapshot, &api)
+      .await
+      .unwrap();
+    assert_eq!(
+      snapshot.as_serialized().root_packages,
+      HashMap::from([
+        (
+          PackageReq::from_str("chalk@5").unwrap(),
+          NpmPackageId::from_serialized("chalk@5.3.0").unwrap()
+        ),
+        (
+          PackageReq::from_str("emoji-regex").unwrap(),
+          NpmPackageId::from_serialized("emoji-regex@10.2.1").unwrap()
+        )
+      ])
+    );
   }
 }
