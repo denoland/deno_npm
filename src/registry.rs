@@ -245,7 +245,9 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
     algorithm: &'a str,
     base64_hash: &'a str,
   },
+  /// The integrity could not be determined because it did not contain a dash.
   UnknownIntegrity(&'a str),
+  /// The legacy sha1 hex hash (ex. "62afbee2ffab5e0db139450767a6125cbea50fa2").
   LegacySha1Hex(&'a str),
 }
 
