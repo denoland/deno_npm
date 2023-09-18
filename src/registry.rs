@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -239,6 +238,19 @@ impl NpmPackageVersionInfo {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NpmPackageVersionDistInfoIntegrity<'a> {
+  /// A string in the form `sha1-<hash>` where the hash is base64 encoded.
+  Integrity {
+    algorithm: &'a str,
+    base64_hash: &'a str,
+  },
+  /// The integrity could not be determined because it did not contain a dash.
+  UnknownIntegrity(&'a str),
+  /// The legacy sha1 hex hash (ex. "62afbee2ffab5e0db139450767a6125cbea50fa2").
+  LegacySha1Hex(&'a str),
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.
@@ -248,12 +260,21 @@ pub struct NpmPackageVersionDistInfo {
 }
 
 impl NpmPackageVersionDistInfo {
-  pub fn integrity(&self) -> Cow<String> {
-    self
-      .integrity
-      .as_ref()
-      .map(Cow::Borrowed)
-      .unwrap_or_else(|| Cow::Owned(format!("sha1-{}", self.shasum)))
+  pub fn integrity(&self) -> NpmPackageVersionDistInfoIntegrity {
+    match &self.integrity {
+      Some(integrity) => match integrity.split_once('-') {
+        Some((algorithm, base64_hash)) => {
+          NpmPackageVersionDistInfoIntegrity::Integrity {
+            algorithm,
+            base64_hash,
+          }
+        }
+        None => NpmPackageVersionDistInfoIntegrity::UnknownIntegrity(
+          integrity.as_str(),
+        ),
+      },
+      None => NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(&self.shasum),
+    }
   }
 }
 
@@ -489,6 +510,37 @@ mod test {
         ("a".to_string(), "a-value".to_string()),
         ("b".to_string(), "b-value".to_string()),
       ])))
+    );
+  }
+
+  #[test]
+  fn itegrity() {
+    // integrity
+    let text =
+      r#"{ "tarball": "", "integrity": "sha512-testing", "shasum": "here" }"#;
+    let info: NpmPackageVersionDistInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.integrity(),
+      super::NpmPackageVersionDistInfoIntegrity::Integrity {
+        algorithm: "sha512",
+        base64_hash: "testing"
+      }
+    );
+
+    // no integrity
+    let text = r#"{ "tarball": "", "shasum": "here" }"#;
+    let info: NpmPackageVersionDistInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.integrity(),
+      super::NpmPackageVersionDistInfoIntegrity::LegacySha1Hex("here")
+    );
+
+    // no dash
+    let text = r#"{ "tarball": "", "integrity": "test", "shasum": "here" }"#;
+    let info: NpmPackageVersionDistInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.integrity(),
+      super::NpmPackageVersionDistInfoIntegrity::UnknownIntegrity("test")
     );
   }
 }
