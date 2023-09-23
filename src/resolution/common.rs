@@ -380,4 +380,47 @@ mod test {
     );
     assert_eq!(result.unwrap().version.to_string(), "0.1.0-alpha.1");
   }
+
+  #[test]
+  #[should_panic]
+  fn test_latest_tag_version_req_panic() {
+    let package_req = PackageReq::from_str("some-pkg@^0.1.0-alpha.1").unwrap();
+    let package_info = NpmPackageInfo {
+      name: "some-pkg".to_string(),
+      versions: HashMap::from([
+        (
+          Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
+          NpmPackageVersionInfo {
+            version: Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
+            ..Default::default()
+          },
+        ),
+        (
+          Version::parse_from_npm("0.1.0-beta.1").unwrap(),
+          NpmPackageVersionInfo {
+            version: Version::parse_from_npm("0.1.0-beta.1").unwrap(),
+            ..Default::default()
+          },
+        ),
+      ]),
+      dist_tags: HashMap::from([
+        (
+          "latest".to_string(),
+          Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
+        ),
+        (
+          "dev".to_string(),
+          Version::parse_from_npm("0.1.0-beta.1").unwrap(),
+        ),
+      ]),
+    };
+    let resolver = NpmVersionResolver {
+      types_node_version_req: None,
+    };
+    let result = resolver.get_resolved_package_version_and_info(
+      &package_req.version_req,
+      &package_info,
+    );
+    assert_eq!(result.unwrap().version.to_string(), "0.1.0-beta.1");
+  }
 }
