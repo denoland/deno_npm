@@ -84,6 +84,7 @@ impl NpmVersionResolver {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
       // When the latest tag satisfies the version requirement, use it directly.
+      // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
       // No need to care about @types/node here, because it'll be handled specially below.
     } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
