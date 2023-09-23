@@ -83,6 +83,7 @@ impl NpmVersionResolver {
     if let Some(tag) = version_req.tag() {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
+      // When the latest tag satisfies the version requirement, use it directly.
       // No need to care about @types/node here, because it'll be handled specially below.
     } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
