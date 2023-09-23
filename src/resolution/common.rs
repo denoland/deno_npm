@@ -84,9 +84,12 @@ impl NpmVersionResolver {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
       // No need to care about @types/node here, because it'll be handled specially below.
-    } else if *version_req == *WILDCARD_VERSION_REQ
-      && info.dist_tags.contains_key("latest")
+    } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
+      && (*version_req == *WILDCARD_VERSION_REQ
+        || info.dist_tags.get("latest").and_then(|version| {
+          self.version_req_satisfies(version_req, version, info).ok()
+        }) == Some(true))
     {
       self.tag_to_version_info(info, "latest")
     } else {
