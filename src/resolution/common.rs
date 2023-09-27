@@ -89,9 +89,12 @@ impl NpmVersionResolver {
     } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
       && (*version_req == *WILDCARD_VERSION_REQ
-        || info.dist_tags.get("latest").and_then(|version| {
-          self.version_req_satisfies(version_req, version, info).ok()
-        }) == Some(true))
+        || info
+          .dist_tags
+          .get("latest")
+          .map(|version| self.version_req_satisfies(version_req, version, info))
+          .transpose()?
+          .unwrap_or_default())
     {
       self.tag_to_version_info(info, "latest")
     } else {
