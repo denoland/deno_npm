@@ -3810,9 +3810,9 @@ mod test {
     api.ensure_package_version("package-d", "1.0.0");
     api.ensure_package_version("package-e", "1.0.0");
     api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
-    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dep_and_optional_dep(("package-a", "1.0.0"), ("package-c", "1"));
     api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
-    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+    api.add_optional_dep(("package-d", "1.0.0"), ("package-e", "1"));
     api.with_version_info(("package-c", "1.0.0"), |info| {
       info.os = vec!["win32".to_string(), "darwin".to_string()];
     });
@@ -3886,9 +3886,9 @@ mod test {
     // deep down this is set back to being required, so it and its required
     // dependency should be marked as required
     api.add_dependency(("package-b3", "1.0.0"), ("package-c", "1"));
-    api.add_optional_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dep_and_optional_dep(("package-a", "1.0.0"), ("package-c", "1"));
     api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
-    api.add_optional_dependency(("package-d", "1.0.0"), ("package-e", "1"));
+    api.add_dep_and_optional_dep(("package-d", "1.0.0"), ("package-e", "1"));
 
     api.with_version_info(("package-c", "1.0.0"), |info| {
       info.os = vec!["win32".to_string()];
