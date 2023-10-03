@@ -83,17 +83,18 @@ impl NpmVersionResolver {
     if let Some(tag) = version_req.tag() {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
-      // When the latest tag satisfies the version requirement, use it directly.
-      // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
       // No need to care about @types/node here, because it'll be handled specially below.
     } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
       && (*version_req == *WILDCARD_VERSION_REQ
+        // When the latest tag satisfies the version requirement, use it directly.
+        // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
         || info
           .dist_tags
           .get("latest")
-          .map(|version| self.version_req_satisfies(version_req, version, info))
-          .transpose()?
+          .and_then(|version| {
+            self.version_req_satisfies(version_req, version, info).ok()
+          })
           .unwrap_or_default())
     {
       self.tag_to_version_info(info, "latest")
@@ -344,7 +345,6 @@ mod test {
 
   #[test]
   fn test_latest_tag_version_req() {
-    let package_req = PackageReq::from_str("some-pkg@^0.1.0-alpha.2").unwrap();
     let package_info = NpmPackageInfo {
       name: "some-pkg".to_string(),
       versions: HashMap::from([
@@ -391,14 +391,24 @@ mod test {
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
+
+    // check for when matches dist tag
+    let package_req = PackageReq::from_str("some-pkg@^0.1.0-alpha.2").unwrap();
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
       &package_info,
     );
     assert_eq!(
-      result.as_ref().unwrap().version.to_string(),
-      "0.1.0-alpha.2"
+      result.unwrap().version.to_string(),
+      "0.1.0-alpha.2" // not "0.1.0-beta.2"
     );
-    assert_ne!(result.as_ref().unwrap().version.to_string(), "0.1.0-beta.2");
+
+    // check for when not matches dist tag
+    let package_req = PackageReq::from_str("some-pkg@^0.1.0-beta.2").unwrap();
+    let result = resolver.get_resolved_package_version_and_info(
+      &package_req.version_req,
+      &package_info,
+    );
+    assert_eq!(result.unwrap().version.to_string(), "0.1.0-beta.2");
   }
 }
