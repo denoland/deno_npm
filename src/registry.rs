@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -206,8 +207,29 @@ impl NpmPackageVersionInfo {
       })
     }
 
+    let normalized_dependencies = if self
+      .optional_dependencies
+      .keys()
+      .all(|k| self.dependencies.contains_key(k))
+    {
+      Cow::Borrowed(&self.dependencies)
+    } else {
+      // Most package information has the optional dependencies duplicated
+      // in the dependencies list, but some don't. In those cases, add
+      // the optonal dependencies into the map of dependencies
+      Cow::Owned(
+        self
+          .optional_dependencies
+          .iter()
+          // prefer what's in the dependencies map
+          .chain(self.dependencies.iter())
+          .map(|(k, v)| (k.clone(), v.clone()))
+          .collect(),
+      )
+    };
+
     let mut result = HashMap::with_capacity(
-      self.dependencies.len() + self.peer_dependencies.len(),
+      normalized_dependencies.len() + self.peer_dependencies.len(),
     );
     let nv = (package_name, &self.version);
     for entry in &self.peer_dependencies {
@@ -223,7 +245,7 @@ impl NpmPackageVersionInfo {
       let entry = parse_dep_entry(nv, entry, kind)?;
       result.insert(entry.bare_specifier.clone(), entry);
     }
-    for entry in &self.dependencies {
+    for entry in normalized_dependencies.iter() {
       let entry = parse_dep_entry(nv, entry, NpmDependencyEntryKind::Dep)?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,
@@ -402,7 +424,7 @@ impl TestNpmRegistryApi {
     })
   }
 
-  pub fn add_optional_dependency(
+  pub fn add_dep_and_optional_dep(
     &self,
     package: (&str, &str),
     entry: (&str, &str),
@@ -411,6 +433,14 @@ impl TestNpmRegistryApi {
       version
         .dependencies
         .insert(entry.0.to_string(), entry.1.to_string());
+      version
+        .optional_dependencies
+        .insert(entry.0.to_string(), entry.1.to_string());
+    })
+  }
+
+  pub fn add_optional_dep(&self, package: (&str, &str), entry: (&str, &str)) {
+    self.with_version_info(package, |version| {
       version
         .optional_dependencies
         .insert(entry.0.to_string(), entry.1.to_string());
