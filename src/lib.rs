@@ -283,7 +283,7 @@ impl NpmResolutionPackage {
 
 /// System information used to determine which optional packages
 /// to download.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmSystemInfo {
   /// `process.platform` value from Node.js
   pub os: String,
