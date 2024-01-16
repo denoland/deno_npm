@@ -273,6 +273,21 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
   LegacySha1Hex(&'a str),
 }
 
+impl<'a> NpmPackageVersionDistInfoIntegrity<'a> {
+  pub fn for_lockfile(&self) -> String {
+    match self {
+      NpmPackageVersionDistInfoIntegrity::Integrity {
+        algorithm,
+        base64_hash,
+      } => format!("{}-{}", algorithm, base64_hash),
+      NpmPackageVersionDistInfoIntegrity::UnknownIntegrity(integrity) => {
+        integrity.to_string()
+      }
+      NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(hex) => hex.to_string(),
+    }
+  }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.

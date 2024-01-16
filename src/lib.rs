@@ -18,7 +18,7 @@ pub mod resolution;
 
 #[derive(Debug, Error)]
 #[error("Invalid npm package id '{text}'. {message}")]
-pub struct NpmPackageNodeIdDeserializationError {
+pub struct NpmPackageIdDeserializationError {
   message: String,
   text: String,
 }
@@ -66,7 +66,7 @@ impl NpmPackageId {
 
   pub fn from_serialized(
     id: &str,
-  ) -> Result<Self, NpmPackageNodeIdDeserializationError> {
+  ) -> Result<Self, NpmPackageIdDeserializationError> {
     use monch::*;
 
     fn parse_name(input: &str) -> ParseResult<&str> {
@@ -90,6 +90,7 @@ impl NpmPackageId {
       let (input, _) = ch('@')(input)?;
       let at_version_input = input;
       let (input, version) = parse_version(input)?;
+      // todo: improve monch to provide the error message without source
       match Version::parse_from_npm(version) {
         Ok(version) => Ok((input, (name.to_string(), version))),
         Err(err) => ParseError::fail(at_version_input, format!("{err:#}")),
@@ -152,7 +153,7 @@ impl NpmPackageId {
     }
 
     with_failure_handling(parse_id_at_level(0))(id).map_err(|err| {
-      NpmPackageNodeIdDeserializationError {
+      NpmPackageIdDeserializationError {
         message: format!("{err:#}"),
         text: id.to_string(),
       }
@@ -385,6 +386,46 @@ mod test {
     let serialized = id.as_serialized();
     assert_eq!(serialized, "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1");
     assert_eq!(NpmPackageId::from_serialized(&serialized).unwrap(), id);
+  }
+
+  #[test]
+  fn parse_npm_package_id() {
+    #[track_caller]
+    fn run_test(input: &str) {
+      let id = NpmPackageId::from_serialized(input).unwrap();
+      assert_eq!(id.as_serialized(), input);
+    }
+
+    run_test("pkg-a@1.2.3");
+    run_test("pkg-a@1.2.3_pkg-b@3.2.1");
+    run_test(
+      "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1",
+    );
+
+    #[track_caller]
+    fn run_error_test(input: &str, message: &str) {
+      let err = NpmPackageId::from_serialized(input).unwrap_err();
+      assert_eq!(format!("{:#}", err), message);
+    }
+
+    run_error_test(
+      "asdf",
+      "Invalid npm package id 'asdf'. Unexpected character.
+  asdf
+  ~",
+    );
+    run_error_test(
+      "asdf@test",
+      "Invalid npm package id 'asdf@test'. Invalid npm version. Unexpected character.
+  test
+  ~",
+    );
+    run_error_test(
+      "pkg@1.2.3_asdf@test",
+      "Invalid npm package id 'pkg@1.2.3_asdf@test'. Invalid npm version. Unexpected character.
+  test
+  ~",
+    );
   }
 
   #[test]

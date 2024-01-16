@@ -33,7 +33,7 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
-use crate::NpmPackageNodeIdDeserializationError;
+use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
@@ -803,7 +803,7 @@ fn name_without_path(name: &str) -> &str {
 }
 
 #[derive(Debug, Error)]
-pub enum SnapshotFromLockfileError {
+pub enum IncompleteSnapshotFromLockfileError {
   #[error("Unable to parse npm specifier: {key}")]
   ReqParse {
     key: String,
@@ -811,20 +811,12 @@ pub enum SnapshotFromLockfileError {
     source: PackageReqParseError,
   },
   #[error(transparent)]
-  NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
-  #[error(transparent)]
-  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
-  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
-  VersionNotFound {
-    #[from]
-    source: NpmPackageVersionNotFound,
-  },
-  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
-  PackageIdNotFound(#[from] PackageIdNotFoundError),
+  PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
 struct IncompletePackageInfo {
   id: NpmPackageId,
+  integrity: String,
   dependencies: HashMap<String, NpmPackageId>,
 }
 
@@ -843,7 +835,7 @@ pub struct IncompleteSnapshot {
 /// similar, which doesn't implement [`Send`].
 pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
-) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
+) -> Result<IncompleteSnapshot, IncompleteSnapshotFromLockfileError> {
   let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
     lockfile.content.packages.specifiers.len(),
   );
@@ -852,7 +844,7 @@ pub fn incomplete_snapshot_from_lockfile(
     if let Some(key) = key.strip_prefix("npm:") {
       if let Some(value) = value.strip_prefix("npm:") {
         let package_req = PackageReq::from_str(key).map_err(|e| {
-          SnapshotFromLockfileError::ReqParse {
+          IncompleteSnapshotFromLockfileError::ReqParse {
             key: key.to_string(),
             source: e,
           }
@@ -875,13 +867,40 @@ pub fn incomplete_snapshot_from_lockfile(
       dependencies.insert(name.clone(), dep_id);
     }
 
-    packages.push(IncompletePackageInfo { id, dependencies });
+    packages.push(IncompletePackageInfo {
+      id,
+      integrity: package.integrity.clone(),
+      dependencies,
+    });
   }
 
   Ok(IncompleteSnapshot {
     root_packages,
     packages,
   })
+}
+
+#[derive(Debug, Error)]
+pub enum SnapshotFromLockfileError {
+  #[error(transparent)]
+  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
+  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  VersionNotFound {
+    #[from]
+    source: NpmPackageVersionNotFound,
+  },
+  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
+  PackageIdNotFound(#[from] PackageIdNotFoundError),
+  #[error(transparent)]
+  InvalidIntegrity(#[from] NpmPackageIntegrityError),
+}
+
+#[derive(Debug, Error, Clone)]
+#[error("Package integrity from npm registry for {} did not match the lockfile's integrity.\n  Actual: {}\n  Expected: {}.", self.pkg_id.as_serialized(), self.actual, self.expected)]
+pub struct NpmPackageIntegrityError {
+  pub pkg_id: NpmPackageId,
+  pub expected: String,
+  pub actual: String,
 }
 
 /// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
@@ -916,9 +935,21 @@ pub async fn snapshot_from_lockfile(
   while let Some(result) = version_infos.next().await {
     match result {
       Ok(version_info) => {
+        let snapshot_package = &incomplete_snapshot.packages[i];
+        let registry_integrity = version_info.dist.integrity().for_lockfile();
+        if registry_integrity != snapshot_package.integrity {
+          return Err(
+            NpmPackageIntegrityError {
+              pkg_id: snapshot_package.id.clone(),
+              expected: snapshot_package.integrity.clone(),
+              actual: registry_integrity,
+            }
+            .into(),
+          );
+        }
         packages.push(SerializedNpmResolutionSnapshotPackage {
-          id: incomplete_snapshot.packages[i].id.clone(),
-          dependencies: incomplete_snapshot.packages[i].dependencies.clone(),
+          id: snapshot_package.id.clone(),
+          dependencies: snapshot_package.dependencies.clone(),
           dist: version_info.dist,
           system: NpmResolutionPackageSystemInfo {
             cpu: version_info.cpu,
