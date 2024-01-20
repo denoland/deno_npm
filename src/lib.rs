@@ -93,7 +93,10 @@ impl NpmPackageId {
       // todo: improve monch to provide the error message without source
       match Version::parse_from_npm(version) {
         Ok(version) => Ok((input, (name.to_string(), version))),
-        Err(err) => ParseError::fail(at_version_input, format!("{err:#}")),
+        Err(err) => ParseError::fail(
+          at_version_input,
+          format!("Invalid npm version. {}", err.message()),
+        ),
       }
     }
 

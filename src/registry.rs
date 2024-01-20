@@ -402,6 +402,15 @@ impl TestNpmRegistryApi {
   }
 
   pub fn ensure_package_version(&self, name: &str, version: &str) {
+    self.ensure_package_version_with_integrity(name, version, None)
+  }
+
+  pub fn ensure_package_version_with_integrity(
+    &self,
+    name: &str,
+    version: &str,
+    integrity: Option<&str>,
+  ) {
     self.ensure_package(name);
     let mut infos = self.package_infos.lock().unwrap();
     let info = infos.get_mut(name).unwrap();
@@ -411,6 +420,10 @@ impl TestNpmRegistryApi {
         version.clone(),
         NpmPackageVersionInfo {
           version,
+          dist: NpmPackageVersionDistInfo {
+            integrity: integrity.map(|s| s.to_string()),
+            ..Default::default()
+          },
           ..Default::default()
         },
       );
