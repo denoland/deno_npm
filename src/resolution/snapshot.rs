@@ -896,7 +896,7 @@ pub enum SnapshotFromLockfileError {
   #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
   PackageIdNotFound(#[from] PackageIdNotFoundError),
   #[error(transparent)]
-  InvalidIntegrity(#[from] IntegrityCheckFailedError),
+  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
 }
 
 pub struct SnapshotFromLockfileParams<'a> {
@@ -1332,7 +1332,7 @@ mod tests {
     .await
     .unwrap_err();
     match err {
-      SnapshotFromLockfileError::InvalidIntegrity(err) => {
+      SnapshotFromLockfileError::IntegrityCheckFailed(err) => {
         assert_eq!(err.actual, "sha512-integrity1-bad");
         assert_eq!(err.expected, "sha512-integrity1");
         assert_eq!(err.filename, "/deno.lock");
