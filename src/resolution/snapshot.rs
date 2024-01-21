@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use deno_lockfile::IntegrityCheckFailedError;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
@@ -33,7 +35,7 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageId;
-use crate::NpmPackageNodeIdDeserializationError;
+use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
@@ -803,7 +805,7 @@ fn name_without_path(name: &str) -> &str {
 }
 
 #[derive(Debug, Error)]
-pub enum SnapshotFromLockfileError {
+pub enum IncompleteSnapshotFromLockfileError {
   #[error("Unable to parse npm specifier: {key}")]
   ReqParse {
     key: String,
@@ -811,24 +813,17 @@ pub enum SnapshotFromLockfileError {
     source: PackageReqParseError,
   },
   #[error(transparent)]
-  NodeIdDeserialization(#[from] NpmPackageNodeIdDeserializationError),
-  #[error(transparent)]
-  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
-  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
-  VersionNotFound {
-    #[from]
-    source: NpmPackageVersionNotFound,
-  },
-  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
-  PackageIdNotFound(#[from] PackageIdNotFoundError),
+  PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
 struct IncompletePackageInfo {
   id: NpmPackageId,
+  integrity: String,
   dependencies: HashMap<String, NpmPackageId>,
 }
 
 pub struct IncompleteSnapshot {
+  lockfile_file_name: PathBuf,
   root_packages: HashMap<PackageReq, NpmPackageId>,
   packages: Vec<IncompletePackageInfo>,
 }
@@ -843,7 +838,7 @@ pub struct IncompleteSnapshot {
 /// similar, which doesn't implement [`Send`].
 pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
-) -> Result<IncompleteSnapshot, SnapshotFromLockfileError> {
+) -> Result<IncompleteSnapshot, IncompleteSnapshotFromLockfileError> {
   let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
     lockfile.content.packages.specifiers.len(),
   );
@@ -852,7 +847,7 @@ pub fn incomplete_snapshot_from_lockfile(
     if let Some(key) = key.strip_prefix("npm:") {
       if let Some(value) = value.strip_prefix("npm:") {
         let package_req = PackageReq::from_str(key).map_err(|e| {
-          SnapshotFromLockfileError::ReqParse {
+          IncompleteSnapshotFromLockfileError::ReqParse {
             key: key.to_string(),
             source: e,
           }
@@ -875,13 +870,39 @@ pub fn incomplete_snapshot_from_lockfile(
       dependencies.insert(name.clone(), dep_id);
     }
 
-    packages.push(IncompletePackageInfo { id, dependencies });
+    packages.push(IncompletePackageInfo {
+      id,
+      integrity: package.integrity.clone(),
+      dependencies,
+    });
   }
 
   Ok(IncompleteSnapshot {
+    lockfile_file_name: lockfile.filename.clone(),
     root_packages,
     packages,
   })
+}
+
+#[derive(Debug, Error)]
+pub enum SnapshotFromLockfileError {
+  #[error(transparent)]
+  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
+  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  VersionNotFound {
+    #[from]
+    source: NpmPackageVersionNotFound,
+  },
+  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
+  PackageIdNotFound(#[from] PackageIdNotFoundError),
+  #[error(transparent)]
+  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
+}
+
+pub struct SnapshotFromLockfileParams<'a> {
+  pub api: &'a dyn NpmRegistryApi,
+  pub incomplete_snapshot: IncompleteSnapshot,
+  pub skip_integrity_check: bool,
 }
 
 /// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
@@ -889,10 +910,13 @@ pub fn incomplete_snapshot_from_lockfile(
 /// You should call [`incomplete_snapshot_from_lockfile`] first to get an
 /// [`IncompleteSnapshot`] instance that's passed as the first argument for this
 /// function.
-pub async fn snapshot_from_lockfile(
-  incomplete_snapshot: IncompleteSnapshot,
-  api: &dyn NpmRegistryApi,
+#[allow(clippy::needless_lifetimes)] // clippy bug
+pub async fn snapshot_from_lockfile<'a>(
+  params: SnapshotFromLockfileParams<'a>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
+  let api = params.api;
+  let incomplete_snapshot = params.incomplete_snapshot;
+
   // fetch the package version information
   let pkg_nvs = incomplete_snapshot
     .packages
@@ -916,9 +940,27 @@ pub async fn snapshot_from_lockfile(
   while let Some(result) = version_infos.next().await {
     match result {
       Ok(version_info) => {
+        let snapshot_package = &incomplete_snapshot.packages[i];
+        if !params.skip_integrity_check {
+          let registry_integrity = version_info.dist.integrity().for_lockfile();
+          if registry_integrity != snapshot_package.integrity {
+            return Err(
+              IntegrityCheckFailedError {
+                package_display_id: snapshot_package.id.as_serialized(),
+                expected: snapshot_package.integrity.clone(),
+                actual: registry_integrity,
+                filename: incomplete_snapshot
+                  .lockfile_file_name
+                  .display()
+                  .to_string(),
+              }
+              .into(),
+            );
+          }
+        }
         packages.push(SerializedNpmResolutionSnapshotPackage {
-          id: incomplete_snapshot.packages[i].id.clone(),
-          dependencies: incomplete_snapshot.packages[i].dependencies.clone(),
+          id: snapshot_package.id.clone(),
+          dependencies: snapshot_package.dependencies.clone(),
           dist: version_info.dist,
           system: NpmResolutionPackageSystemInfo {
             cpu: version_info.cpu,
@@ -1192,8 +1234,16 @@ mod tests {
   #[tokio::test]
   async fn test_snapshot_from_lockfile_v2() {
     let api = TestNpmRegistryApi::default();
-    api.ensure_package_version("emoji-regex", "10.2.1");
-    api.ensure_package_version("chalk", "5.3.0");
+    api.ensure_package_version_with_integrity(
+      "chalk",
+      "5.3.0",
+      Some("sha512-integrity1"),
+    );
+    api.ensure_package_version_with_integrity(
+      "emoji-regex",
+      "10.2.1",
+      Some("sha512-integrity2"),
+    );
 
     let lockfile = Lockfile::with_lockfile_content(
       PathBuf::from("/deno.lock"),
@@ -1207,11 +1257,11 @@ mod tests {
           },
           "packages": {
             "chalk@5.3.0": {
-              "integrity": "sha512-dLitG79d+GV1Nb/VYcCDFivJeK1hiukt9QjRNVOsUtTy1rR1YJsmpGGTZ3qJos+uw7WmWF4wUwBd9jxjocFC2w==",
+              "integrity": "sha512-integrity1",
               "dependencies": {}
             },
             "emoji-regex@10.2.1": {
-              "integrity": "sha512-97g6QgOk8zlDRdgq1WxwgTMgEWGVAQvB5Fdpgc1MkNy56la5SKP9GsMXKDOdqwn90/41a8yPwIGk1Y6WVbeMQA==",
+              "integrity": "sha512-integrity2",
               "dependencies": {}
             }
           }
@@ -1223,16 +1273,99 @@ mod tests {
 
     let incomplete_snapshot =
       incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    assert!(snapshot_from_lockfile(incomplete_snapshot, &api)
-      .await
-      .is_ok());
+    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
+      incomplete_snapshot,
+      api: &api,
+      skip_integrity_check: false
+    })
+    .await
+    .is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile_bad_integrity() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version_with_integrity(
+      "chalk",
+      "5.3.0",
+      Some("sha512-integrity1-bad"),
+    );
+    api.ensure_package_version_with_integrity(
+      "emoji-regex",
+      "10.2.1",
+      Some("sha512-integrity2"),
+    );
+
+    let lockfile = Lockfile::with_lockfile_content(
+      PathBuf::from("/deno.lock"),
+      r#"{
+        "version": "2",
+        "remote": {},
+        "npm": {
+          "specifiers": {
+            "chalk@5": "chalk@5.3.0",
+            "emoji-regex": "emoji-regex@10.2.1"
+          },
+          "packages": {
+            "chalk@5.3.0": {
+              "integrity": "sha512-integrity1",
+              "dependencies": {}
+            },
+            "emoji-regex@10.2.1": {
+              "integrity": "sha512-integrity2",
+              "dependencies": {}
+            }
+          }
+        }
+      }"#,
+      false,
+    )
+    .unwrap();
+
+    let incomplete_snapshot =
+      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
+      incomplete_snapshot,
+      api: &api,
+      skip_integrity_check: false,
+    })
+    .await
+    .unwrap_err();
+    match err {
+      SnapshotFromLockfileError::IntegrityCheckFailed(err) => {
+        assert_eq!(err.actual, "sha512-integrity1-bad");
+        assert_eq!(err.expected, "sha512-integrity1");
+        assert_eq!(err.filename, "/deno.lock");
+        assert_eq!(err.package_display_id, "chalk@5.3.0");
+      }
+      _ => unreachable!(),
+    }
+
+    // now try with skipping the integrity check
+    let incomplete_snapshot =
+      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
+      incomplete_snapshot,
+      api: &api,
+      skip_integrity_check: true, // will pass because ignored
+    })
+    .await
+    .is_ok());
   }
 
   #[tokio::test]
   async fn test_snapshot_from_lockfile_v3() {
     let api = TestNpmRegistryApi::default();
-    api.ensure_package_version("emoji-regex", "10.2.1");
-    api.ensure_package_version("chalk", "5.3.0");
+    api.ensure_package_version_with_integrity(
+      "chalk",
+      "5.3.0",
+      Some("sha512-integrity1"),
+    );
+    api.ensure_package_version_with_integrity(
+      "emoji-regex",
+      "10.2.1",
+      Some("sha512-integrity2"),
+    );
 
     let lockfile = Lockfile::with_lockfile_content(
       PathBuf::from("/deno.lock"),
@@ -1247,11 +1380,11 @@ mod tests {
           },
           "npm": {
             "chalk@5.3.0": {
-              "integrity": "sha512-dLitG79d+GV1Nb/VYcCDFivJeK1hiukt9QjRNVOsUtTy1rR1YJsmpGGTZ3qJos+uw7WmWF4wUwBd9jxjocFC2w==",
+              "integrity": "sha512-integrity1",
               "dependencies": {}
             },
             "emoji-regex@10.2.1": {
-              "integrity": "sha512-97g6QgOk8zlDRdgq1WxwgTMgEWGVAQvB5Fdpgc1MkNy56la5SKP9GsMXKDOdqwn90/41a8yPwIGk1Y6WVbeMQA==",
+              "integrity": "sha512-integrity2",
               "dependencies": {}
             }
           }
@@ -1263,9 +1396,13 @@ mod tests {
 
     let incomplete_snapshot =
       incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    let snapshot = snapshot_from_lockfile(incomplete_snapshot, &api)
-      .await
-      .unwrap();
+    let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
+      incomplete_snapshot,
+      api: &api,
+      skip_integrity_check: false,
+    })
+    .await
+    .unwrap();
     assert_eq!(
       snapshot.as_serialized().root_packages,
       HashMap::from([

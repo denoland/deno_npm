@@ -20,4 +20,5 @@ pub use snapshot::PackageReqNotFoundError;
 pub use snapshot::SerializedNpmResolutionSnapshot;
 pub use snapshot::SerializedNpmResolutionSnapshotPackage;
 pub use snapshot::SnapshotFromLockfileError;
+pub use snapshot::SnapshotFromLockfileParams;
 pub use snapshot::ValidSerializedNpmResolutionSnapshot;
