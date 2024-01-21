@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "deno_semver"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "monch",
  "once_cell",

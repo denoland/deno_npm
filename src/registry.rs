@@ -15,28 +15,25 @@ use thiserror::Error;
 
 use crate::resolution::NpmPackageVersionNotFound;
 
-#[derive(Debug, Clone, Error)]
-#[error("Could not find @ symbol in npm url '{value}'")]
-pub struct PackageDepNpmSchemeValueParseError {
-  pub value: String,
-}
-
 /// Gets the name and raw version constraint for a registry info or
 /// package.json dependency entry taking into account npm package aliases.
 pub fn parse_dep_entry_name_and_raw_version<'a>(
   key: &'a str,
   value: &'a str,
-) -> Result<(&'a str, &'a str), PackageDepNpmSchemeValueParseError> {
+) -> (&'a str, &'a str) {
   if let Some(package_and_version) = value.strip_prefix("npm:") {
     if let Some((name, version)) = package_and_version.rsplit_once('@') {
-      Ok((name, version))
+      // if empty, then the name was scoped and there's no version
+      if name.is_empty() {
+        (package_and_version, "*")
+      } else {
+        (name, version)
+      }
     } else {
-      Err(PackageDepNpmSchemeValueParseError {
-        value: value.to_string(),
-      })
+      (package_and_version, "*")
     }
   } else {
-    Ok((key, value))
+    (key, value)
   }
 }
 
@@ -81,10 +78,6 @@ pub struct NpmDependencyEntryError {
 pub enum NpmDependencyEntryErrorSource {
   #[error(transparent)]
   NpmVersionReqParseError(#[from] NpmVersionReqParseError),
-  #[error(transparent)]
-  PackageDepNpmSchemeValueParseError(
-    #[from] PackageDepNpmSchemeValueParseError,
-  ),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -178,7 +171,7 @@ impl NpmPackageVersionInfo {
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
-        parse_dep_entry_name_and_raw_version(key, value)?;
+        parse_dep_entry_name_and_raw_version(key, value);
       let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
@@ -527,9 +520,7 @@ mod test {
   use deno_semver::Version;
   use serde_json;
 
-  use super::NpmPackageVersionBinEntry;
-  use super::NpmPackageVersionDistInfo;
-  use super::NpmPackageVersionInfo;
+  use super::*;
 
   #[test]
   fn deserializes_minimal_pkg_info() {
@@ -600,5 +591,21 @@ mod test {
       info.integrity(),
       super::NpmPackageVersionDistInfoIntegrity::UnknownIntegrity("test")
     );
+  }
+
+  #[test]
+  fn test_parse_dep_entry_name_and_raw_version() {
+    let cases = [
+      ("test", "^1.2", ("test", "^1.2")),
+      ("test", "1.x - 2.6", ("test", "1.x - 2.6")),
+      ("test", "npm:package@^1.2", ("package", "^1.2")),
+      ("test", "npm:package", ("package", "*")),
+      ("test", "npm:@scope/package", ("@scope/package", "*")),
+      ("test", "npm:@scope/package@1", ("@scope/package", "1")),
+    ];
+    for (key, value, expected_result) in cases {
+      let result = parse_dep_entry_name_and_raw_version(key, value);
+      assert_eq!(result, expected_result);
+    }
   }
 }
