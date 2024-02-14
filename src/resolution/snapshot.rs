@@ -946,7 +946,10 @@ pub async fn snapshot_from_lockfile<'a>(
           if registry_integrity != snapshot_package.integrity {
             return Err(
               IntegrityCheckFailedError {
-                package_display_id: snapshot_package.id.as_serialized(),
+                package_display_id: format!(
+                  "npm:{}",
+                  snapshot_package.id.as_serialized()
+                ),
                 expected: snapshot_package.integrity.clone(),
                 actual: registry_integrity,
                 filename: incomplete_snapshot
@@ -1336,7 +1339,7 @@ mod tests {
         assert_eq!(err.actual, "sha512-integrity1-bad");
         assert_eq!(err.expected, "sha512-integrity1");
         assert_eq!(err.filename, "/deno.lock");
-        assert_eq!(err.package_display_id, "chalk@5.3.0");
+        assert_eq!(err.package_display_id, "npm:chalk@5.3.0");
       }
       _ => unreachable!(),
     }
