@@ -55,8 +55,8 @@ pub fn parse_ini(
 
 fn parse_kv_or_section(input: &str) -> ParseResult<KeyValueOrSection> {
   or(
-    map(parse_key_value, KeyValueOrSection::KeyValue),
     map(parse_section, KeyValueOrSection::Section),
+    map(parse_key_value, KeyValueOrSection::KeyValue),
   )(input)
 }
 
@@ -295,6 +295,11 @@ h = undefined
 i[] = 1
 i[] = 2
 j = \;escaped\#not a comment
+"k;#" = "a;#\""
+
+[section]
+
+a = 1
 "#,
     )
     .unwrap();
@@ -345,6 +350,17 @@ j = \;escaped\#not a comment
           key: Key::Plain("j".into()),
           value: Value::String(";escaped#not a comment".into()),
         }),
+        KeyValueOrSection::KeyValue(KeyValue {
+          key: Key::Plain("k;#".into()),
+          value: Value::String("a;#\"".into()),
+        }),
+        KeyValueOrSection::Section(Section {
+          header: "section".into(),
+          items: vec![KeyValue {
+            key: Key::Plain("a".into()),
+            value: Value::Number(1),
+          }]
+        })
       ]
     )
   }
