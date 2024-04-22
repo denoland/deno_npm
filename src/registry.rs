@@ -1,3 +1,5 @@
+// Copyright 2018-2024 the Deno authors. MIT license.
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
