@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+pub mod npm_rc;
 pub mod registry;
 pub mod resolution;
 
