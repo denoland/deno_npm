@@ -2,6 +2,8 @@
 
 // ini file parsing
 
+use std::borrow::Cow;
+
 use monch::*;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,13 +26,13 @@ pub struct KeyValue<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Key<'a> {
-  Plain(&'a str),
-  Array(&'a str),
+  Plain(Cow<'a, str>),
+  Array(Cow<'a, str>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Value<'a> {
-  String(&'a str),
+  String(Cow<'a, str>),
   Boolean(bool),
   Number(i64),
   Null,
@@ -107,8 +109,8 @@ fn parse_key(input: &str) -> ParseResult<Key> {
   fn parse_unquoted(input: &str) -> ParseResult<Key> {
     let (input, key) =
       take_while_not_comment_and(|c| c != '=' && c != '\n')(input)?;
-    let key = key.trim();
-    match key.strip_suffix("[]") {
+    let key = trim_cow_str(key);
+    match strip_cow_str_suffix(&key, "[]") {
       Some(key) => Ok((input, Key::Array(key))),
       None => Ok((input, Key::Plain(key))),
     }
@@ -123,15 +125,15 @@ fn parse_key(input: &str) -> ParseResult<Key> {
 fn parse_value(input: &str) -> ParseResult<Value> {
   fn parse_unquoted(input: &str) -> ParseResult<Value> {
     let (input, value) = take_until_comment_or_newline(input)?;
-    let value = value.trim();
+    let value = trim_cow_str(value);
     Ok((
       input,
-      match value {
+      match value.as_ref() {
         "true" => Value::Boolean(true),
         "false" => Value::Boolean(false),
         "null" => Value::Null,
         "undefined" => Value::Undefined,
-        value => {
+        _ => {
           if let Ok(value) = value.parse::<i64>() {
             Value::Number(value)
           } else {
@@ -148,6 +150,20 @@ fn parse_value(input: &str) -> ParseResult<Value> {
   )(input)
 }
 
+fn strip_cow_str_suffix<'a>(cow: &Cow<'a, str>, suffix: &str) -> Option<Cow<'a, str>> {
+  match cow {
+    Cow::Borrowed(s) => s.strip_suffix(suffix).map(Cow::Borrowed),
+    Cow::Owned(s) => s.strip_suffix(suffix).map(ToOwned::to_owned).map(Cow::Owned),
+  }
+}
+
+fn trim_cow_str(cow: Cow<str>) -> Cow<str> {
+  match cow {
+    Cow::Borrowed(s) => Cow::Borrowed(s.trim()),
+    Cow::Owned(s) => Cow::Owned(s.trim().to_string()),
+  }
+}
+
 fn skip_trivia(input: &str) -> ParseResult<()> {
   let mut input = input;
   let mut length = 0;
@@ -160,17 +176,47 @@ fn skip_trivia(input: &str) -> ParseResult<()> {
   Ok((input, ()))
 }
 
-fn parse_quoted_skipping_spaces(input: &str) -> ParseResult<&str> {
+fn parse_quoted_skipping_spaces(input: &str) -> ParseResult<Cow<str>> {
   let (input, _) = skip_non_newline_whitespace(input)?;
   let (input, value) = parse_quoted_string(input)?;
   let (input, _) = skip_non_newline_whitespace(input)?;
   Ok((input, value))
 }
 
-fn parse_quoted_string(input: &str) -> ParseResult<&str> {
+fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
+  fn take_inner_text(quote_start_char: char) -> impl Fn(&str) -> ParseResult<Cow<str>> {
+    move |input| {
+      let mut last_char = None;
+      let mut texts = Vec::new();
+      let mut start_index = 0;
+      for (index, c) in input.char_indices() {
+        if c == quote_start_char {
+          if last_char == Some('\\') {
+            texts.push(&input[start_index..index - 1]);
+            start_index = index;
+          } else {
+            texts.push(&input[start_index..index]);
+            return Ok((&input[index..], {
+              if texts.len() == 1 {
+                Cow::Borrowed(texts[0])
+              } else {
+                Cow::Owned(texts.concat())
+              }
+            }));
+          }
+        }
+        if c == '\n' {
+          return Err(ParseError::Backtrace);
+        }
+        last_char = Some(c);
+      }
+      Err(ParseError::Backtrace)
+    }
+  }
+
   let (input, quote_start_char) = or(ch('"'), ch('\''))(input)?;
   let (input, quoted_text) =
-    take_while(|c| c != quote_start_char && c != '\n')(input)?;
+    take_inner_text(quote_start_char)(input)?;
   let (input, _) = ch(quote_start_char)(input)?;
   Ok((input, quoted_text))
 }
@@ -190,22 +236,42 @@ fn skip_comment(input: &str) -> ParseResult<()> {
   Ok((input, ()))
 }
 
-fn take_until_comment_or_newline(input: &str) -> ParseResult<&str> {
+fn take_until_comment_or_newline(input: &str) -> ParseResult<Cow<str>> {
   take_while_not_comment_and(|c| c != '\n')(input)
 }
 
 fn take_while_not_comment_and<'a>(
   test: impl Fn(char) -> bool,
-) -> impl Fn(&'a str) -> ParseResult<'a, &'a str> {
+) -> impl Fn(&'a str) -> ParseResult<'a, Cow<'a, str>> {
   move |input| {
+    let mut texts = Vec::new();
     let mut last_char = None;
+    let mut start_index = 0;
+    let mut end_index = None;
     for (index, c) in input.char_indices() {
-      if matches!(c, '#' | ';') && last_char != Some('\\') || !test(c) {
-        return Ok((&input[index..], &input[..index]));
+      if !test(c) {
+        end_index = Some(index);
+        break;
+      }
+      if matches!(c, '#' | ';') {
+        if last_char == Some('\\') {
+          texts.push(&input[start_index..index - 1]);
+          start_index = index;
+        } else {
+          end_index = Some(index);
+          break;
+        }
       }
       last_char = Some(c);
     }
-    Ok(("", input))
+    texts.push(&input[start_index..end_index.unwrap_or_else(|| input.len())]);
+    Ok((&input[end_index.unwrap_or_else(|| input.len())..], {
+      if texts.len() == 1 {
+        Cow::Borrowed(texts[0])
+      } else {
+        Cow::Owned(texts.concat())
+      }
+    }))
   }
 }
 
@@ -228,6 +294,7 @@ g = null
 h = undefined
 i[] = 1
 i[] = 2
+j = \;escaped\#not a comment
 "#,
     )
     .unwrap();
@@ -235,44 +302,48 @@ i[] = 2
       ini,
       vec![
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("a"),
+          key: Key::Plain("a".into()),
           value: Value::Number(1),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("b"),
-          value: Value::String("2"),
+          key: Key::Plain("b".into()),
+          value: Value::String("2".into()),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("c"),
-          value: Value::String("3"),
+          key: Key::Plain("c".into()),
+          value: Value::String("3".into()),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("d"),
+          key: Key::Plain("d".into()),
           value: Value::Boolean(true)
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("e"),
+          key: Key::Plain("e".into()),
           value: Value::Boolean(true),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("f"),
+          key: Key::Plain("f".into()),
           value: Value::Boolean(false),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("g"),
+          key: Key::Plain("g".into()),
           value: Value::Null,
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Plain("h"),
+          key: Key::Plain("h".into()),
           value: Value::Undefined,
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Array("i"),
+          key: Key::Array("i".into()),
           value: Value::Number(1),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
-          key: Key::Array("i"),
+          key: Key::Array("i".into()),
           value: Value::Number(2),
+        }),
+        KeyValueOrSection::KeyValue(KeyValue {
+          key: Key::Plain("j".into()),
+          value: Value::String(";escaped#not a comment".into()),
         }),
       ]
     )
