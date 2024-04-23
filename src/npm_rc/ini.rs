@@ -14,14 +14,14 @@ pub enum KeyValueOrSection<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Section<'a> {
-  header: &'a str,
-  items: Vec<KeyValue<'a>>,
+  pub header: &'a str,
+  pub items: Vec<KeyValue<'a>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct KeyValue<'a> {
-  key: Key<'a>,
-  value: Value<'a>,
+  pub key: Key<'a>,
+  pub value: Value<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -190,6 +190,12 @@ fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
       let mut texts = Vec::new();
       let mut start_index = 0;
       for (index, c) in input.char_indices() {
+        if c == '\\' && last_char == Some('\\') {
+          last_char = None;
+          texts.push(&input[start_index..index - 1]);
+          start_index = index;
+          continue;
+        }
         if c == quote_start_char {
           if last_char == Some('\\') {
             texts.push(&input[start_index..index - 1]);
@@ -253,6 +259,12 @@ fn take_while_not_comment_and<'a>(
         end_index = Some(index);
         break;
       }
+      if c == '\\' && last_char == Some('\\') {
+        texts.push(&input[start_index..index - 1]);
+        start_index = index;
+        last_char = None;
+        continue;
+      }
       if matches!(c, '#' | ';') {
         if last_char == Some('\\') {
           texts.push(&input[start_index..index - 1]);
@@ -294,8 +306,8 @@ g = null
 h = undefined
 i[] = 1
 i[] = 2
-j = \;escaped\#not a comment
-"k;#" = "a;#\""
+j = \;escaped\#not a comment\\#comment
+"k;#" = "a;#\"\\"
 
 [section]
 
@@ -348,11 +360,11 @@ a = 1
         }),
         KeyValueOrSection::KeyValue(KeyValue {
           key: Key::Plain("j".into()),
-          value: Value::String(";escaped#not a comment".into()),
+          value: Value::String(";escaped#not a comment\\".into()),
         }),
         KeyValueOrSection::KeyValue(KeyValue {
           key: Key::Plain("k;#".into()),
-          value: Value::String("a;#\"".into()),
+          value: Value::String("a;#\"\\".into()),
         }),
         KeyValueOrSection::Section(Section {
           header: "section".into(),
@@ -360,7 +372,7 @@ a = 1
             key: Key::Plain("a".into()),
             value: Value::Number(1),
           }]
-        })
+        }),
       ]
     )
   }
