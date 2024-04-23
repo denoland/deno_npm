@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use deno_semver::package::PackageNv;
 use deno_semver::Version;
+use registry::NpmPackageVersionBinEntry;
 use registry::NpmPackageVersionDistInfo;
 use resolution::SerializedNpmResolutionSnapshotPackage;
 use serde::Deserialize;
@@ -243,6 +244,7 @@ pub struct NpmResolutionPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
   pub optional_dependencies: HashSet<String>,
+  pub bin: Option<NpmPackageVersionBinEntry>,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -274,6 +276,7 @@ impl NpmResolutionPackage {
       dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
+      bin: self.bin.clone(),
     }
   }
 
