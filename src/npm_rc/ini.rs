@@ -139,7 +139,7 @@ fn parse_value(input: &str) -> ParseResult<Value> {
           } else {
             Value::String(value)
           }
-        },
+        }
       },
     ))
   }
@@ -150,10 +150,16 @@ fn parse_value(input: &str) -> ParseResult<Value> {
   )(input)
 }
 
-fn strip_cow_str_suffix<'a>(cow: &Cow<'a, str>, suffix: &str) -> Option<Cow<'a, str>> {
+fn strip_cow_str_suffix<'a>(
+  cow: &Cow<'a, str>,
+  suffix: &str,
+) -> Option<Cow<'a, str>> {
   match cow {
     Cow::Borrowed(s) => s.strip_suffix(suffix).map(Cow::Borrowed),
-    Cow::Owned(s) => s.strip_suffix(suffix).map(ToOwned::to_owned).map(Cow::Owned),
+    Cow::Owned(s) => s
+      .strip_suffix(suffix)
+      .map(ToOwned::to_owned)
+      .map(Cow::Owned),
   }
 }
 
@@ -184,7 +190,9 @@ fn parse_quoted_skipping_spaces(input: &str) -> ParseResult<Cow<str>> {
 }
 
 fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
-  fn take_inner_text(quote_start_char: char) -> impl Fn(&str) -> ParseResult<Cow<str>> {
+  fn take_inner_text(
+    quote_start_char: char,
+  ) -> impl Fn(&str) -> ParseResult<Cow<str>> {
     move |input| {
       let mut last_char = None;
       let mut texts = Vec::new();
@@ -221,8 +229,7 @@ fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
   }
 
   let (input, quote_start_char) = or(ch('"'), ch('\''))(input)?;
-  let (input, quoted_text) =
-    take_inner_text(quote_start_char)(input)?;
+  let (input, quoted_text) = take_inner_text(quote_start_char)(input)?;
   let (input, _) = ch(quote_start_char)(input)?;
   Ok((input, quoted_text))
 }
@@ -276,8 +283,8 @@ fn take_while_not_comment_and<'a>(
       }
       last_char = Some(c);
     }
-    texts.push(&input[start_index..end_index.unwrap_or_else(|| input.len())]);
-    Ok((&input[end_index.unwrap_or_else(|| input.len())..], {
+    texts.push(&input[start_index..end_index.unwrap_or(input.len())]);
+    Ok((&input[end_index.unwrap_or(input.len())..], {
       if texts.len() == 1 {
         Cow::Borrowed(texts[0])
       } else {

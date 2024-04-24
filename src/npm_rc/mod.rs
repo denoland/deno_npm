@@ -1,9 +1,7 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use std::borrow::Cow;
+use monch::*;
 use std::collections::HashMap;
-use std::hash::Hash;
-  use monch::*;
 
 use self::ini::Key;
 use self::ini::KeyValueOrSection;
@@ -11,7 +9,7 @@ use self::ini::Value;
 
 mod ini;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RegistryConfig {
   pub auth: Option<String>,
   pub auth_token: Option<String>,
@@ -22,7 +20,7 @@ pub struct RegistryConfig {
   pub keyfile: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NpmRc {
   pub scope_registries: HashMap<String, String>,
   pub registry_configs: HashMap<String, RegistryConfig>,
@@ -48,47 +46,54 @@ pub fn parse_npm_rc(
                 }
               }
             } else if let Some(host_and_path) = left.strip_prefix("//") {
-                if let Value::String(text) = &kv.value {
-                  let value = expand_vars(text, get_env_var);
-                let config = rc_file.registry_configs.entry(host_and_path.to_string()).or_default();
-                  match right {
-                    "_auth" => {
-                      config.auth = Some(value);
-                    }
-                    "_authToken" => {
-                      config.auth_token = Some(value);
-                    }
-                    "username" => {
-                      config.username = Some(value);
-                    }
-                    "_password" => {
-                      config.password = Some(value);
-                    }
-                    "email" => {
-                      config.email = Some(value);
-                    }
-                    "certfile" => {
-                      config.certfile = Some(value);
-                    }
-                    "keyfile" => {
-                      config.keyfile = Some(value);
-                    }
-                    _ => {}
+              if let Value::String(text) = &kv.value {
+                let value = expand_vars(text, get_env_var);
+                let config = rc_file
+                  .registry_configs
+                  .entry(host_and_path.to_string())
+                  .or_default();
+                match right {
+                  "_auth" => {
+                    config.auth = Some(value);
                   }
+                  "_authToken" => {
+                    config.auth_token = Some(value);
+                  }
+                  "username" => {
+                    config.username = Some(value);
+                  }
+                  "_password" => {
+                    config.password = Some(value);
+                  }
+                  "email" => {
+                    config.email = Some(value);
+                  }
+                  "certfile" => {
+                    config.certfile = Some(value);
+                  }
+                  "keyfile" => {
+                    config.keyfile = Some(value);
+                  }
+                  _ => {}
                 }
+              }
             }
           }
         }
-      },
-      KeyValueOrSection::Section(section) => {
-      },
+      }
+      KeyValueOrSection::Section(_) => {
+        // ignore
+      }
     }
   }
 
   Ok(rc_file)
 }
 
-fn expand_vars(input: &str, get_env_var: &impl Fn(&str) -> Option<String>) -> String {
+fn expand_vars(
+  input: &str,
+  get_env_var: &impl Fn(&str) -> Option<String>,
+) -> String {
   fn escaped_char(input: &str) -> ParseResult<char> {
     preceded(ch('\\'), next_char)(input)
   }
@@ -103,19 +108,97 @@ fn expand_vars(input: &str, get_env_var: &impl Fn(&str) -> Option<String>) -> St
     Ok((input, var_name))
   }
 
-  let (input, results) = many0(
-    or3(
-      map(escaped_char, |c| c.to_string()),
-      map(env_var, |var_name| {
-        if let Some(var_value) = get_env_var(var_name) {
-          var_value
-        } else {
-          format!("${{{}}}", var_name)
-        }
-      }),
-      map(next_char, |c| c.to_string()),
-    )
-  )(input).unwrap();
+  let (input, results) = many0(or3(
+    map(escaped_char, |c| c.to_string()),
+    map(env_var, |var_name| {
+      if let Some(var_value) = get_env_var(var_name) {
+        var_value
+      } else {
+        format!("${{{}}}", var_name)
+      }
+    }),
+    map(next_char, |c| c.to_string()),
+  ))(input)
+  .unwrap();
   assert!(input.is_empty());
   results.join("")
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  use pretty_assertions::assert_eq;
+
+  #[test]
+  fn test_parse() {
+    let npm_rc = parse_npm_rc(
+      r#"
+@myorg:registry=https://example.com/myorg
+@another:registry=https://example.com/another
+//registry.npmjs.org/:_authToken=MYTOKEN
+; would apply to both @myorg and @another
+//example.com/:_authToken=MYTOKEN
+//example.com/:_auth=AUTH
+//example.com/:username=USERNAME
+//example.com/:_password=PASSWORD
+//example.com/:email=EMAIL
+//example.com/:certfile=CERTFILE
+//example.com/:keyfile=KEYFILE
+; would apply only to @myorg
+//example.com/myorg/:_authToken=MYTOKEN1
+; would apply only to @another
+//example.com/another/:_authToken=MYTOKEN2
+"#,
+      &|_| None,
+    )
+    .unwrap();
+    assert_eq!(
+      npm_rc,
+      NpmRc {
+        scope_registries: HashMap::from([
+          ("myorg".to_string(), "https://example.com/myorg".to_string()),
+          (
+            "another".to_string(),
+            "https://example.com/another".to_string()
+          )
+        ]),
+        registry_configs: HashMap::from([
+          (
+            "example.com/".to_string(),
+            RegistryConfig {
+              auth: Some("AUTH".to_string()),
+              auth_token: Some("MYTOKEN".to_string()),
+              username: Some("USERNAME".to_string()),
+              password: Some("PASSWORD".to_string()),
+              email: Some("EMAIL".to_string()),
+              certfile: Some("CERTFILE".to_string()),
+              keyfile: Some("KEYFILE".to_string()),
+            }
+          ),
+          (
+            "example.com/another/".to_string(),
+            RegistryConfig {
+              auth_token: Some("MYTOKEN2".to_string()),
+              ..Default::default()
+            }
+          ),
+          (
+            "example.com/myorg/".to_string(),
+            RegistryConfig {
+              auth_token: Some("MYTOKEN1".to_string()),
+              ..Default::default()
+            }
+          ),
+          (
+            "registry.npmjs.org/".to_string(),
+            RegistryConfig {
+              auth_token: Some("MYTOKEN".to_string()),
+              ..Default::default()
+            }
+          ),
+        ])
+      }
+    )
+  }
 }
