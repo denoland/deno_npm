@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "deno_npm"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",

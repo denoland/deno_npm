@@ -30,6 +30,7 @@ use super::NpmPackageVersionNotFound;
 use super::NpmPackageVersionResolutionError;
 
 use crate::registry::NpmPackageInfo;
+use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
@@ -113,6 +114,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
   pub optional_dependencies: HashSet<String>,
+  pub bin: Option<NpmPackageVersionBinEntry>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,6 +238,7 @@ impl NpmResolutionSnapshot {
           dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
+          bin: package.bin,
         },
       );
     }
@@ -294,6 +297,7 @@ impl NpmResolutionSnapshot {
         // the fields below are stripped from the output
         system: Default::default(),
         optional_dependencies: Default::default(),
+        bin: None,
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -973,6 +977,7 @@ pub async fn snapshot_from_lockfile<'a>(
             .optional_dependencies
             .into_keys()
             .collect(),
+          bin: version_info.bin.clone(),
         });
       }
       Err(err) => {
@@ -1073,6 +1078,7 @@ mod tests {
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: HashSet::from(["c".to_string()]),
+          bin: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
@@ -1080,6 +1086,7 @@ mod tests {
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: Default::default(),
+          bin: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1090,6 +1097,7 @@ mod tests {
           },
           dist: Default::default(),
           optional_dependencies: Default::default(),
+          bin: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
@@ -1097,6 +1105,7 @@ mod tests {
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: Default::default(),
+          bin: None,
         },
       ],
     }
@@ -1207,6 +1216,7 @@ mod tests {
       system: Default::default(),
       dist: Default::default(),
       optional_dependencies: Default::default(),
+      bin: None,
     }
   }
 
