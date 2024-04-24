@@ -374,7 +374,7 @@ a = 1
           value: Value::String("a;#\"\\".into()),
         }),
         KeyValueOrSection::Section(Section {
-          header: "section".into(),
+          header: "section",
           items: vec![KeyValue {
             key: Key::Plain("a".into()),
             value: Value::Number(1),
