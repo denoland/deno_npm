@@ -131,7 +131,8 @@ mod test {
   use pretty_assertions::assert_eq;
 
   #[test]
-  fn test_parse() {
+  fn test_parse_basic() {
+    // https://docs.npmjs.com/cli/v10/configuring-npm/npmrc#auth-related-configuration
     let npm_rc = parse_npm_rc(
       r#"
 @myorg:registry=https://example.com/myorg
@@ -200,5 +201,86 @@ mod test {
         ])
       }
     )
+  }
+
+  #[test]
+  fn test_parse_env_vars() {
+    let npm_rc = parse_npm_rc(
+      r#"
+@myorg:registry=${VAR_FOUND}
+@another:registry=${VAR_NOT_FOUND}
+@a:registry=\${VAR_FOUND}
+//registry.npmjs.org/:_authToken=${VAR_FOUND}
+"#,
+      &|var_name| match var_name {
+        "VAR_FOUND" => Some("SOME_VALUE".to_string()),
+        _ => None,
+      },
+    )
+    .unwrap();
+    assert_eq!(
+      npm_rc,
+      NpmRc {
+        scope_registries: HashMap::from([
+          ("a".to_string(), "${VAR_FOUND}".to_string()),
+          ("myorg".to_string(), "SOME_VALUE".to_string()),
+          ("another".to_string(), "${VAR_NOT_FOUND}".to_string()),
+        ]),
+        registry_configs: HashMap::from([(
+          "registry.npmjs.org/".to_string(),
+          RegistryConfig {
+            auth_token: Some("SOME_VALUE".to_string()),
+            ..Default::default()
+          }
+        ),])
+      }
+    )
+  }
+
+  #[test]
+  fn test_expand_vars() {
+    assert_eq!(
+      expand_vars("test${VAR}test", &|var_name| {
+        match var_name {
+          "VAR" => Some("VALUE".to_string()),
+          _ => None,
+        }
+      }),
+      "testVALUEtest"
+    );
+    assert_eq!(
+      expand_vars("${A}${B}${C}", &|var_name| {
+        match var_name {
+          "A" => Some("1".to_string()),
+          "B" => Some("2".to_string()),
+          "C" => Some("3".to_string()),
+          _ => None,
+        }
+      }),
+      "123"
+    );
+    assert_eq!(
+      expand_vars("test\\${VAR}test", &|var_name| {
+        match var_name {
+          "VAR" => Some("VALUE".to_string()),
+          _ => None,
+        }
+      }),
+      "test${VAR}test"
+    );
+    assert_eq!(
+      // npm ignores values with $ in them
+      expand_vars("test${VA$R}test", &|_| {
+        unreachable!();
+      }),
+      "test${VA$R}test"
+    );
+    assert_eq!(
+      // npm ignores values with { in them
+      expand_vars("test${VA{R}test", &|_| {
+        unreachable!();
+      }),
+      "test${VA{R}test"
+    );
   }
 }
