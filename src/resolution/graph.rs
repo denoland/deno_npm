@@ -716,7 +716,7 @@ impl Graph {
   // Debugging methods
 
   #[cfg(debug_assertions)]
-  #[allow(unused)]
+  #[allow(unused, clippy::print_stderr)]
   fn output_path(&self, path: &Rc<GraphPath>) {
     eprintln!("-----------");
     self.output_node(path.node_id(), false);
@@ -740,7 +740,7 @@ impl Graph {
   }
 
   #[cfg(debug_assertions)]
-  #[allow(unused)]
+  #[allow(unused, clippy::print_stderr)]
   fn output_node(&self, node_id: NodeId, show_children: bool) {
     eprintln!(
       "{:>4}: {}",
@@ -758,7 +758,7 @@ impl Graph {
   }
 
   #[cfg(debug_assertions)]
-  #[allow(unused)]
+  #[allow(unused, clippy::print_stderr)]
   pub fn output_nodes(&self) {
     eprintln!("~~~");
     let mut node_ids = self

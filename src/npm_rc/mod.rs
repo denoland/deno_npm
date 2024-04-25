@@ -1,6 +1,7 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
 use monch::*;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use self::ini::Key;
@@ -22,8 +23,52 @@ pub struct RegistryConfig {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NpmRc {
+  pub registry: Option<String>,
   pub scope_registries: HashMap<String, String>,
   pub registry_configs: HashMap<String, RegistryConfig>,
+}
+
+impl NpmRc {
+  pub fn config_for_package<'a>(
+    &'a self,
+    package_name: &str,
+    env_registry_url: &str,
+  ) -> Option<&'a RegistryConfig> {
+    fn get_scope_name(package_name: &str) -> Option<&str> {
+      let no_at_pkg_name = package_name.strip_prefix('@')?;
+      no_at_pkg_name.split_once('/').map(|(scope, _)| scope)
+    }
+
+    let maybe_scope_name = get_scope_name(package_name);
+    let registry_url = maybe_scope_name
+      .and_then(|scope| self.scope_registries.get(scope).map(|s| s.as_str()))
+      .or(self.registry.as_deref())
+      .unwrap_or(env_registry_url);
+
+    let registry_url = if registry_url.ends_with('/') {
+      Cow::Borrowed(registry_url)
+    } else {
+      Cow::Owned(format!("{}/", registry_url))
+    };
+    // https://example.com/ -> example.com/
+    let registry_url = registry_url.split_once("//").map(|(_, right)| right)?;
+    let start_url = match maybe_scope_name {
+      Some(scope_name) => Cow::Owned(format!("{}{}", registry_url, scope_name)),
+      None => Cow::Borrowed(registry_url),
+    };
+    // Loop through all the paths in the url to find a match. Example:
+    // - example.com/myorg/pkg/
+    // - example.com/myorg/
+    // - example.com/
+    let mut url: &str = &start_url;
+    loop {
+      if let Some(config) = self.registry_configs.get(url) {
+        return Some(config);
+      }
+      let next_slash_index = url[..url.len() - 1].rfind('/')?;
+      url = &url[..next_slash_index + 1];
+    }
+  }
 }
 
 pub fn parse_npm_rc(
@@ -77,6 +122,11 @@ pub fn parse_npm_rc(
                   _ => {}
                 }
               }
+            }
+          } else if key == "registry" {
+            if let Value::String(text) = &kv.value {
+              let value = expand_vars(text, get_env_var);
+              rc_file.registry = Some(value);
             }
           }
         }
@@ -137,9 +187,10 @@ mod test {
       r#"
 @myorg:registry=https://example.com/myorg
 @another:registry=https://example.com/another
+@example:registry=https://example.com/example
 //registry.npmjs.org/:_authToken=MYTOKEN
 ; would apply to both @myorg and @another
-//example.com/:_authToken=MYTOKEN
+//example.com/:_authToken=MYTOKEN0
 //example.com/:_auth=AUTH
 //example.com/:username=USERNAME
 //example.com/:_password=PASSWORD
@@ -150,6 +201,7 @@ mod test {
 //example.com/myorg/:_authToken=MYTOKEN1
 ; would apply only to @another
 //example.com/another/:_authToken=MYTOKEN2
+registry=https://registry.npmjs.org/
 "#,
       &|_| None,
     )
@@ -157,19 +209,24 @@ mod test {
     assert_eq!(
       npm_rc,
       NpmRc {
+        registry: Some("https://registry.npmjs.org/".to_string()),
         scope_registries: HashMap::from([
           ("myorg".to_string(), "https://example.com/myorg".to_string()),
           (
             "another".to_string(),
             "https://example.com/another".to_string()
-          )
+          ),
+          (
+            "example".to_string(),
+            "https://example.com/example".to_string()
+          ),
         ]),
         registry_configs: HashMap::from([
           (
             "example.com/".to_string(),
             RegistryConfig {
               auth: Some("AUTH".to_string()),
-              auth_token: Some("MYTOKEN".to_string()),
+              auth_token: Some("MYTOKEN0".to_string()),
               username: Some("USERNAME".to_string()),
               password: Some("PASSWORD".to_string()),
               email: Some("EMAIL".to_string()),
@@ -200,7 +257,29 @@ mod test {
           ),
         ])
       }
-    )
+    );
+
+    // no matching scoped package
+    {
+      let config = npm_rc
+        .config_for_package("test", "https://deno.land/npm/")
+        .unwrap();
+      assert_eq!(config.auth_token, Some("MYTOKEN".to_string()));
+    }
+    // matching scoped package
+    {
+      let config = npm_rc
+        .config_for_package("@example/pkg", "https://deno.land/npm/")
+        .unwrap();
+      assert_eq!(config.auth_token, Some("MYTOKEN0".to_string()));
+    }
+    // matching scoped package with specific token
+    {
+      let config = npm_rc
+        .config_for_package("@myorg/pkg", "https://deno.land/npm/")
+        .unwrap();
+      assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
+    }
   }
 
   #[test]
@@ -211,6 +290,7 @@ mod test {
 @another:registry=${VAR_NOT_FOUND}
 @a:registry=\${VAR_FOUND}
 //registry.npmjs.org/:_authToken=${VAR_FOUND}
+registry=${VAR_FOUND}
 "#,
       &|var_name| match var_name {
         "VAR_FOUND" => Some("SOME_VALUE".to_string()),
@@ -221,6 +301,7 @@ mod test {
     assert_eq!(
       npm_rc,
       NpmRc {
+        registry: Some("SOME_VALUE".to_string()),
         scope_registries: HashMap::from([
           ("a".to_string(), "${VAR_FOUND}".to_string()),
           ("myorg".to_string(), "SOME_VALUE".to_string()),
