@@ -112,15 +112,24 @@ impl NpmRc {
     Ok(rc_file)
   }
   
-  pub fn as_resolved(&self, env_registry_url: Url) -> Result<Self, anyhow::Error> {
+  pub fn as_resolved(&self, env_registry_url: Url) -> Result<ResolvedNpmRc, anyhow::Error> {
+    let mut scopes = HashMap::with_capacity(self.scope_registries.len());
     for scope in self.scope_registries.keys() {
+      let (url, config) = match self.registry_url_and_config_for_maybe_scope(Some(scope.as_str()), env_registry_url.as_str()) {
+        Some((url, config)) => (Url::parse(&url).with_context(|| format!("failed parsing npm registry url for scope '{}'", scope))?, config.clone()),
+        None => anyhow::bail!("failed resolving .npmrc config for scope '{}'", scope),
+      };
+      scopes.insert(scope.clone(), RegistryConfigWithUrl { registry_url: url, config });
     }
     let (default_url, default_config) =
       match self.registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str()) {
-        Some((default_url, default_config)) => (Url::parse(&default_url)?, default_config.clone()),
+        Some((default_url, default_config)) => (Url::parse(&default_url).context("failed parsing npm registry url")?, default_config.clone()),
         None => (env_registry_url.clone(), RegistryConfig::default()),
       };
-    
+    Ok(ResolvedNpmRc {
+        default_config: RegistryConfigWithUrl { registry_url: default_url, config: default_config },
+        scopes,
+    })
   }
 
   pub fn registry_url_and_config_for_package<'a>(
