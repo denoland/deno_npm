@@ -440,10 +440,13 @@ registry=${VAR_FOUND}
         )
         .unwrap();
       assert_eq!(registry_url, "https://example.com/");
-      assert_eq!(config, &RegistryConfig {
-        auth_token: Some("MY_AUTH_TOKEN".to_string()),
-        ..Default::default()
-      });
+      assert_eq!(
+        config,
+        &RegistryConfig {
+          auth_token: Some("MY_AUTH_TOKEN".to_string()),
+          ..Default::default()
+        }
+      );
     }
   }
 }
