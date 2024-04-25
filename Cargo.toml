@@ -19,6 +19,7 @@ log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 thiserror = "1.0.24"
 futures = "0.3.28"
+url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1.0.0"

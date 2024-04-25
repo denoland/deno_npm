@@ -1,6 +1,8 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use anyhow::Context;
 use monch::*;
+use url::Url;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -19,6 +21,18 @@ pub struct RegistryConfig {
   pub email: Option<String>,
   pub certfile: Option<String>,
   pub keyfile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryConfigWithUrl {
+  pub registry_url: Url,
+  pub config: RegistryConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNpmRc {
+  pub default_config: RegistryConfigWithUrl,
+  pub scopes: HashMap<String, RegistryConfigWithUrl>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -97,6 +111,17 @@ impl NpmRc {
 
     Ok(rc_file)
   }
+  
+  pub fn as_resolved(&self, env_registry_url: Url) -> Result<Self, anyhow::Error> {
+    for scope in self.scope_registries.keys() {
+    }
+    let (default_url, default_config) =
+      match self.registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str()) {
+        Some((default_url, default_config)) => (Url::parse(&default_url)?, default_config.clone()),
+        None => (env_registry_url.clone(), RegistryConfig::default()),
+      };
+    
+  }
 
   pub fn registry_url_and_config_for_package<'a>(
     &'a self,
@@ -109,6 +134,14 @@ impl NpmRc {
     }
 
     let maybe_scope_name = get_scope_name(package_name);
+    self.registry_url_and_config_for_maybe_scope(maybe_scope_name, env_registry_url)
+  }
+
+  pub fn registry_url_and_config_for_maybe_scope<'a>(
+    &'a self,
+    maybe_scope_name: Option<&str>,
+    env_registry_url: &str,
+  ) -> Option<(String, &'a RegistryConfig)> {
     let registry_url = maybe_scope_name
       .and_then(|scope| self.scope_registries.get(scope).map(|s| s.as_str()))
       .or(self.registry.as_deref())
