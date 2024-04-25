@@ -676,6 +676,7 @@ impl Graph {
             .cloned()
             .collect(),
           bin: version_info.bin.clone(),
+          scripts: version_info.scripts.clone(),
         },
       );
     }

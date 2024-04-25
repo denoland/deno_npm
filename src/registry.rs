@@ -160,6 +160,8 @@ pub struct NpmPackageVersionInfo {
   pub os: Vec<String>,
   #[serde(default)]
   pub cpu: Vec<String>,
+  #[serde(default)]
+  pub scripts: HashMap<String, String>,
 }
 
 impl NpmPackageVersionInfo {

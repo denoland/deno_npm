@@ -115,6 +115,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub dependencies: HashMap<String, NpmPackageId>,
   pub optional_dependencies: HashSet<String>,
   pub bin: Option<NpmPackageVersionBinEntry>,
+  pub scripts: HashMap<String, String>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,6 +240,7 @@ impl NpmResolutionSnapshot {
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
           bin: package.bin,
+          scripts: package.scripts,
         },
       );
     }
@@ -298,6 +300,7 @@ impl NpmResolutionSnapshot {
         system: Default::default(),
         optional_dependencies: Default::default(),
         bin: None,
+        scripts: Default::default(),
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -978,6 +981,7 @@ pub async fn snapshot_from_lockfile<'a>(
             .into_keys()
             .collect(),
           bin: version_info.bin.clone(),
+          scripts: version_info.scripts.clone(),
         });
       }
       Err(err) => {
@@ -1079,6 +1083,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: HashSet::from(["c".to_string()]),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
@@ -1087,6 +1092,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1098,6 +1104,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
@@ -1106,6 +1113,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
       ],
     }
@@ -1217,6 +1225,7 @@ mod tests {
       dist: Default::default(),
       optional_dependencies: Default::default(),
       bin: None,
+      scripts: Default::default(),
     }
   }
 
