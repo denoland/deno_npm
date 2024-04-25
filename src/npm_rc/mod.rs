@@ -183,7 +183,7 @@ mod test {
   #[test]
   fn test_parse_basic() {
     // https://docs.npmjs.com/cli/v10/configuring-npm/npmrc#auth-related-configuration
-    let npm_rc = parse_npm_rc(
+    let npm_rc = NpmRc::parse(
       r#"
 @myorg:registry=https://example.com/myorg
 @another:registry=https://example.com/another
@@ -284,7 +284,7 @@ registry=https://registry.npmjs.org/
 
   #[test]
   fn test_parse_env_vars() {
-    let npm_rc = parse_npm_rc(
+    let npm_rc = NpmRc::parse(
       r#"
 @myorg:registry=${VAR_FOUND}
 @another:registry=${VAR_NOT_FOUND}
