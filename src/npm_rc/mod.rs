@@ -112,7 +112,7 @@ impl NpmRc {
     Ok(rc_file)
   }
   
-  pub fn as_resolved(&self, env_registry_url: Url) -> Result<ResolvedNpmRc, anyhow::Error> {
+  pub fn as_resolved(&self, env_registry_url: &Url) -> Result<ResolvedNpmRc, anyhow::Error> {
     let mut scopes = HashMap::with_capacity(self.scope_registries.len());
     for scope in self.scope_registries.keys() {
       let (url, config) = match self.registry_url_and_config_for_maybe_scope(Some(scope.as_str()), env_registry_url.as_str()) {
@@ -222,7 +222,8 @@ fn expand_vars(
 mod test {
   use super::*;
 
-  use pretty_assertions::assert_eq;
+  use deno_semver::npm;
+use pretty_assertions::assert_eq;
 
   #[test]
   fn test_parse_basic() {
@@ -333,6 +334,43 @@ registry=https://registry.npmjs.org/
       assert_eq!(registry_url, "https://example.com/myorg/");
       assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
     }
+
+    let resolved_npm_rc = npm_rc.as_resolved(&Url::parse("https://deno.land/npm/").unwrap()).unwrap();
+    assert_eq!(resolved_npm_rc, ResolvedNpmRc {
+      default_config: RegistryConfigWithUrl {
+      registry_url: Url::parse("https://registry.npmjs.org/").unwrap(),
+      config: RegistryConfig {
+        auth_token: Some("MYTOKEN".to_string()),
+        ..Default::default()
+      },
+    }, scopes: HashMap::from([
+      ("myorg".to_string(), RegistryConfigWithUrl {
+        registry_url: Url::parse("https://example.com/myorg/").unwrap(),
+        config: RegistryConfig {
+          auth_token: Some("MYTOKEN1".to_string()),
+          ..Default::default()
+        }
+      }),
+      ("another".to_string(), RegistryConfigWithUrl {
+        registry_url: Url::parse("https://example.com/another/").unwrap(),
+        config: RegistryConfig {
+          auth_token: Some("MYTOKEN2".to_string()),
+          ..Default::default()
+        }
+      }),
+      ("example".to_string(), RegistryConfigWithUrl {
+        registry_url: Url::parse("https://example.com/example/").unwrap(),
+        config: RegistryConfig {
+              auth: Some("AUTH".to_string()),
+              auth_token: Some("MYTOKEN0".to_string()),
+              username: Some("USERNAME".to_string()),
+              password: Some("PASSWORD".to_string()),
+              email: Some("EMAIL".to_string()),
+              certfile: Some("CERTFILE".to_string()),
+              keyfile: Some("KEYFILE".to_string()),
+        }
+      }),
+    ])});
   }
 
   #[test]
