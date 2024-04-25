@@ -245,6 +245,7 @@ pub struct NpmResolutionPackage {
   pub dependencies: HashMap<String, NpmPackageId>,
   pub optional_dependencies: HashSet<String>,
   pub bin: Option<NpmPackageVersionBinEntry>,
+  pub scripts: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -277,6 +278,7 @@ impl NpmResolutionPackage {
       dependencies: self.dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
       bin: self.bin.clone(),
+      scripts: self.scripts.clone(),
     }
   }
 
