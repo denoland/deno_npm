@@ -1083,6 +1083,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: HashSet::from(["c".to_string()]),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
@@ -1091,6 +1092,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1102,6 +1104,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
@@ -1110,6 +1113,7 @@ mod tests {
           dist: Default::default(),
           optional_dependencies: Default::default(),
           bin: None,
+          scripts: Default::default(),
         },
       ],
     }
@@ -1221,6 +1225,7 @@ mod tests {
       dist: Default::default(),
       optional_dependencies: Default::default(),
       bin: None,
+      scripts: Default::default(),
     }
   }
 
