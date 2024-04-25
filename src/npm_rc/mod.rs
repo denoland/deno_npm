@@ -98,11 +98,11 @@ impl NpmRc {
     Ok(rc_file)
   }
 
-  pub fn config_for_package<'a>(
+  pub fn registry_url_and_config_for_package<'a>(
     &'a self,
     package_name: &str,
     env_registry_url: &str,
-  ) -> Option<&'a RegistryConfig> {
+  ) -> Option<(String, &'a RegistryConfig)> {
     fn get_scope_name(package_name: &str) -> Option<&str> {
       let no_at_pkg_name = package_name.strip_prefix('@')?;
       no_at_pkg_name.split_once('/').map(|(scope, _)| scope)
@@ -114,13 +114,13 @@ impl NpmRc {
       .or(self.registry.as_deref())
       .unwrap_or(env_registry_url);
 
-    let registry_url = if registry_url.ends_with('/') {
+    let original_registry_url = if registry_url.ends_with('/') {
       Cow::Borrowed(registry_url)
     } else {
       Cow::Owned(format!("{}/", registry_url))
     };
     // https://example.com/ -> example.com/
-    let registry_url = registry_url.split_once("//").map(|(_, right)| right)?;
+    let registry_url = original_registry_url.split_once("//").map(|(_, right)| right)?;
     let start_url = match maybe_scope_name {
       Some(scope_name) => Cow::Owned(format!("{}{}", registry_url, scope_name)),
       None => Cow::Borrowed(registry_url),
@@ -132,7 +132,7 @@ impl NpmRc {
     let mut url: &str = &start_url;
     loop {
       if let Some(config) = self.registry_configs.get(url) {
-        return Some(config);
+        return Some((original_registry_url.into_owned(), config));
       }
       let next_slash_index = url[..url.len() - 1].rfind('/')?;
       url = &url[..next_slash_index + 1];
@@ -261,23 +261,26 @@ registry=https://registry.npmjs.org/
 
     // no matching scoped package
     {
-      let config = npm_rc
-        .config_for_package("test", "https://deno.land/npm/")
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package("test", "https://deno.land/npm/")
         .unwrap();
+      assert_eq!(registry_url, "https://registry.npmjs.org/");
       assert_eq!(config.auth_token, Some("MYTOKEN".to_string()));
     }
     // matching scoped package
     {
-      let config = npm_rc
-        .config_for_package("@example/pkg", "https://deno.land/npm/")
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package("@example/pkg", "https://deno.land/npm/")
         .unwrap();
+      assert_eq!(registry_url, "https://example.com/example/");
       assert_eq!(config.auth_token, Some("MYTOKEN0".to_string()));
     }
     // matching scoped package with specific token
     {
-      let config = npm_rc
-        .config_for_package("@myorg/pkg", "https://deno.land/npm/")
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package("@myorg/pkg", "https://deno.land/npm/")
         .unwrap();
+      assert_eq!(registry_url, "https://example.com/myorg/");
       assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
     }
   }
