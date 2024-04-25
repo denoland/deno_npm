@@ -29,6 +29,75 @@ pub struct NpmRc {
 }
 
 impl NpmRc {
+  pub fn parse(
+    input: &str,
+    get_env_var: &impl Fn(&str) -> Option<String>,
+  ) -> Result<Self, monch::ParseErrorFailureError> {
+    let kv_or_sections = ini::parse_ini(input)?;
+    let mut rc_file = Self::default();
+
+    for kv_or_section in kv_or_sections {
+      match kv_or_section {
+        KeyValueOrSection::KeyValue(kv) => {
+          if let Key::Plain(key) = &kv.key {
+            if let Some((left, right)) = key.rsplit_once(':') {
+              if let Some(scope) = left.strip_prefix('@') {
+                if right == "registry" {
+                  if let Value::String(text) = &kv.value {
+                    let value = expand_vars(text, get_env_var);
+                    rc_file.scope_registries.insert(scope.to_string(), value);
+                  }
+                }
+              } else if let Some(host_and_path) = left.strip_prefix("//") {
+                if let Value::String(text) = &kv.value {
+                  let value = expand_vars(text, get_env_var);
+                  let config = rc_file
+                    .registry_configs
+                    .entry(host_and_path.to_string())
+                    .or_default();
+                  match right {
+                    "_auth" => {
+                      config.auth = Some(value);
+                    }
+                    "_authToken" => {
+                      config.auth_token = Some(value);
+                    }
+                    "username" => {
+                      config.username = Some(value);
+                    }
+                    "_password" => {
+                      config.password = Some(value);
+                    }
+                    "email" => {
+                      config.email = Some(value);
+                    }
+                    "certfile" => {
+                      config.certfile = Some(value);
+                    }
+                    "keyfile" => {
+                      config.keyfile = Some(value);
+                    }
+                    _ => {}
+                  }
+                }
+              }
+            } else if key == "registry" {
+              if let Value::String(text) = &kv.value {
+                let value = expand_vars(text, get_env_var);
+                rc_file.registry = Some(value);
+              }
+            }
+          }
+        }
+        KeyValueOrSection::Section(_) => {
+          // ignore
+        }
+      }
+    }
+
+    Ok(rc_file)
+  }
+
   pub fn config_for_package<'a>(
     &'a self,
     package_name: &str,
@@ -69,75 +138,6 @@ impl NpmRc {
       url = &url[..next_slash_index + 1];
     }
   }
-}
-
-pub fn parse_npm_rc(
-  input: &str,
-  get_env_var: &impl Fn(&str) -> Option<String>,
-) -> Result<NpmRc, monch::ParseErrorFailureError> {
-  let kv_or_sections = ini::parse_ini(input)?;
-  let mut rc_file = NpmRc::default();
-
-  for kv_or_section in kv_or_sections {
-    match kv_or_section {
-      KeyValueOrSection::KeyValue(kv) => {
-        if let Key::Plain(key) = &kv.key {
-          if let Some((left, right)) = key.rsplit_once(':') {
-            if let Some(scope) = left.strip_prefix('@') {
-              if right == "registry" {
-                if let Value::String(text) = &kv.value {
-                  let value = expand_vars(text, get_env_var);
-                  rc_file.scope_registries.insert(scope.to_string(), value);
-                }
-              }
-            } else if let Some(host_and_path) = left.strip_prefix("//") {
-              if let Value::String(text) = &kv.value {
-                let value = expand_vars(text, get_env_var);
-                let config = rc_file
-                  .registry_configs
-                  .entry(host_and_path.to_string())
-                  .or_default();
-                match right {
-                  "_auth" => {
-                    config.auth = Some(value);
-                  }
-                  "_authToken" => {
-                    config.auth_token = Some(value);
-                  }
-                  "username" => {
-                    config.username = Some(value);
-                  }
-                  "_password" => {
-                    config.password = Some(value);
-                  }
-                  "email" => {
-                    config.email = Some(value);
-                  }
-                  "certfile" => {
-                    config.certfile = Some(value);
-                  }
-                  "keyfile" => {
-                    config.keyfile = Some(value);
-                  }
-                  _ => {}
-                }
-              }
-            }
-          } else if key == "registry" {
-            if let Value::String(text) = &kv.value {
-              let value = expand_vars(text, get_env_var);
-              rc_file.registry = Some(value);
-            }
-          }
-        }
-      }
-      KeyValueOrSection::Section(_) => {
-        // ignore
-      }
-    }
-  }
-
-  Ok(rc_file)
 }
 
 fn expand_vars(
@@ -183,7 +183,7 @@ mod test {
   #[test]
   fn test_parse_basic() {
     // https://docs.npmjs.com/cli/v10/configuring-npm/npmrc#auth-related-configuration
-    let npm_rc = parse_npm_rc(
+    let npm_rc = NpmRc::parse(
       r#"
 @myorg:registry=https://example.com/myorg
 @another:registry=https://example.com/another
@@ -284,7 +284,7 @@ registry=https://registry.npmjs.org/
 
   #[test]
   fn test_parse_env_vars() {
-    let npm_rc = parse_npm_rc(
+    let npm_rc = NpmRc::parse(
       r#"
 @myorg:registry=${VAR_FOUND}
 @another:registry=${VAR_NOT_FOUND}
