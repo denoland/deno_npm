@@ -12,6 +12,16 @@ use self::ini::Value;
 
 mod ini;
 
+static EMPTY_REGISTRY_CONFIG: RegistryConfig = RegistryConfig {
+  auth: None,
+  auth_token: None,
+  username: None,
+  password: None,
+  email: None,
+  certfile: None,
+  keyfile: None,
+};
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RegistryConfig {
   pub auth: Option<String>,
@@ -190,7 +200,9 @@ impl NpmRc {
       .split_once("//")
       .map(|(_, right)| right)?;
     let start_url = match maybe_scope_name {
-      Some(scope_name) => Cow::Owned(format!("{}{}", registry_url, scope_name)),
+      Some(scope_name) => {
+        Cow::Owned(format!("{}{}/", registry_url, scope_name))
+      }
       None => Cow::Borrowed(registry_url),
     };
     // Loop through all the paths in the url to find a match. Example:
@@ -202,7 +214,15 @@ impl NpmRc {
       if let Some(config) = self.registry_configs.get(url) {
         return Some((original_registry_url.into_owned(), config));
       }
-      let next_slash_index = url[..url.len() - 1].rfind('/')?;
+      let Some(next_slash_index) = url[..url.len() - 1].rfind('/') else {
+        if original_registry_url == env_registry_url {
+          return None;
+        }
+        return Some((
+          original_registry_url.into_owned(),
+          &EMPTY_REGISTRY_CONFIG,
+        ));
+      };
       url = &url[..next_slash_index + 1];
     }
   }
@@ -574,5 +594,59 @@ registry=${VAR_FOUND}
       }),
       "test${VA{R}test"
     );
+  }
+
+  #[test]
+  fn test_scope_registry_url_only() {
+    let npm_rc = NpmRc::parse(
+      r#"
+@example:registry=https://example.com/
+"#,
+      &|_| None,
+    )
+    .unwrap();
+    {
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package(
+          "@example/test",
+          "https://deno.land/npm/",
+        )
+        .unwrap();
+      assert_eq!(registry_url, "https://example.com/");
+      assert_eq!(config, &RegistryConfig::default());
+    }
+    {
+      assert!(npm_rc
+        .registry_url_and_config_for_package("test", "https://deno.land/npm/")
+        .is_none());
+    }
+  }
+
+  #[test]
+  fn test_scope_with_auth() {
+    let npm_rc = NpmRc::parse(
+      r#"
+@example:registry=https://example.com/
+//example.com/example/:_authToken=MY_AUTH_TOKEN
+"#,
+      &|_| None,
+    )
+    .unwrap();
+    {
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package(
+          "@example/test",
+          "https://deno.land/npm/",
+        )
+        .unwrap();
+      assert_eq!(registry_url, "https://example.com/");
+      assert_eq!(
+        config,
+        &RegistryConfig {
+          auth_token: Some("MY_AUTH_TOKEN".to_string()),
+          ..Default::default()
+        }
+      );
+    }
   }
 }
