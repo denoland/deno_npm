@@ -120,7 +120,9 @@ impl NpmRc {
       Cow::Owned(format!("{}/", registry_url))
     };
     // https://example.com/ -> example.com/
-    let registry_url = original_registry_url.split_once("//").map(|(_, right)| right)?;
+    let registry_url = original_registry_url
+      .split_once("//")
+      .map(|(_, right)| right)?;
     let start_url = match maybe_scope_name {
       Some(scope_name) => Cow::Owned(format!("{}{}", registry_url, scope_name)),
       None => Cow::Borrowed(registry_url),
@@ -270,7 +272,10 @@ registry=https://registry.npmjs.org/
     // matching scoped package
     {
       let (registry_url, config) = npm_rc
-        .registry_url_and_config_for_package("@example/pkg", "https://deno.land/npm/")
+        .registry_url_and_config_for_package(
+          "@example/pkg",
+          "https://deno.land/npm/",
+        )
         .unwrap();
       assert_eq!(registry_url, "https://example.com/example/");
       assert_eq!(config.auth_token, Some("MYTOKEN0".to_string()));
@@ -278,7 +283,10 @@ registry=https://registry.npmjs.org/
     // matching scoped package with specific token
     {
       let (registry_url, config) = npm_rc
-        .registry_url_and_config_for_package("@myorg/pkg", "https://deno.land/npm/")
+        .registry_url_and_config_for_package(
+          "@myorg/pkg",
+          "https://deno.land/npm/",
+        )
         .unwrap();
       assert_eq!(registry_url, "https://example.com/myorg/");
       assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
