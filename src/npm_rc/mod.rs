@@ -480,7 +480,7 @@ registry=https://registry.npmjs.org/
         .auth_token
         .as_ref()
         .unwrap(),
-      "MY_TOKEN"
+      "MYTOKEN"
     );
 
     assert_eq!(
