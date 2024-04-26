@@ -1,8 +1,10 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use anyhow::Context;
 use monch::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use url::Url;
 
 use self::ini::Key;
 use self::ini::KeyValueOrSection;
@@ -29,6 +31,18 @@ pub struct RegistryConfig {
   pub email: Option<String>,
   pub certfile: Option<String>,
   pub keyfile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryConfigWithUrl {
+  pub registry_url: Url,
+  pub config: RegistryConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNpmRc {
+  pub default_config: RegistryConfigWithUrl,
+  pub scopes: HashMap<String, RegistryConfigWithUrl>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -108,17 +122,69 @@ impl NpmRc {
     Ok(rc_file)
   }
 
+  pub fn as_resolved(
+    &self,
+    env_registry_url: &Url,
+  ) -> Result<ResolvedNpmRc, anyhow::Error> {
+    let mut scopes = HashMap::with_capacity(self.scope_registries.len());
+    for scope in self.scope_registries.keys() {
+      let (url, config) = match self.registry_url_and_config_for_maybe_scope(
+        Some(scope.as_str()),
+        env_registry_url.as_str(),
+      ) {
+        Some((url, config)) => (
+          Url::parse(&url).with_context(|| {
+            format!("failed parsing npm registry url for scope '{}'", scope)
+          })?,
+          config.clone(),
+        ),
+        None => {
+          anyhow::bail!("failed resolving .npmrc config for scope '{}'", scope)
+        }
+      };
+      scopes.insert(
+        scope.clone(),
+        RegistryConfigWithUrl {
+          registry_url: url,
+          config,
+        },
+      );
+    }
+    let (default_url, default_config) = match self
+      .registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str())
+    {
+      Some((default_url, default_config)) => (
+        Url::parse(&default_url).context("failed parsing npm registry url")?,
+        default_config.clone(),
+      ),
+      None => (env_registry_url.clone(), RegistryConfig::default()),
+    };
+    Ok(ResolvedNpmRc {
+      default_config: RegistryConfigWithUrl {
+        registry_url: default_url,
+        config: default_config,
+      },
+      scopes,
+    })
+  }
+
   pub fn registry_url_and_config_for_package<'a>(
     &'a self,
     package_name: &str,
     env_registry_url: &str,
   ) -> Option<(String, &'a RegistryConfig)> {
-    fn get_scope_name(package_name: &str) -> Option<&str> {
-      let no_at_pkg_name = package_name.strip_prefix('@')?;
-      no_at_pkg_name.split_once('/').map(|(scope, _)| scope)
-    }
-
     let maybe_scope_name = get_scope_name(package_name);
+    self.registry_url_and_config_for_maybe_scope(
+      maybe_scope_name,
+      env_registry_url,
+    )
+  }
+
+  pub fn registry_url_and_config_for_maybe_scope<'a>(
+    &'a self,
+    maybe_scope_name: Option<&str>,
+    env_registry_url: &str,
+  ) -> Option<(String, &'a RegistryConfig)> {
     let registry_url = maybe_scope_name
       .and_then(|scope| self.scope_registries.get(scope).map(|s| s.as_str()))
       .or(self.registry.as_deref())
@@ -159,6 +225,45 @@ impl NpmRc {
       };
       url = &url[..next_slash_index + 1];
     }
+  }
+}
+
+fn get_scope_name(package_name: &str) -> Option<&str> {
+  let no_at_pkg_name = package_name.strip_prefix('@')?;
+  no_at_pkg_name.split_once('/').map(|(scope, _)| scope)
+}
+
+impl ResolvedNpmRc {
+  pub fn get_registry_url(&self, package_name: &str) -> &Url {
+    let Some(scope_name) = get_scope_name(package_name) else {
+      return &self.default_config.registry_url;
+    };
+
+    match self.scopes.get(scope_name) {
+      Some(registry_config) => &registry_config.registry_url,
+      None => &self.default_config.registry_url,
+    }
+  }
+
+  pub fn get_registry_config(&self, package_name: &str) -> &RegistryConfig {
+    let Some(scope_name) = get_scope_name(package_name) else {
+      return &self.default_config.config;
+    };
+
+    match self.scopes.get(scope_name) {
+      Some(registry_config) => &registry_config.config,
+      None => &self.default_config.config,
+    }
+  }
+
+  pub fn get_all_known_registries_urls(&self) -> Vec<Url> {
+    let mut urls = Vec::with_capacity(1 + self.scopes.len());
+
+    urls.push(self.default_config.registry_url.clone());
+    for scope_config in self.scopes.values() {
+      urls.push(scope_config.registry_url.clone());
+    }
+    urls
   }
 }
 
@@ -311,6 +416,111 @@ registry=https://registry.npmjs.org/
       assert_eq!(registry_url, "https://example.com/myorg/");
       assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
     }
+
+    let resolved_npm_rc = npm_rc
+      .as_resolved(&Url::parse("https://deno.land/npm/").unwrap())
+      .unwrap();
+    assert_eq!(
+      resolved_npm_rc,
+      ResolvedNpmRc {
+        default_config: RegistryConfigWithUrl {
+          registry_url: Url::parse("https://registry.npmjs.org/").unwrap(),
+          config: RegistryConfig {
+            auth_token: Some("MYTOKEN".to_string()),
+            ..Default::default()
+          },
+        },
+        scopes: HashMap::from([
+          (
+            "myorg".to_string(),
+            RegistryConfigWithUrl {
+              registry_url: Url::parse("https://example.com/myorg/").unwrap(),
+              config: RegistryConfig {
+                auth_token: Some("MYTOKEN1".to_string()),
+                ..Default::default()
+              }
+            }
+          ),
+          (
+            "another".to_string(),
+            RegistryConfigWithUrl {
+              registry_url: Url::parse("https://example.com/another/").unwrap(),
+              config: RegistryConfig {
+                auth_token: Some("MYTOKEN2".to_string()),
+                ..Default::default()
+              }
+            }
+          ),
+          (
+            "example".to_string(),
+            RegistryConfigWithUrl {
+              registry_url: Url::parse("https://example.com/example/").unwrap(),
+              config: RegistryConfig {
+                auth: Some("AUTH".to_string()),
+                auth_token: Some("MYTOKEN0".to_string()),
+                username: Some("USERNAME".to_string()),
+                password: Some("PASSWORD".to_string()),
+                email: Some("EMAIL".to_string()),
+                certfile: Some("CERTFILE".to_string()),
+                keyfile: Some("KEYFILE".to_string()),
+              }
+            }
+          ),
+        ])
+      }
+    );
+
+    assert_eq!(
+      resolved_npm_rc.get_registry_url("@deno/test").as_str(),
+      "https://registry.npmjs.org/"
+    );
+    assert_eq!(
+      resolved_npm_rc
+        .get_registry_config("@deno/test")
+        .auth_token
+        .as_ref()
+        .unwrap(),
+      "MYTOKEN"
+    );
+
+    assert_eq!(
+      resolved_npm_rc.get_registry_url("@myorg/test").as_str(),
+      "https://example.com/myorg/"
+    );
+    assert_eq!(
+      resolved_npm_rc
+        .get_registry_config("@myorg/test")
+        .auth_token
+        .as_ref()
+        .unwrap(),
+      "MYTOKEN1"
+    );
+
+    assert_eq!(
+      resolved_npm_rc.get_registry_url("@another/test").as_str(),
+      "https://example.com/another/"
+    );
+    assert_eq!(
+      resolved_npm_rc
+        .get_registry_config("@another/test")
+        .auth_token
+        .as_ref()
+        .unwrap(),
+      "MYTOKEN2"
+    );
+
+    assert_eq!(
+      resolved_npm_rc.get_registry_url("@example/test").as_str(),
+      "https://example.com/example/"
+    );
+    let config = resolved_npm_rc.get_registry_config("@example/test");
+    assert_eq!(config.auth.as_ref().unwrap(), "AUTH");
+    assert_eq!(config.auth_token.as_ref().unwrap(), "MYTOKEN0");
+    assert_eq!(config.username.as_ref().unwrap(), "USERNAME");
+    assert_eq!(config.password.as_ref().unwrap(), "PASSWORD");
+    assert_eq!(config.email.as_ref().unwrap(), "EMAIL");
+    assert_eq!(config.certfile.as_ref().unwrap(), "CERTFILE");
+    assert_eq!(config.keyfile.as_ref().unwrap(), "KEYFILE");
   }
 
   #[test]
