@@ -255,6 +255,16 @@ impl ResolvedNpmRc {
       None => &self.default_config.config,
     }
   }
+
+  pub fn get_all_known_registries_urls(&self) -> Vec<Url> {
+    let mut urls = Vec::with_capacity(1 + self.scopes.len());
+
+    urls.push(self.default_config.registry_url.clone());
+    for scope_config in self.scopes.values() {
+      urls.push(scope_config.registry_url.clone());
+    }
+    urls
+  }
 }
 
 fn expand_vars(
