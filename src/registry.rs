@@ -130,6 +130,7 @@ impl Ord for NpmDependencyEntry {
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct NpmPeerDependencyMeta {
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   optional: bool,
 }
 
@@ -149,18 +150,25 @@ pub struct NpmPackageVersionInfo {
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub dependencies: HashMap<String, String>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub optional_dependencies: HashMap<String, String>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub peer_dependencies: HashMap<String, String>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub peer_dependencies_meta: HashMap<String, NpmPeerDependencyMeta>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub os: Vec<String>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub cpu: Vec<String>,
   #[serde(default)]
+  #[serde(deserialize_with = "deserialize_null_default")]
   pub scripts: HashMap<String, String>,
 }
 
@@ -517,6 +525,19 @@ impl NpmRegistryApi for TestNpmRegistryApi {
   }
 }
 
+/// Deserializes empty or null values to the default value (npm allows uploading
+/// `null` for values and serde doesn't automatically make that the default).
+///
+/// Code from: https://github.com/serde-rs/serde/issues/1098#issuecomment-760711617
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+  T: Default + Deserialize<'de>,
+  D: serde::Deserializer<'de>,
+{
+  let opt = Option::deserialize(deserializer)?;
+  Ok(opt.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod test {
   use std::collections::HashMap;
@@ -564,6 +585,19 @@ mod test {
         ("b".to_string(), "b-value".to_string()),
       ])))
     );
+  }
+
+  #[test]
+  fn deserializes_null_entries() {
+    let text = r#"{ "version": "1.0.0", "dist": { "tarball": "value", "shasum": "test" }, "dependencies": null, "optionalDependencies": null, "peerDependencies": null, "peerDependenciesMeta": null, "os": null, "cpu": null, "scripts": null }"#;
+    let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    assert!(info.dependencies.is_empty());
+    assert!(info.optional_dependencies.is_empty());
+    assert!(info.peer_dependencies.is_empty());
+    assert!(info.peer_dependencies_meta.is_empty());
+    assert!(info.os.is_empty());
+    assert!(info.cpu.is_empty());
+    assert!(info.scripts.is_empty());
   }
 
   #[test]
