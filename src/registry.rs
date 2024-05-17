@@ -130,7 +130,7 @@ impl Ord for NpmDependencyEntry {
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct NpmPeerDependencyMeta {
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::null_default")]
   optional: bool,
 }
 
@@ -150,25 +150,25 @@ pub struct NpmPackageVersionInfo {
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub dependencies: HashMap<String, String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub optional_dependencies: HashMap<String, String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies: HashMap<String, String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies_meta: HashMap<String, NpmPeerDependencyMeta>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub os: Vec<String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub cpu: Vec<String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserialize_null_default")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<String, String>,
 }
 
@@ -525,17 +525,247 @@ impl NpmRegistryApi for TestNpmRegistryApi {
   }
 }
 
-/// Deserializes empty or null values to the default value (npm allows uploading
-/// `null` for values and serde doesn't automatically make that the default).
-///
-/// Code from: https://github.com/serde-rs/serde/issues/1098#issuecomment-760711617
-fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-  T: Default + Deserialize<'de>,
-  D: serde::Deserializer<'de>,
-{
-  let opt = Option::deserialize(deserializer)?;
-  Ok(opt.unwrap_or_default())
+mod deserializers {
+  use std::collections::HashMap;
+  use std::fmt;
+
+  use serde::de;
+  use serde::de::DeserializeOwned;
+  use serde::de::MapAccess;
+  use serde::de::SeqAccess;
+  use serde::de::Visitor;
+  use serde::Deserialize;
+  use serde::Deserializer;
+
+  /// Deserializes empty or null values to the default value (npm allows uploading
+  /// `null` for values and serde doesn't automatically make that the default).
+  ///
+  /// Code from: https://github.com/serde-rs/serde/issues/1098#issuecomment-760711617
+  pub fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+  where
+    T: Default + Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+  {
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+  }
+
+  pub fn hashmap<'de, K, V, D>(
+    deserializer: D,
+  ) -> Result<HashMap<K, V>, D::Error>
+  where
+    K: Deserialize<'de> + Eq + std::hash::Hash,
+    V: DeserializeOwned,
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_option(HashMapVisitor::<K, V> {
+      marker: std::marker::PhantomData,
+    })
+  }
+
+  pub fn vector<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
+  where
+    T: DeserializeOwned,
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_option(VectorVisitor::<T> {
+      marker: std::marker::PhantomData,
+    })
+  }
+
+  struct HashMapVisitor<K, V> {
+    marker: std::marker::PhantomData<fn() -> HashMap<K, V>>,
+  }
+
+  impl<'de, K, V> Visitor<'de> for HashMapVisitor<K, V>
+  where
+    K: Deserialize<'de> + Eq + std::hash::Hash,
+    V: DeserializeOwned,
+  {
+    type Value = HashMap<K, V>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("a map")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+      D: Deserializer<'de>,
+    {
+      deserializer.deserialize_any(self)
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+      M: MapAccess<'de>,
+    {
+      let mut hashmap = HashMap::new();
+
+      // deserialize to a serde_json::Value first to ensure serde_json
+      // skips over the entry, then deserialize to an actual value
+      while let Some(entry) = map.next_entry::<K, serde_json::Value>()? {
+        if let Ok(value) = serde_json::from_value(entry.1) {
+          hashmap.insert(entry.0, value);
+        }
+      }
+
+      Ok(hashmap)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+      Ok(HashMap::new())
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_string<E>(self, _v: String) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+
+    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(HashMap::new())
+    }
+  }
+
+  struct VectorVisitor<T> {
+    marker: std::marker::PhantomData<fn() -> Vec<T>>,
+  }
+
+  impl<'de, T> Visitor<'de> for VectorVisitor<T>
+  where
+    T: DeserializeOwned,
+  {
+    type Value = Vec<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("a sequence or null")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+      D: Deserializer<'de>,
+    {
+      deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      let mut vec = Vec::new();
+
+      while let Some(value) = seq.next_element::<serde_json::Value>()? {
+        if let Ok(value) = serde_json::from_value(value) {
+          vec.push(value);
+        }
+      }
+
+      Ok(vec)
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+      M: MapAccess<'de>,
+    {
+      while map
+        .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+        .is_some()
+      {}
+      Ok(Vec::new())
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_string<E>(self, _v: String) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+  }
 }
 
 #[cfg(test)]
@@ -598,6 +828,129 @@ mod test {
     assert!(info.os.is_empty());
     assert!(info.cpu.is_empty());
     assert!(info.scripts.is_empty());
+  }
+
+  #[test]
+  fn deserializes_invalid_kind() {
+    #[track_caller]
+    fn assert_empty(text: &str) {
+      let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+      assert!(info.dependencies.is_empty());
+      assert!(info.optional_dependencies.is_empty());
+      assert!(info.peer_dependencies.is_empty());
+      assert!(info.peer_dependencies_meta.is_empty());
+      assert!(info.os.is_empty());
+      assert!(info.cpu.is_empty());
+      assert!(info.scripts.is_empty());
+    }
+
+    // wrong collection kind
+    assert_empty(
+      r#"{
+        "version": "1.0.0",
+        "dist": { "tarball": "value", "shasum": "test" },
+        "dependencies": [],
+        "optionalDependencies": [],
+        "peerDependencies": [],
+        "peerDependenciesMeta": [],
+        "os": {},
+        "cpu": {},
+        "scripts": []
+      }"#,
+    );
+
+    // booleans
+    assert_empty(
+      r#"{
+        "version": "1.0.0",
+        "dist": { "tarball": "value", "shasum": "test" },
+        "dependencies": false,
+        "optionalDependencies": true,
+        "peerDependencies": false,
+        "peerDependenciesMeta": true,
+        "os": false,
+        "cpu": true,
+        "scripts": false
+      }"#,
+    );
+
+    // strings
+    assert_empty(
+      r#"{
+        "version": "1.0.0",
+        "dist": { "tarball": "value", "shasum": "test" },
+        "dependencies": "",
+        "optionalDependencies": "",
+        "peerDependencies": "",
+        "peerDependenciesMeta": "",
+        "os": "",
+        "cpu": "",
+        "scripts": ""
+      }"#,
+    );
+
+    // numbers
+    assert_empty(
+      r#"{
+        "version": "1.0.0",
+        "dist": { "tarball": "value", "shasum": "test" },
+        "dependencies": 1.23,
+        "optionalDependencies": 5,
+        "peerDependencies": -2,
+        "peerDependenciesMeta": -2.23,
+        "os": -63.34,
+        "cpu": 12,
+        "scripts": -1234.34
+      }"#,
+    );
+  }
+
+  #[test]
+  fn deserializes_invalid_collection_items() {
+    let text = r#"{
+      "version": "1.0.0",
+      "dist": { "tarball": "value", "shasum": "test" },
+      "dependencies": {
+        "value": 123,
+        "value1": 123.2,
+        "value2": -123,
+        "value3": -123.2,
+        "value4": true,
+        "value5": false,
+        "value6": null,
+        "value8": {
+          "value7": 123,
+          "value8": 123.2,
+          "value9": -123
+        },
+        "value9": [
+          1,
+          2,
+          3
+        ],
+        "value10": "valid"
+      },
+      "os": [
+        123,
+        123.2,
+        -123,
+        -123.2,
+        true,
+        false,
+        null,
+        [1, 2, 3],
+        {
+          "prop": 2
+        },
+        "valid"
+      ]
+    }"#;
+    let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.dependencies,
+      HashMap::from([("value10".to_string(), "valid".to_string())])
+    );
+    assert_eq!(info.os, Vec::from(["valid".to_string()]));
   }
 
   #[test]
