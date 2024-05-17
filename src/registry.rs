@@ -623,7 +623,7 @@ mod deserializers {
     where
       A: SeqAccess<'de>,
     {
-      while let Some(_) = seq.next_element::<de::IgnoredAny>()? {}
+      while seq.next_element::<de::IgnoredAny>()?.is_some() {}
       Ok(HashMap::new())
     }
 
@@ -717,7 +717,10 @@ mod deserializers {
     where
       M: MapAccess<'de>,
     {
-      while let Some(_) = map.next_entry::<de::IgnoredAny, de::IgnoredAny>()? {}
+      while map
+        .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+        .is_some()
+      {}
       Ok(Vec::new())
     }
 
