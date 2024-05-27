@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use deno_lockfile::IntegrityCheckFailedError;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
@@ -889,6 +888,26 @@ pub fn incomplete_snapshot_from_lockfile(
     root_packages,
     packages,
   })
+}
+
+#[derive(Debug, Error)]
+#[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
+is the same as when the lockfile was generated.
+
+Actual: {actual}
+Expected: {expected}
+
+This could be caused by:
+  * the lock file may be corrupt
+  * the source itself may be corrupt
+
+Use the --lock-write flag to regenerate the lockfile at \"{filename}\".",
+)]
+pub struct IntegrityCheckFailedError {
+  pub package_display_id: String,
+  pub actual: String,
+  pub expected: String,
+  pub filename: String,
 }
 
 #[derive(Debug, Error)]
