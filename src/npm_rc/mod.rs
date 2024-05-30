@@ -199,17 +199,8 @@ impl NpmRc {
     let registry_url = original_registry_url
       .split_once("//")
       .map(|(_, right)| right)?;
-    let start_url = match maybe_scope_name {
-      Some(scope_name) => {
-        Cow::Owned(format!("{}{}/", registry_url, scope_name))
-      }
-      None => Cow::Borrowed(registry_url),
-    };
-    // Loop through all the paths in the url to find a match. Example:
-    // - example.com/myorg/pkg/
-    // - example.com/myorg/
-    // - example.com/
-    let mut url: &str = &start_url;
+    let mut url: &str = registry_url;
+
     loop {
       if let Some(config) = self.registry_configs.get(url) {
         return Some((original_registry_url.into_owned(), config));
@@ -315,6 +306,7 @@ mod test {
 @myorg:registry=https://example.com/myorg
 @another:registry=https://example.com/another
 @example:registry=https://example.com/example
+@yet_another:registry=https://yet.another.com/
 //registry.npmjs.org/:_authToken=MYTOKEN
 ; would apply to both @myorg and @another
 //example.com/:_authToken=MYTOKEN0
@@ -328,6 +320,9 @@ mod test {
 //example.com/myorg/:_authToken=MYTOKEN1
 ; would apply only to @another
 //example.com/another/:_authToken=MYTOKEN2
+; this should not apply to `@yet_another`, because the URL contains the name of the scope
+; and not the URL of the registry root specified above
+//yet.another.com/yet_another/:_authToken=MYTOKEN3
 registry=https://registry.npmjs.org/
 "#,
       &|_| None,
@@ -346,6 +341,10 @@ registry=https://registry.npmjs.org/
           (
             "example".to_string(),
             "https://example.com/example".to_string()
+          ),
+          (
+            "yet_another".to_string(),
+            "https://yet.another.com/".to_string()
           ),
         ]),
         registry_configs: HashMap::from([
@@ -372,6 +371,13 @@ registry=https://registry.npmjs.org/
             "example.com/myorg/".to_string(),
             RegistryConfig {
               auth_token: Some("MYTOKEN1".to_string()),
+              ..Default::default()
+            }
+          ),
+          (
+            "yet.another.com/yet_another/".to_string(),
+            RegistryConfig {
+              auth_token: Some("MYTOKEN3".to_string()),
               ..Default::default()
             }
           ),
@@ -415,6 +421,19 @@ registry=https://registry.npmjs.org/
         .unwrap();
       assert_eq!(registry_url, "https://example.com/myorg/");
       assert_eq!(config.auth_token, Some("MYTOKEN1".to_string()));
+    }
+    // This should not return the token - the configuration is borked for `@yet_another` scope -
+    // it defines the registry url as root + scope_name and instead it should be matching the
+    // registry root.
+    {
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package(
+          "@yet_another/pkg",
+          "https://deno.land/npm/",
+        )
+        .unwrap();
+      assert_eq!(registry_url, "https://yet.another.com/");
+      assert_eq!(config.auth_token, None);
     }
 
     let resolved_npm_rc = npm_rc
@@ -464,6 +483,13 @@ registry=https://registry.npmjs.org/
                 certfile: Some("CERTFILE".to_string()),
                 keyfile: Some("KEYFILE".to_string()),
               }
+            }
+          ),
+          (
+            "yet_another".to_string(),
+            RegistryConfigWithUrl {
+              registry_url: Url::parse("https://yet.another.com/").unwrap(),
+              config: Default::default()
             }
           ),
         ])
