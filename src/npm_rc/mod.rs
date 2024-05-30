@@ -662,8 +662,11 @@ registry=${VAR_FOUND}
   fn test_scope_with_auth() {
     let npm_rc = NpmRc::parse(
       r#"
-@example:registry=https://example.com/
-//example.com/example/:_authToken=MY_AUTH_TOKEN
+@example:registry=https://example.com/foo
+@example2:registry=https://example2.com/
+//example.com/foo/:_authToken=MY_AUTH_TOKEN
+; This one is borked - the URL must match registry URL exactly
+//example.com2/example/:_authToken=MY_AUTH_TOKEN2
 "#,
       &|_| None,
     )
@@ -675,7 +678,7 @@ registry=${VAR_FOUND}
           "https://deno.land/npm/",
         )
         .unwrap();
-      assert_eq!(registry_url, "https://example.com/");
+      assert_eq!(registry_url, "https://example.com/foo/");
       assert_eq!(
         config,
         &RegistryConfig {
@@ -683,6 +686,16 @@ registry=${VAR_FOUND}
           ..Default::default()
         }
       );
+    }
+    {
+      let (registry_url, config) = npm_rc
+        .registry_url_and_config_for_package(
+          "@example2/test",
+          "https://deno.land/npm/",
+        )
+        .unwrap();
+      assert_eq!(registry_url, "https://example2.com/");
+      assert_eq!(config, &Default::default());
     }
   }
 }
