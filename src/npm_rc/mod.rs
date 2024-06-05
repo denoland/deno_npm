@@ -252,7 +252,7 @@ impl ResolvedNpmRc {
     urls
   }
 
-  pub fn tarball_uri_config(
+  pub fn tarball_config(
     &self,
     tarball_url: &Url,
   ) -> Option<&Arc<RegistryConfig>> {
@@ -556,7 +556,7 @@ registry=https://registry.npmjs.org/
     {
       assert_eq!(
         resolved_npm_rc
-          .tarball_uri_config(
+          .tarball_config(
             &Url::parse("https://example.com/example/chalk.tgz").unwrap(),
           )
           .unwrap()
@@ -567,7 +567,7 @@ registry=https://registry.npmjs.org/
       );
       assert_eq!(
         resolved_npm_rc
-          .tarball_uri_config(
+          .tarball_config(
             &Url::parse("https://example.com/myorg/chalk.tgz").unwrap(),
           )
           .unwrap()
@@ -578,7 +578,7 @@ registry=https://registry.npmjs.org/
       );
       assert_eq!(
         resolved_npm_rc
-          .tarball_uri_config(
+          .tarball_config(
             &Url::parse("https://example.com/another/chalk.tgz").unwrap(),
           )
           .unwrap()
@@ -588,14 +588,14 @@ registry=https://registry.npmjs.org/
         "MYTOKEN2"
       );
       assert_eq!(
-        resolved_npm_rc.tarball_uri_config(
+        resolved_npm_rc.tarball_config(
           &Url::parse("https://yet.another.com/example/chalk.tgz").unwrap(),
         ),
         None,
       );
       assert_eq!(
         resolved_npm_rc
-          .tarball_uri_config(
+          .tarball_config(
             &Url::parse(
               "https://yet.another.com/yet_another/example/chalk.tgz"
             )
