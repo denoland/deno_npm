@@ -6,17 +6,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use deno_semver::package::PackageReqParseError;
 use deno_semver::VersionReq;
-use futures::future::Either;
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
-use log::debug;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -26,9 +23,7 @@ use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
 use super::NpmPackageVersionNotFound;
-use super::NpmPackageVersionResolutionError;
 
-use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmRegistryApi;
@@ -190,9 +185,6 @@ pub struct NpmResolutionSnapshot {
   pub(super) root_packages: HashMap<PackageNv, NpmPackageId>,
   pub(super) packages_by_name: HashMap<String, Vec<NpmPackageId>>,
   pub(super) packages: HashMap<NpmPackageId, NpmResolutionPackage>,
-  /// Ordered list based on resolution of packages whose dependencies
-  /// have not yet been resolved
-  pub(super) pending_unresolved_packages: Vec<PackageNv>,
 }
 
 impl NpmResolutionSnapshot {
@@ -249,7 +241,6 @@ impl NpmResolutionSnapshot {
       root_packages,
       packages_by_name,
       packages,
-      pending_unresolved_packages: Default::default(),
     }
   }
 
@@ -333,13 +324,7 @@ impl NpmResolutionSnapshot {
 
   /// Gets if this snapshot is empty.
   pub fn is_empty(&self) -> bool {
-    self.packages.is_empty() && self.pending_unresolved_packages.is_empty()
-  }
-
-  /// Gets if the snapshot has any pending packages whose dependencies
-  /// need to be resolved.
-  pub fn has_pending(&self) -> bool {
-    !self.pending_unresolved_packages.is_empty()
+    self.packages.is_empty()
   }
 
   /// Converts the snapshot into an empty snapshot.
@@ -351,7 +336,6 @@ impl NpmResolutionSnapshot {
       root_packages: Default::default(),
       packages_by_name: Default::default(),
       packages: Default::default(),
-      pending_unresolved_packages: Default::default(),
     }
   }
 
@@ -361,8 +345,8 @@ impl NpmResolutionSnapshot {
     req: &PackageReq,
   ) -> Result<&NpmResolutionPackage, PackageReqNotFoundError> {
     match self.package_reqs.get(req) {
-      Some(id) => self
-        .resolve_package_from_deno_module(id)
+      Some(nv) => self
+        .resolve_package_from_deno_module(nv)
         // ignore the nv not found error and return a req not found
         .map_err(|_| PackageReqNotFoundError(req.clone())),
       None => Err(PackageReqNotFoundError(req.clone())),
@@ -581,19 +565,6 @@ impl NpmResolutionSnapshot {
     }
     maybe_best_id.cloned()
   }
-
-  fn add_pending_pkg(&mut self, pkg_req: PackageReq, nv: PackageNv) {
-    self.package_reqs.insert(pkg_req, nv.clone());
-    let packages_with_name =
-      self.packages_by_name.entry(nv.name.clone()).or_default();
-    if !packages_with_name.iter().any(|p| p.nv == nv) {
-      packages_with_name.push(NpmPackageId {
-        nv: nv.clone(),
-        peer_dependencies: Vec::new(),
-      });
-    }
-    self.pending_unresolved_packages.push(nv);
-  }
 }
 
 pub struct SnapshotPackageCopyIndexResolver {
@@ -683,89 +654,26 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
   }
 
-  pub fn resolve_package_req_as_pending(
-    &self,
-    snapshot: &mut NpmResolutionSnapshot,
-    pkg_req: &PackageReq,
-    package_info: &NpmPackageInfo,
-  ) -> Result<PackageNv, NpmPackageVersionResolutionError> {
-    let version_req = &pkg_req.version_req;
-    let nv = if let Some(nv) = snapshot.package_reqs.get(pkg_req) {
-      // if a version requirement was previously resolved, don't resolve it again
-      nv.clone()
-    } else {
-      let version_info = match snapshot.packages_by_name.get(&package_info.name)
-      {
-        Some(existing_versions) => {
-          self.version_resolver.resolve_best_package_version_info(
-            version_req,
-            package_info,
-            existing_versions.iter().map(|p| &p.nv.version),
-          )?
-        }
-        None => self.version_resolver.resolve_best_package_version_info(
-          version_req,
-          package_info,
-          Vec::new().iter(),
-        )?,
-      };
-      let nv = PackageNv {
-        name: package_info.name.to_string(),
-        version: version_info.version.clone(),
-      };
-      snapshot.add_pending_pkg(pkg_req.clone(), nv.clone());
-      nv
-    };
-    debug!(
-      "Resolved {}@{} to {}",
-      pkg_req.name,
-      version_req.version_text(),
-      nv,
-    );
-    Ok(nv)
-  }
-
   /// Resolves any pending packages in the snapshot along with the provided
   /// package requirements (in the CLI, these are package requirements from
   /// a package.json while the pending are specifiers found in the graph)
-  pub async fn resolve_pending(
+  pub async fn add_pkg_reqs(
     &self,
     snapshot: NpmResolutionSnapshot,
     package_reqs: &[PackageReq],
   ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     // convert the snapshot to a traversable graph
     let mut graph = Graph::from_snapshot(snapshot);
-    let pending_unresolved = graph.take_pending_unresolved();
 
     let package_reqs =
       package_reqs.iter().filter(|r| !graph.has_package_req(r));
-    let pending_unresolved = pending_unresolved
-      .into_iter()
-      .filter(|p| !graph.has_root_package(p));
 
-    enum ReqOrNv<'a> {
-      Req(&'a PackageReq),
-      Nv(Rc<PackageNv>),
-    }
-
-    let mut top_level_packages = futures::stream::FuturesOrdered::from_iter({
-      let api = &self.api;
-      package_reqs
-        .map(|req| {
-          Either::Left(async {
-            let info = api.package_info(&req.name).await?;
-            Result::<_, NpmRegistryPackageInfoLoadError>::Ok((
-              ReqOrNv::Req(req),
-              info,
-            ))
-          })
-        })
-        .chain(pending_unresolved.map(|nv| {
-          Either::Right(async {
-            let info = api.package_info(&nv.name).await?;
-            Ok((ReqOrNv::Nv(nv), info))
-          })
-        }))
+    let api = &self.api;
+    let mut top_level_packages = FuturesOrdered::from_iter({
+      package_reqs.map(|req| async move {
+        let info = api.package_info(&req.name).await?;
+        Result::<_, NpmRegistryPackageInfoLoadError>::Ok((req, info))
+      })
     });
 
     // go over the top level package names first (npm package reqs and pending unresolved),
@@ -779,19 +687,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // The package reqs and ids should already be sorted
     // in the order they should be resolved in.
     while let Some(result) = top_level_packages.next().await {
-      let (req_or_nv, info) = result?;
-      match req_or_nv {
-        ReqOrNv::Req(req) => resolver.add_package_req(req, &info)?,
-        ReqOrNv::Nv(nv) => resolver.add_root_package(&nv, &info)?,
-      }
+      let (req, info) = result?;
+      resolver.add_package_req(req, &info)?;
     }
     drop(top_level_packages); // stop borrow of api
 
     resolver.resolve_pending().await?;
 
-    let snapshot = graph.into_snapshot(self.api).await?;
-    debug_assert!(!snapshot.has_pending());
-    Ok(snapshot)
+    Ok(graph.into_snapshot(self.api).await?)
   }
 }
 

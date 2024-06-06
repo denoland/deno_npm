@@ -329,14 +329,12 @@ pub enum NpmRegistryPackageInfoLoadError {
   LoadError(#[from] Arc<anyhow::Error>),
 }
 
-// todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
-// in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 /// A trait for getting package information from the npm registry.
 ///
 /// An implementer may want to override the default implementation of
 /// [`mark_force_reload`] method if it has a cache mechanism.
-#[async_trait]
-pub trait NpmRegistryApi: Sync + Send {
+#[async_trait(?Send)]
+pub trait NpmRegistryApi {
   /// Gets the package information from the npm registry.
   ///
   /// Note: The implementer should handle requests for the same npm
@@ -509,7 +507,7 @@ impl TestNpmRegistryApi {
   }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl NpmRegistryApi for TestNpmRegistryApi {
   async fn package_info(
     &self,
