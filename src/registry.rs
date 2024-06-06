@@ -1,10 +1,11 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use deno_semver::npm::NpmVersionReqParseError;
@@ -329,14 +330,12 @@ pub enum NpmRegistryPackageInfoLoadError {
   LoadError(#[from] Arc<anyhow::Error>),
 }
 
-// todo(dsherret): remove `Sync` here and use `async_trait(?Send)` once the LSP
-// in the Deno repo is no longer `Send` (https://github.com/denoland/deno/issues/18079)
 /// A trait for getting package information from the npm registry.
 ///
 /// An implementer may want to override the default implementation of
 /// [`mark_force_reload`] method if it has a cache mechanism.
-#[async_trait]
-pub trait NpmRegistryApi: Sync + Send {
+#[async_trait(?Send)]
+pub trait NpmRegistryApi {
   /// Gets the package information from the npm registry.
   ///
   /// Note: The implementer should handle requests for the same npm
@@ -366,21 +365,20 @@ pub trait NpmRegistryApi: Sync + Send {
 /// purposes. Construct everything on the same thread.
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Arc<Mutex<HashMap<String, NpmPackageInfo>>>,
+  package_infos: Rc<RefCell<HashMap<String, NpmPackageInfo>>>,
 }
 
 impl TestNpmRegistryApi {
   pub fn add_package_info(&self, name: &str, info: NpmPackageInfo) {
     let previous = self
       .package_infos
-      .lock()
-      .unwrap()
+      .borrow_mut()
       .insert(name.to_string(), info);
     assert!(previous.is_none());
   }
 
   pub fn ensure_package(&self, name: &str) {
-    if !self.package_infos.lock().unwrap().contains_key(name) {
+    if !self.package_infos.borrow().contains_key(name) {
       self.add_package_info(
         name,
         NpmPackageInfo {
@@ -393,7 +391,7 @@ impl TestNpmRegistryApi {
 
   pub fn with_package(&self, name: &str, f: impl FnOnce(&mut NpmPackageInfo)) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.lock().unwrap();
+    let mut infos = self.package_infos.borrow_mut();
     let info = infos.get_mut(name).unwrap();
     f(info);
   }
@@ -417,7 +415,7 @@ impl TestNpmRegistryApi {
     integrity: Option<&str>,
   ) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.lock().unwrap();
+    let mut infos = self.package_infos.borrow_mut();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
     if !info.versions.contains_key(&version) {
@@ -442,7 +440,7 @@ impl TestNpmRegistryApi {
   ) {
     let (name, version) = package;
     self.ensure_package_version(name, version);
-    let mut infos = self.package_infos.lock().unwrap();
+    let mut infos = self.package_infos.borrow_mut();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
     let version_info = info.versions.get_mut(&version).unwrap();
@@ -509,13 +507,13 @@ impl TestNpmRegistryApi {
   }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl NpmRegistryApi for TestNpmRegistryApi {
   async fn package_info(
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
-    let infos = self.package_infos.lock().unwrap();
+    let infos = self.package_infos.borrow();
     Ok(Arc::new(
       infos
         .get(name)
