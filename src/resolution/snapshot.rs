@@ -654,9 +654,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
   }
 
-  /// Resolves any pending packages in the snapshot along with the provided
-  /// package requirements (in the CLI, these are package requirements from
-  /// a package.json while the pending are specifiers found in the graph)
+  /// Resolves the provided package requirements.
   pub async fn add_pkg_reqs(
     &self,
     snapshot: NpmResolutionSnapshot,
