@@ -177,6 +177,16 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
   }
 }
 
+pub struct AddPkgReqsResult {
+  /// Results from adding the individual packages.
+  ///
+  /// The indexes of the results correspond to the indexes of the provided
+  /// package requirements.
+  pub results: Vec<Result<(), NpmResolutionError>>,
+  /// The final result of adding all the package requirements.
+  pub dependencies_result: Result<NpmResolutionSnapshot, NpmResolutionError>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NpmResolutionSnapshot {
   /// The unique package requirements map to a single npm package name and version.
@@ -659,18 +669,22 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &self,
     snapshot: NpmResolutionSnapshot,
     package_reqs: &[PackageReq],
-  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
+  ) -> AddPkgReqsResult {
     // convert the snapshot to a traversable graph
     let mut graph = Graph::from_snapshot(snapshot);
 
-    let package_reqs =
-      package_reqs.iter().filter(|r| !graph.has_package_req(r));
-
     let api = &self.api;
+    let reqs_with_in_graph = package_reqs
+      .iter()
+      .map(|req| (req, graph.has_package_req(req)));
     let mut top_level_packages = FuturesOrdered::from_iter({
-      package_reqs.map(|req| async move {
-        let info = api.package_info(&req.name).await?;
-        Result::<_, NpmRegistryPackageInfoLoadError>::Ok((req, info))
+      reqs_with_in_graph.map(|(req, in_graph)| async move {
+        let maybe_info = if in_graph {
+          None
+        } else {
+          Some(api.package_info(&req.name).await)
+        };
+        (req, maybe_info)
       })
     });
 
@@ -684,15 +698,46 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     // The package reqs and ids should already be sorted
     // in the order they should be resolved in.
+    let mut results = Vec::with_capacity(package_reqs.len());
+    let mut first_resolution_error = None;
     while let Some(result) = top_level_packages.next().await {
-      let (req, info) = result?;
-      resolver.add_package_req(req, &info)?;
+      let (req, maybe_info_result) = result;
+      if let Some(info_result) = maybe_info_result {
+        match info_result
+          .map_err(|err| err.into())
+          .and_then(|info| resolver.add_package_req(req, &info))
+        {
+          Ok(()) => {
+            results.push(Ok(()));
+          }
+          Err(err) => {
+            if first_resolution_error.is_none() {
+              first_resolution_error = Some(err.clone());
+            }
+            results.push(Err(err));
+          }
+        }
+      } else {
+        results.push(Ok(()));
+      }
     }
     drop(top_level_packages); // stop borrow of api
 
-    resolver.resolve_pending().await?;
+    let dependencies_result = match first_resolution_error {
+      Some(err) => Err(err),
+      None => match resolver.resolve_pending().await {
+        Ok(()) => graph
+          .into_snapshot(self.api)
+          .await
+          .map_err(NpmResolutionError::Registry),
+        Err(err) => Err(err),
+      },
+    };
 
-    Ok(graph.into_snapshot(self.api).await?)
+    AddPkgReqsResult {
+      results,
+      dependencies_result,
+    }
   }
 }
 
