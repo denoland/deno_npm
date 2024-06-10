@@ -443,8 +443,8 @@ impl Graph {
     graph
   }
 
-  pub fn has_package_req(&self, req: &PackageReq) -> bool {
-    self.package_reqs.contains_key(req)
+  pub fn get_req_nv(&self, req: &PackageReq) -> Option<&Rc<PackageNv>> {
+    self.package_reqs.get(req)
   }
 
   fn get_npm_pkg_id(&self, node_id: NodeId) -> NpmPackageId {
@@ -818,12 +818,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     package_req: &PackageReq,
     package_info: &NpmPackageInfo,
-  ) -> Result<(), NpmResolutionError> {
-    if self.graph.package_reqs.contains_key(package_req) {
-      return Ok(()); // already added
+  ) -> Result<Rc<PackageNv>, NpmResolutionError> {
+    if let Some(nv) = self.graph.get_req_nv(package_req) {
+      return Ok(nv.clone()); // already added
     }
 
-    let (pkg_id, node_id) = self.resolve_node_from_info(
+    let (pkg_nv, node_id) = self.resolve_node_from_info(
       &package_req.name,
       &package_req.version_req,
       package_info,
@@ -832,12 +832,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     self
       .graph
       .package_reqs
-      .insert(package_req.clone(), pkg_id.clone());
-    self.graph.root_packages.insert(pkg_id.clone(), node_id);
+      .insert(package_req.clone(), pkg_nv.clone());
+    self.graph.root_packages.insert(pkg_nv.clone(), node_id);
     self
       .pending_unresolved_nodes
-      .push_back(GraphPath::for_root(node_id, pkg_id));
-    Ok(())
+      .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
+    Ok(pkg_nv)
   }
 
   fn analyze_dependency(

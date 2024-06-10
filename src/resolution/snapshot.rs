@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
@@ -24,6 +25,7 @@ use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
 use super::NpmPackageVersionNotFound;
 
+use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmRegistryApi;
@@ -182,7 +184,7 @@ pub struct AddPkgReqsResult {
   ///
   /// The indexes of the results correspond to the indexes of the provided
   /// package requirements.
-  pub results: Vec<Result<(), NpmResolutionError>>,
+  pub results: Vec<Result<PackageNv, NpmResolutionError>>,
   /// The final result of adding all the package requirements.
   pub dependencies_result: Result<NpmResolutionSnapshot, NpmResolutionError>,
 }
@@ -670,19 +672,23 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     snapshot: NpmResolutionSnapshot,
     package_reqs: &[PackageReq],
   ) -> AddPkgReqsResult {
+    enum InfoOrNv {
+      InfoResult(Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>),
+      Nv(PackageNv),
+    }
     // convert the snapshot to a traversable graph
     let mut graph = Graph::from_snapshot(snapshot);
 
     let api = &self.api;
     let reqs_with_in_graph = package_reqs
       .iter()
-      .map(|req| (req, graph.has_package_req(req)));
+      .map(|req| (req, graph.get_req_nv(req).map(|r| r.as_ref().clone())));
     let mut top_level_packages = FuturesOrdered::from_iter({
-      reqs_with_in_graph.map(|(req, in_graph)| async move {
-        let maybe_info = if in_graph {
-          None
+      reqs_with_in_graph.map(|(req, maybe_nv)| async move {
+        let maybe_info = if let Some(nv) = maybe_nv {
+          InfoOrNv::Nv(nv)
         } else {
-          Some(api.package_info(&req.name).await)
+          InfoOrNv::InfoResult(api.package_info(&req.name).await)
         };
         (req, maybe_info)
       })
@@ -701,24 +707,27 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let mut results = Vec::with_capacity(package_reqs.len());
     let mut first_resolution_error = None;
     while let Some(result) = top_level_packages.next().await {
-      let (req, maybe_info_result) = result;
-      if let Some(info_result) = maybe_info_result {
-        match info_result
-          .map_err(|err| err.into())
-          .and_then(|info| resolver.add_package_req(req, &info))
-        {
-          Ok(()) => {
-            results.push(Ok(()));
-          }
-          Err(err) => {
-            if first_resolution_error.is_none() {
-              first_resolution_error = Some(err.clone());
+      let (req, info_or_nv) = result;
+      match info_or_nv {
+        InfoOrNv::InfoResult(info_result) => {
+          match info_result
+            .map_err(|err| err.into())
+            .and_then(|info| resolver.add_package_req(req, &info))
+          {
+            Ok(nv) => {
+              results.push(Ok(nv.as_ref().clone()));
             }
-            results.push(Err(err));
+            Err(err) => {
+              if first_resolution_error.is_none() {
+                first_resolution_error = Some(err.clone());
+              }
+              results.push(Err(err));
+            }
           }
         }
-      } else {
-        results.push(Ok(()));
+        InfoOrNv::Nv(nv) => {
+          results.push(Ok(nv));
+        }
       }
     }
     drop(top_level_packages); // stop borrow of api
