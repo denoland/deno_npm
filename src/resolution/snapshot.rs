@@ -185,8 +185,19 @@ pub struct AddPkgReqsResult {
   /// The indexes of the results correspond to the indexes of the provided
   /// package requirements.
   pub results: Vec<Result<PackageNv, NpmResolutionError>>,
-  /// The final result of adding all the package requirements.
-  pub dependencies_result: Result<NpmResolutionSnapshot, NpmResolutionError>,
+  /// The result of resolving the entire dependency graph after the initial
+  /// reqs were resolved to nvs.
+  ///
+  /// If a resolution error occurs, this will contain the first error.
+  pub dep_graph_result: Result<NpmResolutionSnapshot, NpmResolutionError>,
+}
+
+impl AddPkgReqsResult {
+  pub fn into_result(
+    self,
+  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
+    self.dep_graph_result
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -732,7 +743,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
     drop(top_level_packages); // stop borrow of api
 
-    let dependencies_result = match first_resolution_error {
+    let dep_graph_result = match first_resolution_error {
       Some(err) => Err(err),
       None => match resolver.resolve_pending().await {
         Ok(()) => graph
@@ -745,7 +756,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     AddPkgReqsResult {
       results,
-      dependencies_result,
+      dep_graph_result,
     }
   }
 }
