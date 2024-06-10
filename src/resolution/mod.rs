@@ -10,6 +10,7 @@ pub use common::NpmPackageVersionResolutionError;
 pub use graph::NpmResolutionError;
 pub use snapshot::incomplete_snapshot_from_lockfile;
 pub use snapshot::snapshot_from_lockfile;
+pub use snapshot::AddPkgReqsResult;
 pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;
 pub use snapshot::NpmResolutionSnapshotPendingResolver;

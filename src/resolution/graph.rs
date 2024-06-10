@@ -328,8 +328,6 @@ pub struct Graph {
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
-  /// Packages that the resolver should resolve first.
-  pending_unresolved_packages: Vec<Rc<PackageNv>>,
 }
 
 impl Graph {
@@ -425,11 +423,6 @@ impl Graph {
         .into_iter()
         .map(|(k, v)| (k, Rc::new(v)))
         .collect(),
-      pending_unresolved_packages: snapshot
-        .pending_unresolved_packages
-        .into_iter()
-        .map(Rc::new)
-        .collect(),
       nodes: Default::default(),
       package_name_versions: Default::default(),
       resolved_node_ids: Default::default(),
@@ -450,16 +443,8 @@ impl Graph {
     graph
   }
 
-  pub fn take_pending_unresolved(&mut self) -> Vec<Rc<PackageNv>> {
-    std::mem::take(&mut self.pending_unresolved_packages)
-  }
-
-  pub fn has_package_req(&self, req: &PackageReq) -> bool {
-    self.package_reqs.contains_key(req)
-  }
-
-  pub fn has_root_package(&self, id: &PackageNv) -> bool {
-    self.root_packages.contains_key(id)
+  pub fn get_req_nv(&self, req: &PackageReq) -> Option<&Rc<PackageNv>> {
+    self.package_reqs.get(req)
   }
 
   fn get_npm_pkg_id(&self, node_id: NodeId) -> NpmPackageId {
@@ -706,11 +691,6 @@ impl Graph {
         .into_iter()
         .map(|(req, nv)| (req, (*nv).clone()))
         .collect(),
-      pending_unresolved_packages: self
-        .pending_unresolved_packages
-        .into_iter()
-        .map(|nv| (*nv).clone())
-        .collect(),
     })
   }
 
@@ -834,44 +814,16 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
   }
 
-  pub fn add_root_package(
-    &mut self,
-    package_nv: &PackageNv,
-    package_info: &NpmPackageInfo,
-  ) -> Result<(), NpmResolutionError> {
-    if self.graph.root_packages.contains_key(package_nv) {
-      return Ok(()); // already added
-    }
-
-    // todo(dsherret): using a version requirement here is a temporary hack
-    // to reuse code in a large refactor. We should resolve the node directly
-    // from the package name and version
-    let version_req =
-      VersionReq::parse_from_specifier(&format!("{}", package_nv.version))
-        .unwrap();
-    let (pkg_nv, node_id) = self.resolve_node_from_info(
-      &package_nv.name,
-      &version_req,
-      package_info,
-      None,
-    )?;
-    self.graph.root_packages.insert(pkg_nv.clone(), node_id);
-    self
-      .pending_unresolved_nodes
-      .push_back(GraphPath::for_root(node_id, pkg_nv));
-    Ok(())
-  }
-
   pub fn add_package_req(
     &mut self,
     package_req: &PackageReq,
     package_info: &NpmPackageInfo,
-  ) -> Result<(), NpmResolutionError> {
-    if self.graph.package_reqs.contains_key(package_req) {
-      return Ok(()); // already added
+  ) -> Result<Rc<PackageNv>, NpmResolutionError> {
+    if let Some(nv) = self.graph.get_req_nv(package_req) {
+      return Ok(nv.clone()); // already added
     }
 
-    let (pkg_id, node_id) = self.resolve_node_from_info(
+    let (pkg_nv, node_id) = self.resolve_node_from_info(
       &package_req.name,
       &package_req.version_req,
       package_info,
@@ -880,12 +832,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     self
       .graph
       .package_reqs
-      .insert(package_req.clone(), pkg_id.clone());
-    self.graph.root_packages.insert(pkg_id.clone(), node_id);
+      .insert(package_req.clone(), pkg_nv.clone());
+    self.graph.root_packages.insert(pkg_nv.clone(), node_id);
     self
       .pending_unresolved_nodes
-      .push_back(GraphPath::for_root(node_id, pkg_id));
-    Ok(())
+      .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
+    Ok(pkg_nv)
   }
 
   fn analyze_dependency(
