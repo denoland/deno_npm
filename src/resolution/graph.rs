@@ -858,7 +858,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
     if child_id != parent_id {
-      self.api.preload_package_nv(&child_nv);
       let maybe_ancestor = parent_path.find_ancestor(&child_nv);
       if let Some(ancestor) = &maybe_ancestor {
         child_id = ancestor.node_id();
@@ -934,6 +933,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_req.version_text(),
       pkg_nv.to_string(),
     );
+
+    // fire off an event to start downloading this nv
+    self.api.preload_package_nv(&pkg_nv, &info.dist);
 
     Ok((pkg_nv, node_id))
   }

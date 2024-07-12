@@ -348,7 +348,14 @@ pub trait NpmRegistryApi {
 
   /// Optional method an implementer can use to start downloading a package
   /// name and version and doing a basic setup of the node_modules directory.
-  fn preload_package_nv(&self, _nv: &PackageNv) {
+  ///
+  /// deno_npm will call this method indistriminately for every package nv it sees.
+  /// It is up to the implementer to not do extra work.
+  fn preload_package_nv(
+    &self,
+    _nv: &PackageNv,
+    _dist: &NpmPackageVersionDistInfo,
+  ) {
     // do nothing by default
   }
 
