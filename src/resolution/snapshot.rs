@@ -953,6 +953,7 @@ pub async fn snapshot_from_lockfile<'a>(
             );
           }
         }
+        api.preload_package_nv(&snapshot_package.id.nv);
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),

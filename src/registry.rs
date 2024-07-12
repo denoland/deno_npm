@@ -346,6 +346,12 @@ pub trait NpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 
+  /// Optional method an implementer can use to start downloading a package
+  /// name and version and doing a basic setup of the node_modules directory.
+  fn preload_package_nv(&self, _nv: &PackageNv) {
+    // do nothing by default
+  }
+
   /// Marks that new requests for package information should retrieve it
   /// from the npm registry
   ///
