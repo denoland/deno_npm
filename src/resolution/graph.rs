@@ -19,6 +19,8 @@ use log::debug;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
+use super::preload::PreloadContext;
+use super::preload::PreloadOptions;
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
 use crate::registry::NpmDependencyEntryKind;
@@ -319,9 +321,6 @@ impl<'a> Iterator for GraphPathAncestorIterator<'a> {
 pub struct Graph {
   /// Each requirement is mapped to a specific name and version.
   package_reqs: HashMap<PackageReq, Rc<PackageNv>>,
-  /// System info to use for preloading npm packages. When this is
-  /// none it means that preloading is not enabled.
-  preload_system_info: Option<NpmSystemInfo>,
   /// Then each name and version is mapped to an exact node id.
   /// Note: Uses a BTreeMap in order to create some determinism
   /// when creating the snapshot.
@@ -335,10 +334,7 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(
-    preload_system_info: Option<NpmSystemInfo>,
-    snapshot: NpmResolutionSnapshot,
-  ) -> Self {
+  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
     fn get_or_create_graph_node<'a>(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -418,7 +414,6 @@ impl Graph {
     }
 
     let mut graph = Self {
-      preload_system_info,
       // Note: It might be more correct to store the copy index
       // from past resolutions with the node somehow, but maybe not.
       packages_to_copy_index: snapshot
@@ -797,6 +792,8 @@ struct UnresolvedOptionalPeer {
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
+  /// When this is none it means that preloading is not enabled.
+  preload_ctx: Option<PreloadContext<'a, TNpmRegistryApi>>,
   version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   unresolved_optional_peers:
@@ -815,6 +812,15 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     Self {
       graph,
       api,
+      preload_ctx: api.preload_system_info().map(|system_info| {
+        PreloadContext::new(
+          api,
+          PreloadOptions {
+            system_info,
+            maybe_capacity: None,
+          },
+        )
+      }),
       version_resolver,
       pending_unresolved_nodes: Default::default(),
       unresolved_optional_peers: Default::default(),
@@ -834,6 +840,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let (pkg_nv, node_id) = self.resolve_node_from_info(
       &package_req.name,
       &package_req.version_req,
+      NpmDependencyEntryKind::Dep,
       package_info,
       None,
     )?;
@@ -854,11 +861,19 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     package_info: &NpmPackageInfo,
     parent_path: &Rc<GraphPath>,
   ) -> Result<NodeId, NpmResolutionError> {
-    debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
+    debug_assert!(
+      matches!(
+        entry.kind,
+        NpmDependencyEntryKind::Dep | NpmDependencyEntryKind::OptionalDep
+      ),
+      "{:?}",
+      entry
+    );
     let parent_id = parent_path.node_id();
     let (child_nv, mut child_id) = self.resolve_node_from_info(
       &entry.name,
       &entry.version_req,
+      entry.kind,
       package_info,
       Some(parent_id),
     )?;
@@ -895,6 +910,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     pkg_req_name: &str,
     version_req: &VersionReq,
+    entry_kind: NpmDependencyEntryKind,
     package_info: &NpmPackageInfo,
     parent_id: Option<NodeId>,
   ) -> Result<(Rc<PackageNv>, NodeId), NpmResolutionError> {
@@ -941,6 +957,20 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_req.version_text(),
       pkg_nv.to_string(),
     );
+
+    if let Some(preload_ctx) = &mut self.preload_ctx {
+      preload_ctx.handle_package(&pkg_nv, &info);
+      match entry_kind {
+        NpmDependencyEntryKind::OptionalDep => {
+          preload_ctx.mark_optional_dep(&pkg_nv)
+        }
+        NpmDependencyEntryKind::Dep
+        | NpmDependencyEntryKind::Peer
+        | NpmDependencyEntryKind::OptionalPeer => {
+          preload_ctx.mark_required_dep(&pkg_nv);
+        }
+      }
+    }
 
     Ok((pkg_nv, node_id))
   }
@@ -992,7 +1022,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         let dep = child_deps_iter.next().unwrap();
 
         match dep.kind {
-          NpmDependencyEntryKind::Dep => {
+          NpmDependencyEntryKind::Dep | NpmDependencyEntryKind::OptionalDep => {
             let parent_id = parent_path.node_id();
             let node = self.graph.nodes.get(&parent_id).unwrap();
             let child_id = match node.children.get(&dep.bare_specifier) {
@@ -1182,6 +1212,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           .peer_dep_version_req
           .as_ref()
           .unwrap_or(&peer_dep.version_req),
+        peer_dep.kind,
         peer_package_info,
         Some(parent_id),
       )?;
@@ -1468,8 +1499,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
 #[cfg(test)]
 mod test {
-  use std::collections::BTreeSet;
-
   use pretty_assertions::assert_eq;
 
   use crate::registry::TestNpmRegistryApi;
@@ -3965,7 +3994,7 @@ mod test {
     }
 
     let snapshot = NpmResolutionSnapshot::new(Default::default());
-    let mut graph = Graph::from_snapshot(api.preload_system_info(), snapshot);
+    let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
@@ -3983,8 +4012,7 @@ mod test {
     let snapshot = graph.into_snapshot(&api).await.unwrap();
 
     {
-      let graph =
-        Graph::from_snapshot(api.preload_system_info(), snapshot.clone());
+      let graph = Graph::from_snapshot(snapshot.clone());
       let new_snapshot = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
@@ -3992,8 +4020,7 @@ mod test {
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let graph =
-        Graph::from_snapshot(api.preload_system_info(), new_snapshot.clone());
+      let graph = Graph::from_snapshot(new_snapshot.clone());
       let new_snapshot2 = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
@@ -4002,15 +4029,15 @@ mod test {
       );
     }
 
-    // {
-    //   let preload_nvs = api.seen_preload_nvs();
-    //   let package_nvs = snapshot
-    //     .all_system_packages(&api.preload_system_info().unwrap())
-    //     .into_iter()
-    //     .map(|pkg| pkg.id.nv.to_string())
-    //     .collect::<BTreeSet<String>>();
-    //   assert_eq!(preload_nvs, package_nvs);
-    // }
+    {
+      let preload_nvs = api.seen_preload_nvs();
+      let package_nvs = snapshot
+        .all_system_packages(&api.preload_system_info().unwrap())
+        .into_iter()
+        .map(|pkg| pkg.id.nv.to_string())
+        .collect::<std::collections::BTreeSet<String>>();
+      assert_eq!(preload_nvs, package_nvs);
+    }
 
     snapshot
   }

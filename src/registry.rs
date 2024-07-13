@@ -47,7 +47,7 @@ pub fn parse_dep_entry_name_and_raw_version<'a>(
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct NpmPackageInfo {
   pub name: String,
-  pub versions: HashMap<Version, NpmPackageVersionInfo>,
+  pub versions: HashMap<Version, Arc<NpmPackageVersionInfo>>,
   #[serde(rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
 }
@@ -56,7 +56,7 @@ impl NpmPackageInfo {
   pub fn version_info(
     &self,
     nv: &PackageNv,
-  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+  ) -> Result<Arc<NpmPackageVersionInfo>, NpmPackageVersionNotFound> {
     match self.versions.get(&nv.version).cloned() {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
@@ -85,9 +85,10 @@ pub enum NpmDependencyEntryErrorSource {
   NpmVersionReqParseError(#[from] NpmVersionReqParseError),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NpmDependencyEntryKind {
   Dep,
+  OptionalDep,
   Peer,
   OptionalPeer,
 }
@@ -254,7 +255,15 @@ impl NpmPackageVersionInfo {
       result.insert(entry.bare_specifier.clone(), entry);
     }
     for entry in normalized_dependencies.iter() {
-      let entry = parse_dep_entry(nv, entry, NpmDependencyEntryKind::Dep)?;
+      let entry = parse_dep_entry(
+        nv,
+        entry,
+        if self.optional_dependencies.contains_key(entry.0) {
+          NpmDependencyEntryKind::OptionalDep
+        } else {
+          NpmDependencyEntryKind::Dep
+        },
+      )?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,
       // but then use this dependency version requirement otherwise
@@ -455,14 +464,14 @@ impl TestNpmRegistryApi {
     if !info.versions.contains_key(&version) {
       info.versions.insert(
         version.clone(),
-        NpmPackageVersionInfo {
+        Arc::new(NpmPackageVersionInfo {
           version,
           dist: NpmPackageVersionDistInfo {
             integrity: integrity.map(|s| s.to_string()),
             ..Default::default()
           },
           ..Default::default()
-        },
+        }),
       );
     }
   }
@@ -477,8 +486,10 @@ impl TestNpmRegistryApi {
     let mut infos = self.package_infos.borrow_mut();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
-    let version_info = info.versions.get_mut(&version).unwrap();
-    f(version_info);
+    let version_info = info.versions.remove(&version).unwrap();
+    let mut version_info = Arc::unwrap_or_clone(version_info);
+    f(&mut version_info);
+    info.versions.insert(version, Arc::new(version_info));
   }
 
   pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {

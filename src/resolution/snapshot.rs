@@ -26,6 +26,7 @@ use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
 use super::preload::PreloadContext;
+use super::preload::PreloadOptions;
 use super::NpmPackageVersionNotFound;
 
 use crate::registry::NpmPackageInfo;
@@ -692,8 +693,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       Nv(PackageNv),
     }
     // convert the snapshot to a traversable graph
-    let mut graph =
-      Graph::from_snapshot(self.api.preload_system_info(), snapshot);
+    let mut graph = Graph::from_snapshot(snapshot);
 
     let api = &self.api;
     let reqs_with_in_graph = package_reqs
@@ -933,15 +933,17 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
   };
   let new_preload_ctx = || {
     api.preload_system_info().map(|system_info| {
-      PreloadContext::new(
+      let mut ctx = PreloadContext::new(
         api,
-        system_info,
-        Some(incomplete_snapshot.packages.len()),
-        incomplete_snapshot
-          .root_packages
-          .values()
-          .map(|id| id.nv.clone()),
-      )
+        PreloadOptions {
+          system_info,
+          maybe_capacity: Some(incomplete_snapshot.packages.len()),
+        },
+      );
+      for id in incomplete_snapshot.root_packages.values() {
+        ctx.mark_required_dep(&Rc::new(id.nv.clone()));
+      }
+      ctx
     })
   };
   let mut preload_ctx = new_preload_ctx();
@@ -975,29 +977,33 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
 
         if let Some(ctx) = &mut preload_ctx {
           ctx.handle_package(
-            &snapshot_package.id.nv,
+            &Rc::new(snapshot_package.id.nv.clone()),
             &version_info,
-            snapshot_package
-              .dependencies
-              .iter()
-              .map(|(key, id)| (key.as_str(), &id.nv)),
           );
+          for (key, id) in &snapshot_package.dependencies {
+            if version_info.optional_dependencies.contains_key(key) {
+              ctx.mark_optional_dep(&Rc::new(id.nv.clone()));
+            } else {
+              ctx.mark_required_dep(&Rc::new(id.nv.clone()));
+            }
+          }
         }
 
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist,
+          dist: version_info.dist.clone(),
           system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu,
-            os: version_info.os,
+            cpu: version_info.cpu.clone(),
+            os: version_info.os.clone(),
           },
           optional_dependencies: version_info
             .optional_dependencies
-            .into_keys()
+            .keys()
+            .cloned()
             .collect(),
-          bin: version_info.bin,
-          scripts: version_info.scripts,
+          bin: version_info.bin.clone(),
+          scripts: version_info.scripts.clone(),
         });
       }
       Err(err) => {
