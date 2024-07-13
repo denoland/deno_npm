@@ -218,10 +218,28 @@ enum MatchesSystem {
   Optional,
 }
 
+impl From<bool> for MatchesSystem {
+  fn from(value: bool) -> Self {
+    match value {
+      true => MatchesSystem::Required,
+      false => MatchesSystem::Optional,
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum IsOptionalDep {
   True,
   False,
+}
+
+impl From<bool> for IsOptionalDep {
+  fn from(value: bool) -> Self {
+    match value {
+      true => IsOptionalDep::True,
+      false => IsOptionalDep::False,
+    }
+  }
 }
 
 /// Path through the graph that represents a traversal through the graph doing
@@ -808,13 +826,7 @@ impl VersionInfoCache {
     let value = Rc::new(VersionInfoCacheValue {
       deps,
       matches_system: system_info
-        .map(|system_info| {
-          if version_info.matches_system(system_info) {
-            MatchesSystem::Required
-          } else {
-            MatchesSystem::Optional
-          }
-        })
+        .map(|system_info| version_info.matches_system(system_info).into())
         .unwrap_or(MatchesSystem::Required),
     });
     self.0.insert(nv, value.clone());
@@ -912,11 +924,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .resolve_node_from_info(
         &entry.name,
         &entry.version_req,
-        if entry.is_optional {
-          IsOptionalDep::True
-        } else {
-          IsOptionalDep::False
-        },
+        entry.is_optional.into(),
         package_info,
         parent_path.matches_system,
         Some(parent_id),
@@ -973,13 +981,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let matches_system = self.resolve_child_matches_system(
       parent_matches_system,
       is_optional_dep,
-      |system_info| {
-        if info.matches_system(system_info) {
-          MatchesSystem::Required
-        } else {
-          MatchesSystem::Optional
-        }
-      },
+      |system_info| info.matches_system(system_info).into(),
     );
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
@@ -1101,11 +1103,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                 let maybe_ancestor = parent_path.find_ancestor(&child_nv);
                 let child_matches_system = self.resolve_child_matches_system(
                   parent_path.matches_system,
-                  if dep.is_optional {
-                    IsOptionalDep::True
-                  } else {
-                    IsOptionalDep::False
-                  },
+                  dep.is_optional.into(),
                   |_| {
                     self
                       .version_info_cache
@@ -1185,11 +1183,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                         peer_parent,
                         &optional_peer.specifier,
                         new_id,
-                        if dep.is_optional {
-                          IsOptionalDep::True
-                        } else {
-                          IsOptionalDep::False
-                        },
+                        dep.is_optional.into(),
                         PeerMatchesSystem::Current(parent_path.matches_system),
                       );
                     }
@@ -1252,11 +1246,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           peer_parent,
           specifier,
           peer_dep_id,
-          if peer_dep.is_optional {
-            IsOptionalDep::True
-          } else {
-            IsOptionalDep::False
-          },
+          peer_dep.is_optional.into(),
           PeerMatchesSystem::Parent(ancestor_path.matches_system),
         );
         return Ok(Some(peer_dep_id));
@@ -1282,11 +1272,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               parent,
               specifier,
               peer_dep_id,
-              if peer_dep.is_optional {
-                IsOptionalDep::True
-              } else {
-                IsOptionalDep::False
-              },
+              peer_dep.is_optional.into(),
               PeerMatchesSystem::Parent(ancestor_path.matches_system),
             );
             return Ok(Some(peer_dep_id));
@@ -1305,11 +1291,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               peer_parent,
               specifier,
               child_id,
-              if peer_dep.is_optional {
-                IsOptionalDep::True
-              } else {
-                IsOptionalDep::False
-              },
+              peer_dep.is_optional.into(),
               // ok, because the root will be required, so continue using
               // what the path is currently using
               PeerMatchesSystem::Current(ancestor_path.matches_system),
@@ -1329,11 +1311,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           .peer_dep_version_req
           .as_ref()
           .unwrap_or(&peer_dep.version_req),
-        if peer_dep.is_optional {
-          IsOptionalDep::True
-        } else {
-          IsOptionalDep::False
-        },
+        peer_dep.is_optional.into(),
         peer_package_info,
         ancestor_path.matches_system,
         Some(ancestor_path.node_id()),
@@ -1344,11 +1322,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         peer_parent,
         specifier,
         node_id,
-        if peer_dep.is_optional {
-          IsOptionalDep::True
-        } else {
-          IsOptionalDep::False
-        },
+        peer_dep.is_optional.into(),
         PeerMatchesSystem::Current(peer_matches_system),
       );
       Ok(Some(node_id))
