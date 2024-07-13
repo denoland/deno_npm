@@ -1020,6 +1020,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     );
 
     if let Some(preload_ctx) = &mut self.preload_ctx {
+      debug_assert_eq!(pkg_nv.version, info.version);
       preload_ctx.handle_package(&pkg_nv, &info);
       match matches_system {
         MatchesSystem::Required => preload_ctx.mark_required_dep(&pkg_nv),

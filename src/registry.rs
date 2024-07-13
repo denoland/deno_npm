@@ -149,7 +149,7 @@ pub enum NpmPackageVersionBinEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NpmPackageVersionInfo {
   pub version: Version,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Arc<NpmPackageVersionDistInfo>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
@@ -387,7 +387,7 @@ pub trait NpmRegistryApi {
   fn preload_package_nv(
     &self,
     _nv: &PackageNv,
-    _version_info: &NpmPackageVersionInfo,
+    _version_info: &Arc<NpmPackageVersionInfo>,
   ) {
     // do nothing by default
   }
@@ -471,10 +471,10 @@ impl TestNpmRegistryApi {
         version.clone(),
         Arc::new(NpmPackageVersionInfo {
           version,
-          dist: NpmPackageVersionDistInfo {
+          dist: Arc::new(NpmPackageVersionDistInfo {
             integrity: integrity.map(|s| s.to_string()),
             ..Default::default()
-          },
+          }),
           ..Default::default()
         }),
       );
@@ -586,7 +586,11 @@ impl NpmRegistryApi for TestNpmRegistryApi {
   }
 
   #[cfg(test)]
-  fn preload_package_nv(&self, nv: &PackageNv, _dist: &NpmPackageVersionInfo) {
+  fn preload_package_nv(
+    &self,
+    nv: &PackageNv,
+    _dist: &Arc<NpmPackageVersionInfo>,
+  ) {
     self.seen_preload_nvs.borrow_mut().insert(nv.to_string());
   }
 }
@@ -851,11 +855,11 @@ mod test {
       info,
       NpmPackageVersionInfo {
         version: Version::parse_from_npm("1.0.0").unwrap(),
-        dist: NpmPackageVersionDistInfo {
+        dist: Arc::new(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
           shasum: "test".to_string(),
           integrity: None,
-        },
+        }),
         ..Default::default()
       }
     );

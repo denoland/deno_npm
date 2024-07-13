@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use deno_semver::package::PackageNv;
 use deno_semver::Version;
@@ -248,7 +249,7 @@ pub struct NpmResolutionPackage {
   pub copy_index: u8,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Arc<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,

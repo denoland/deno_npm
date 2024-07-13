@@ -106,7 +106,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Arc<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
@@ -917,23 +917,27 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
     .map(|p| p.id.nv.clone())
     .collect::<Vec<_>>();
   let get_version_infos = || {
-    FuturesUnordered::from_iter(pkg_nvs.iter().map(|nv| async move {
-      let package_info = api
-        .package_info(&nv.name)
-        .await
-        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      package_info
-        .version_info(nv)
-        .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
-    }))
+    FuturesUnordered::from_iter(pkg_nvs.iter().enumerate().map(
+      |(i, nv)| async move {
+        let package_info = api
+          .package_info(&nv.name)
+          .await
+          .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
+        (
+          i,
+          package_info.version_info(nv).map_err(|e| {
+            SnapshotFromLockfileError::VersionNotFound { source: e }
+          }),
+        )
+      },
+    ))
   };
   let mut version_infos = get_version_infos();
-  let mut i = 0;
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
-  while let Some(result) = version_infos.next().await {
+  while let Some((index, result)) = version_infos.next().await {
     match result {
       Ok(version_info) => {
-        let snapshot_package = &incomplete_snapshot.packages[i];
+        let snapshot_package = &incomplete_snapshot.packages[index];
         if !params.skip_integrity_check {
           let registry_integrity = version_info.dist.integrity().for_lockfile();
           if registry_integrity != snapshot_package.integrity {
@@ -976,15 +980,12 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
         if api.mark_force_reload() {
           // reset and try again
           version_infos = get_version_infos();
-          i = 0;
           packages.clear();
         } else {
           return Err(err);
         }
       }
     }
-
-    i += 1;
   }
 
   let snapshot = SerializedNpmResolutionSnapshot {
