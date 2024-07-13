@@ -29,6 +29,7 @@ use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 use crate::NpmResolutionPackageSystemInfo;
+use crate::NpmSystemInfo;
 
 use super::common::NpmVersionResolver;
 use super::snapshot::NpmResolutionSnapshot;
@@ -318,6 +319,9 @@ impl<'a> Iterator for GraphPathAncestorIterator<'a> {
 pub struct Graph {
   /// Each requirement is mapped to a specific name and version.
   package_reqs: HashMap<PackageReq, Rc<PackageNv>>,
+  /// System info to use for preloading npm packages. When this is
+  /// none it means that preloading is not enabled.
+  preload_system_info: Option<NpmSystemInfo>,
   /// Then each name and version is mapped to an exact node id.
   /// Note: Uses a BTreeMap in order to create some determinism
   /// when creating the snapshot.
@@ -331,7 +335,10 @@ pub struct Graph {
 }
 
 impl Graph {
-  pub fn from_snapshot(snapshot: NpmResolutionSnapshot) -> Self {
+  pub fn from_snapshot(
+    preload_system_info: Option<NpmSystemInfo>,
+    snapshot: NpmResolutionSnapshot,
+  ) -> Self {
     fn get_or_create_graph_node<'a>(
       graph: &mut Graph,
       pkg_id: &NpmPackageId,
@@ -411,6 +418,7 @@ impl Graph {
     }
 
     let mut graph = Self {
+      preload_system_info,
       // Note: It might be more correct to store the copy index
       // from past resolutions with the node somehow, but maybe not.
       packages_to_copy_index: snapshot
@@ -933,9 +941,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_req.version_text(),
       pkg_nv.to_string(),
     );
-
-    // fire off an event to start downloading this nv
-    self.api.preload_package_nv(&pkg_nv, &info.dist);
 
     Ok((pkg_nv, node_id))
   }
@@ -1463,6 +1468,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
 #[cfg(test)]
 mod test {
+  use std::collections::BTreeSet;
+
   use pretty_assertions::assert_eq;
 
   use crate::registry::TestNpmRegistryApi;
@@ -3958,7 +3965,7 @@ mod test {
     }
 
     let snapshot = NpmResolutionSnapshot::new(Default::default());
-    let mut graph = Graph::from_snapshot(snapshot);
+    let mut graph = Graph::from_snapshot(api.preload_system_info(), snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
     };
@@ -3976,7 +3983,8 @@ mod test {
     let snapshot = graph.into_snapshot(&api).await.unwrap();
 
     {
-      let graph = Graph::from_snapshot(snapshot.clone());
+      let graph =
+        Graph::from_snapshot(api.preload_system_info(), snapshot.clone());
       let new_snapshot = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
@@ -3984,7 +3992,8 @@ mod test {
         "recreated snapshot should be the same"
       );
       // create one again from the new snapshot
-      let graph = Graph::from_snapshot(new_snapshot.clone());
+      let graph =
+        Graph::from_snapshot(api.preload_system_info(), new_snapshot.clone());
       let new_snapshot2 = graph.into_snapshot(&api).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
@@ -3992,6 +4001,16 @@ mod test {
         "second recreated snapshot should be the same"
       );
     }
+
+    // {
+    //   let preload_nvs = api.seen_preload_nvs();
+    //   let package_nvs = snapshot
+    //     .all_system_packages(&api.preload_system_info().unwrap())
+    //     .into_iter()
+    //     .map(|pkg| pkg.id.nv.to_string())
+    //     .collect::<BTreeSet<String>>();
+    //   assert_eq!(preload_nvs, package_nvs);
+    // }
 
     snapshot
   }

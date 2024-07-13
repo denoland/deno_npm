@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use deno_lockfile::Lockfile;
@@ -14,6 +15,7 @@ use deno_semver::package::PackageReq;
 use deno_semver::package::PackageReqParseError;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -23,11 +25,13 @@ use super::common::NpmVersionResolver;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
+use super::preload::PreloadContext;
 use super::NpmPackageVersionNotFound;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
+use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
@@ -688,7 +692,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       Nv(PackageNv),
     }
     // convert the snapshot to a traversable graph
-    let mut graph = Graph::from_snapshot(snapshot);
+    let mut graph =
+      Graph::from_snapshot(self.api.preload_system_info(), snapshot);
 
     let api = &self.api;
     let reqs_with_in_graph = package_reqs
@@ -891,8 +896,8 @@ pub enum SnapshotFromLockfileError {
   IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
 }
 
-pub struct SnapshotFromLockfileParams<'a> {
-  pub api: &'a dyn NpmRegistryApi,
+pub struct SnapshotFromLockfileParams<'a, TNpmRegistryApi: NpmRegistryApi> {
+  pub api: &'a TNpmRegistryApi,
   pub incomplete_snapshot: IncompleteSnapshot,
   pub skip_integrity_check: bool,
 }
@@ -903,8 +908,8 @@ pub struct SnapshotFromLockfileParams<'a> {
 /// [`IncompleteSnapshot`] instance that's passed as the first argument for this
 /// function.
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub async fn snapshot_from_lockfile<'a>(
-  params: SnapshotFromLockfileParams<'a>,
+pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
+  params: SnapshotFromLockfileParams<'a, TNpmRegistryApi>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
   let api = params.api;
   let incomplete_snapshot = params.incomplete_snapshot;
@@ -916,7 +921,7 @@ pub async fn snapshot_from_lockfile<'a>(
     .map(|p| p.id.nv.clone())
     .collect::<Vec<_>>();
   let get_version_infos = || {
-    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
+    FuturesUnordered::from_iter(pkg_nvs.iter().map(|nv| async move {
       let package_info = api
         .package_info(&nv.name)
         .await
@@ -926,6 +931,20 @@ pub async fn snapshot_from_lockfile<'a>(
         .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
     }))
   };
+  let new_preload_ctx = || {
+    api.preload_system_info().map(|system_info| {
+      PreloadContext::new(
+        api,
+        system_info,
+        Some(incomplete_snapshot.packages.len()),
+        incomplete_snapshot
+          .root_packages
+          .values()
+          .map(|id| id.nv.clone()),
+      )
+    })
+  };
+  let mut preload_ctx = new_preload_ctx();
   let mut version_infos = get_version_infos();
   let mut i = 0;
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
@@ -954,8 +973,16 @@ pub async fn snapshot_from_lockfile<'a>(
           }
         }
 
-        // fire off an event to start downloading this nv
-        api.preload_package_nv(&snapshot_package.id.nv, &version_info.dist);
+        if let Some(ctx) = &mut preload_ctx {
+          ctx.handle_package(
+            &snapshot_package.id.nv,
+            &version_info,
+            snapshot_package
+              .dependencies
+              .iter()
+              .map(|(key, id)| (key.as_str(), &id.nv)),
+          );
+        }
 
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
@@ -969,8 +996,8 @@ pub async fn snapshot_from_lockfile<'a>(
             .optional_dependencies
             .into_keys()
             .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
+          bin: version_info.bin,
+          scripts: version_info.scripts,
         });
       }
       Err(err) => {
@@ -979,7 +1006,7 @@ pub async fn snapshot_from_lockfile<'a>(
           version_infos = get_version_infos();
           i = 0;
           packages.clear();
-          continue;
+          preload_ctx = new_preload_ctx();
         } else {
           return Err(err);
         }

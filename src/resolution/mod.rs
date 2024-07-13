@@ -3,6 +3,7 @@
 mod collections;
 mod common;
 mod graph;
+mod preload;
 mod snapshot;
 
 pub use common::NpmPackageVersionNotFound;

@@ -17,6 +17,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::resolution::NpmPackageVersionNotFound;
+use crate::system_info::matches_os_or_cpu_vec;
+use crate::NpmSystemInfo;
 
 /// Gets the name and raw version constraint for a registry info or
 /// package.json dependency entry taking into account npm package aliases.
@@ -264,6 +266,19 @@ impl NpmPackageVersionInfo {
     }
     Ok(result.into_values().collect())
   }
+
+  /// Gets if this packages
+  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
+    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
+  }
+
+  pub fn matches_cpu(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.cpu, target)
+  }
+
+  pub fn matches_os(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.os, target)
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,15 +361,19 @@ pub trait NpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 
+  fn preload_system_info(&self) -> Option<NpmSystemInfo> {
+    None
+  }
+
   /// Optional method an implementer can use to start downloading a package
   /// name and version and doing a basic setup of the node_modules directory.
   ///
-  /// deno_npm will call this method indistriminately for every package nv it sees.
-  /// It is up to the implementer to not do extra work.
+  /// deno_npm may call this method multiple times for the same nv. It is up to
+  /// the implementer to not do extra work.
   fn preload_package_nv(
     &self,
     _nv: &PackageNv,
-    _dist: &NpmPackageVersionDistInfo,
+    _version_info: &NpmPackageVersionInfo,
   ) {
     // do nothing by default
   }
@@ -379,6 +398,8 @@ pub trait NpmRegistryApi {
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
   package_infos: Rc<RefCell<HashMap<String, NpmPackageInfo>>>,
+  #[cfg(test)]
+  seen_preload_nvs: Rc<RefCell<std::collections::BTreeSet<String>>>,
 }
 
 impl TestNpmRegistryApi {
@@ -518,6 +539,11 @@ impl TestNpmRegistryApi {
       );
     });
   }
+
+  #[cfg(test)]
+  pub(crate) fn seen_preload_nvs(&self) -> std::collections::BTreeSet<String> {
+    self.seen_preload_nvs.borrow().clone()
+  }
 }
 
 #[async_trait(?Send)]
@@ -533,6 +559,19 @@ impl NpmRegistryApi for TestNpmRegistryApi {
         .cloned()
         .unwrap_or_else(|| panic!("Not found: {name}")),
     ))
+  }
+
+  #[cfg(test)]
+  fn preload_system_info(&self) -> Option<NpmSystemInfo> {
+    Some(NpmSystemInfo {
+      os: "linux".to_string(),
+      cpu: "x64".to_string(),
+    })
+  }
+
+  #[cfg(test)]
+  fn preload_package_nv(&self, nv: &PackageNv, _dist: &NpmPackageVersionInfo) {
+    self.seen_preload_nvs.borrow_mut().insert(nv.to_string());
   }
 }
 
