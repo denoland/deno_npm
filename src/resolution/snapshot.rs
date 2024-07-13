@@ -919,15 +919,17 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
   let get_version_infos = || {
     FuturesUnordered::from_iter(pkg_nvs.iter().enumerate().map(
       |(i, nv)| async move {
-        let package_info = api
+        let package_info_result = api
           .package_info(&nv.name)
           .await
-          .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
+          .map_err(SnapshotFromLockfileError::PackageInfoLoad);
         (
           i,
-          package_info.version_info(nv).map_err(|e| {
-            SnapshotFromLockfileError::VersionNotFound { source: e }
-          }),
+          package_info_result.and_then(|info| {
+            info.version_info(nv).map_err(|e| {
+              SnapshotFromLockfileError::VersionNotFound { source: e }
+            })
+          })
         )
       },
     ))
