@@ -382,8 +382,10 @@ pub trait NpmRegistryApi {
   /// Optional method an implementer can use to start downloading a package
   /// name and version and doing a basic setup of the node_modules directory.
   ///
-  /// deno_npm may call this method multiple times for the same nv. It is up to
-  /// the implementer to not do extra work.
+  /// IMPORTANT: deno_npm will not necessarily call this method for every
+  /// required package for the system, because that is really complex. It's
+  /// still up to the implementer to ensure that every package is setup for
+  /// the current system after resolution is complete.
   fn preload_package_nv(
     &self,
     _nv: &PackageNv,
@@ -409,11 +411,28 @@ pub trait NpmRegistryApi {
 ///
 /// Note: This test struct is not thread safe for setup
 /// purposes. Construct everything on the same thread.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct TestNpmRegistryApi {
   package_infos: Rc<RefCell<HashMap<String, NpmPackageInfo>>>,
   #[cfg(test)]
-  seen_preload_nvs: Rc<RefCell<std::collections::BTreeSet<String>>>,
+  system_info: RefCell<Option<NpmSystemInfo>>,
+  #[cfg(test)]
+  seen_preload_nvs: RefCell<std::collections::BTreeSet<String>>,
+}
+
+impl Default for TestNpmRegistryApi {
+  fn default() -> Self {
+    Self {
+      package_infos: Rc::new(RefCell::new(HashMap::new())),
+      #[cfg(test)]
+      system_info: RefCell::new(Some(NpmSystemInfo {
+        os: "linux".to_string(),
+        cpu: "x64".to_string(),
+      })),
+      #[cfg(test)]
+      seen_preload_nvs: RefCell::new(std::collections::BTreeSet::new()),
+    }
+  }
 }
 
 impl TestNpmRegistryApi {
@@ -557,6 +576,11 @@ impl TestNpmRegistryApi {
   }
 
   #[cfg(test)]
+  pub(crate) fn disable_preloading(&self) {
+    self.system_info.borrow_mut().take();
+  }
+
+  #[cfg(test)]
   pub(crate) fn seen_preload_nvs(&self) -> std::collections::BTreeSet<String> {
     self.seen_preload_nvs.borrow().clone()
   }
@@ -579,10 +603,7 @@ impl NpmRegistryApi for TestNpmRegistryApi {
 
   #[cfg(test)]
   fn preload_system_info(&self) -> Option<NpmSystemInfo> {
-    Some(NpmSystemInfo {
-      os: "linux".to_string(),
-      cpu: "x64".to_string(),
-    })
+    self.system_info.borrow().clone()
   }
 
   #[cfg(test)]

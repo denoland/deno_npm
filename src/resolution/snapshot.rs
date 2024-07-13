@@ -911,28 +911,25 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
   let incomplete_snapshot = params.incomplete_snapshot;
 
   // fetch the package version information
-  let pkg_nvs = incomplete_snapshot
-    .packages
-    .iter()
-    .map(|p| p.id.nv.clone())
-    .collect::<Vec<_>>();
   let get_version_infos = || {
-    FuturesUnordered::from_iter(pkg_nvs.iter().enumerate().map(
-      |(i, nv)| async move {
-        let package_info_result = api
-          .package_info(&nv.name)
-          .await
-          .map_err(SnapshotFromLockfileError::PackageInfoLoad);
-        (
-          i,
-          package_info_result.and_then(|info| {
-            info.version_info(nv).map_err(|e| {
-              SnapshotFromLockfileError::VersionNotFound { source: e }
-            })
-          })
-        )
-      },
-    ))
+    FuturesUnordered::from_iter(
+      incomplete_snapshot.packages.iter().enumerate().map(
+        |(index, pkg)| async move {
+          let package_info_result = api
+            .package_info(&pkg.id.nv.name)
+            .await
+            .map_err(SnapshotFromLockfileError::PackageInfoLoad);
+          (
+            index,
+            package_info_result.and_then(|info| {
+              info.version_info(&pkg.id.nv).map_err(|e| {
+                SnapshotFromLockfileError::VersionNotFound { source: e }
+              })
+            }),
+          )
+        },
+      ),
+    )
   };
   let mut version_infos = get_version_infos();
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());

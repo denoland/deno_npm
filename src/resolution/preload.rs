@@ -36,7 +36,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi> PreloadContext<'a, TNpmRegistryApi> {
       system_info: options.system_info,
       pkgs: options
         .maybe_capacity
-        .map(|capacity| HashMap::with_capacity(capacity))
+        .map(HashMap::with_capacity)
         .unwrap_or_default(),
     }
   }

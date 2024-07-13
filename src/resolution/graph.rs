@@ -1021,7 +1021,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     if let Some(preload_ctx) = &mut self.preload_ctx {
       debug_assert_eq!(pkg_nv.version, info.version);
-      preload_ctx.handle_package(&pkg_nv, &info);
+      preload_ctx.handle_package(&pkg_nv, info);
       match matches_system {
         MatchesSystem::Required => preload_ctx.mark_required_dep(&pkg_nv),
         MatchesSystem::Optional => preload_ctx.mark_optional_dep(&pkg_nv),
@@ -4035,6 +4035,10 @@ mod test {
   #[tokio::test]
   async fn resolve_optional_to_required() {
     let api = TestNpmRegistryApi::default();
+    // this is a scenario where pre-loading doesn't get all the packages
+    // because a dependency goes from being optional to required, so just
+    // disable preloading so the implicit test doesn't fail
+    api.disable_preloading();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b1", "1.0.0");
     api.ensure_package_version("package-b2", "1.0.0");
@@ -4198,10 +4202,13 @@ mod test {
       );
     }
 
-    {
+    // Generally these will match, but in cases where a dep goes from being
+    // optional to required it won't. In those cases, you can set the test
+    // api to not have any system info in order to skip this test.
+    if let Some(system_info) = api.preload_system_info() {
       let preload_nvs = api.seen_preload_nvs();
       let package_nvs = snapshot
-        .all_system_packages(&api.preload_system_info().unwrap())
+        .all_system_packages(&system_info)
         .into_iter()
         .map(|pkg| pkg.id.nv.to_string())
         .collect::<std::collections::BTreeSet<String>>();
