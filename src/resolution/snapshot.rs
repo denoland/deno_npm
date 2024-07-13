@@ -14,6 +14,7 @@ use deno_semver::package::PackageReq;
 use deno_semver::package::PackageReqParseError;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -105,7 +106,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Arc<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<String, NpmPackageId>,
@@ -891,8 +892,8 @@ pub enum SnapshotFromLockfileError {
   IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
 }
 
-pub struct SnapshotFromLockfileParams<'a> {
-  pub api: &'a dyn NpmRegistryApi,
+pub struct SnapshotFromLockfileParams<'a, TNpmRegistryApi: NpmRegistryApi> {
+  pub api: &'a TNpmRegistryApi,
   pub incomplete_snapshot: IncompleteSnapshot,
   pub skip_integrity_check: bool,
 }
@@ -903,36 +904,39 @@ pub struct SnapshotFromLockfileParams<'a> {
 /// [`IncompleteSnapshot`] instance that's passed as the first argument for this
 /// function.
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub async fn snapshot_from_lockfile<'a>(
-  params: SnapshotFromLockfileParams<'a>,
+pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
+  params: SnapshotFromLockfileParams<'a, TNpmRegistryApi>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
   let api = params.api;
   let incomplete_snapshot = params.incomplete_snapshot;
 
   // fetch the package version information
-  let pkg_nvs = incomplete_snapshot
-    .packages
-    .iter()
-    .map(|p| p.id.nv.clone())
-    .collect::<Vec<_>>();
   let get_version_infos = || {
-    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
-      let package_info = api
-        .package_info(&nv.name)
-        .await
-        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      package_info
-        .version_info(nv)
-        .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
-    }))
+    FuturesUnordered::from_iter(
+      incomplete_snapshot.packages.iter().enumerate().map(
+        |(index, pkg)| async move {
+          let package_info_result = api
+            .package_info(&pkg.id.nv.name)
+            .await
+            .map_err(SnapshotFromLockfileError::PackageInfoLoad);
+          (
+            index,
+            package_info_result.and_then(|info| {
+              info.version_info(&pkg.id.nv).map_err(|e| {
+                SnapshotFromLockfileError::VersionNotFound { source: e }
+              })
+            }),
+          )
+        },
+      ),
+    )
   };
   let mut version_infos = get_version_infos();
-  let mut i = 0;
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
-  while let Some(result) = version_infos.next().await {
+  while let Some((index, result)) = version_infos.next().await {
     match result {
       Ok(version_info) => {
-        let snapshot_package = &incomplete_snapshot.packages[i];
+        let snapshot_package = &incomplete_snapshot.packages[index];
         if !params.skip_integrity_check {
           let registry_integrity = version_info.dist.integrity().for_lockfile();
           if registry_integrity != snapshot_package.integrity {
@@ -953,17 +957,19 @@ pub async fn snapshot_from_lockfile<'a>(
             );
           }
         }
+
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist,
+          dist: version_info.dist.clone(),
           system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu,
-            os: version_info.os,
+            cpu: version_info.cpu.clone(),
+            os: version_info.os.clone(),
           },
           optional_dependencies: version_info
             .optional_dependencies
-            .into_keys()
+            .keys()
+            .cloned()
             .collect(),
           bin: version_info.bin.clone(),
           scripts: version_info.scripts.clone(),
@@ -973,16 +979,12 @@ pub async fn snapshot_from_lockfile<'a>(
         if api.mark_force_reload() {
           // reset and try again
           version_infos = get_version_infos();
-          i = 0;
           packages.clear();
-          continue;
         } else {
           return Err(err);
         }
       }
     }
-
-    i += 1;
   }
 
   let snapshot = SerializedNpmResolutionSnapshot {

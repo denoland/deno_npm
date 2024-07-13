@@ -1,5 +1,7 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use std::sync::Arc;
+
 use deno_semver::package::PackageNv;
 use deno_semver::Version;
 use deno_semver::VersionReq;
@@ -53,7 +55,7 @@ impl NpmVersionResolver {
     version_req: &VersionReq,
     package_info: &'info NpmPackageInfo,
     existing_versions: impl Iterator<Item = &'version Version>,
-  ) -> Result<&'info NpmPackageVersionInfo, NpmPackageVersionResolutionError>
+  ) -> Result<&'info Arc<NpmPackageVersionInfo>, NpmPackageVersionResolutionError>
   {
     if let Some(version) = self.resolve_best_from_existing_versions(
       version_req,
@@ -79,7 +81,8 @@ impl NpmVersionResolver {
     &self,
     version_req: &VersionReq,
     info: &'a NpmPackageInfo,
-  ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
+  ) -> Result<&'a Arc<NpmPackageVersionInfo>, NpmPackageVersionResolutionError>
+  {
     if let Some(tag) = version_req.tag() {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
@@ -99,7 +102,7 @@ impl NpmVersionResolver {
     {
       self.tag_to_version_info(info, "latest")
     } else {
-      let mut maybe_best_version: Option<&'a NpmPackageVersionInfo> = None;
+      let mut maybe_best_version: Option<&'a Arc<NpmPackageVersionInfo>> = None;
       for version_info in info.versions.values() {
         let version = &version_info.version;
         if self.version_req_satisfies(version_req, version, info)? {
@@ -187,7 +190,8 @@ impl NpmVersionResolver {
     &self,
     info: &'a NpmPackageInfo,
     tag: &str,
-  ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
+  ) -> Result<&'a Arc<NpmPackageVersionInfo>, NpmPackageVersionResolutionError>
+  {
     if let Some(version) = info.dist_tags.get(tag) {
       match info.versions.get(version) {
         Some(info) => Ok(info),
@@ -209,6 +213,7 @@ impl NpmVersionResolver {
 #[cfg(test)]
 mod test {
   use std::collections::HashMap;
+  use std::sync::Arc;
 
   use deno_semver::package::PackageReq;
 
@@ -245,14 +250,14 @@ mod test {
       versions: HashMap::from([
         (
           Version::parse_from_npm("0.1.0").unwrap(),
-          NpmPackageVersionInfo::default(),
+          Default::default(),
         ),
         (
           Version::parse_from_npm("1.0.0-alpha").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("1.0.0-alpha").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
       ]),
       dist_tags: HashMap::from([(
@@ -277,17 +282,17 @@ mod test {
       versions: HashMap::from([
         (
           Version::parse_from_npm("1.0.0").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("1.0.0").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
         (
           Version::parse_from_npm("1.1.0").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("1.1.0").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
       ]),
       dist_tags: HashMap::from([(
@@ -315,17 +320,17 @@ mod test {
       versions: HashMap::from([
         (
           Version::parse_from_npm("1.0.0-rc.1").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("1.0.0-rc.1").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
         (
           Version::parse_from_npm("2.0.0").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("2.0.0").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
       ]),
       dist_tags: HashMap::from([(
@@ -350,31 +355,31 @@ mod test {
       versions: HashMap::from([
         (
           Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
         (
           Version::parse_from_npm("0.1.0-alpha.2").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("0.1.0-alpha.2").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
         (
           Version::parse_from_npm("0.1.0-beta.1").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("0.1.0-beta.1").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
         (
           Version::parse_from_npm("0.1.0-beta.2").unwrap(),
-          NpmPackageVersionInfo {
+          Arc::new(NpmPackageVersionInfo {
             version: Version::parse_from_npm("0.1.0-beta.2").unwrap(),
             ..Default::default()
-          },
+          }),
         ),
       ]),
       dist_tags: HashMap::from([

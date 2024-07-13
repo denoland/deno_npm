@@ -17,6 +17,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::resolution::NpmPackageVersionNotFound;
+use crate::system_info::matches_os_or_cpu_vec;
+use crate::NpmSystemInfo;
 
 /// Gets the name and raw version constraint for a registry info or
 /// package.json dependency entry taking into account npm package aliases.
@@ -45,7 +47,7 @@ pub fn parse_dep_entry_name_and_raw_version<'a>(
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct NpmPackageInfo {
   pub name: String,
-  pub versions: HashMap<Version, NpmPackageVersionInfo>,
+  pub versions: HashMap<Version, Arc<NpmPackageVersionInfo>>,
   #[serde(rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
 }
@@ -54,7 +56,7 @@ impl NpmPackageInfo {
   pub fn version_info(
     &self,
     nv: &PackageNv,
-  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+  ) -> Result<Arc<NpmPackageVersionInfo>, NpmPackageVersionNotFound> {
     match self.versions.get(&nv.version).cloned() {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
@@ -83,7 +85,7 @@ pub enum NpmDependencyEntryErrorSource {
   NpmVersionReqParseError(#[from] NpmVersionReqParseError),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NpmDependencyEntryKind {
   Dep,
   Peer,
@@ -99,6 +101,7 @@ impl NpmDependencyEntryKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NpmDependencyEntry {
   pub kind: NpmDependencyEntryKind,
+  pub is_optional: bool,
   pub bare_specifier: String,
   pub name: String,
   pub version_req: VersionReq,
@@ -146,7 +149,7 @@ pub enum NpmPackageVersionBinEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NpmPackageVersionInfo {
   pub version: Version,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Arc<NpmPackageVersionDistInfo>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
@@ -182,12 +185,14 @@ impl NpmPackageVersionInfo {
     fn parse_dep_entry_inner(
       (key, value): (&String, &String),
       kind: NpmDependencyEntryKind,
+      is_optional: bool,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
         parse_dep_entry_name_and_raw_version(key, value);
       let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
+        is_optional,
         bare_specifier: key.to_string(),
         name: name.to_string(),
         version_req,
@@ -199,8 +204,9 @@ impl NpmPackageVersionInfo {
       nv: (&str, &Version),
       key_value: (&String, &String),
       kind: NpmDependencyEntryKind,
+      is_optional: bool,
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
-      parse_dep_entry_inner(key_value, kind).map_err(|source| {
+      parse_dep_entry_inner(key_value, kind, is_optional).map_err(|source| {
         Box::new(NpmDependencyEntryError {
           parent_nv: PackageNv {
             name: nv.0.to_string(),
@@ -239,20 +245,30 @@ impl NpmPackageVersionInfo {
     );
     let nv = (package_name, &self.version);
     for entry in &self.peer_dependencies {
-      let is_optional = self
+      let is_optional_peer = self
         .peer_dependencies_meta
         .get(entry.0)
         .map(|d| d.optional)
         .unwrap_or(false);
-      let kind = match is_optional {
+      let kind = match is_optional_peer {
         true => NpmDependencyEntryKind::OptionalPeer,
         false => NpmDependencyEntryKind::Peer,
       };
-      let entry = parse_dep_entry(nv, entry, kind)?;
+      let entry = parse_dep_entry(
+        nv,
+        entry,
+        kind,
+        self.optional_dependencies.contains_key(entry.0),
+      )?;
       result.insert(entry.bare_specifier.clone(), entry);
     }
     for entry in normalized_dependencies.iter() {
-      let entry = parse_dep_entry(nv, entry, NpmDependencyEntryKind::Dep)?;
+      let entry = parse_dep_entry(
+        nv,
+        entry,
+        NpmDependencyEntryKind::Dep,
+        self.optional_dependencies.contains_key(entry.0),
+      )?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,
       // but then use this dependency version requirement otherwise
@@ -263,6 +279,19 @@ impl NpmPackageVersionInfo {
       }
     }
     Ok(result.into_values().collect())
+  }
+
+  /// Gets if this packages
+  pub fn matches_system(&self, system_info: &NpmSystemInfo) -> bool {
+    self.matches_cpu(&system_info.cpu) && self.matches_os(&system_info.os)
+  }
+
+  pub fn matches_cpu(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.cpu, target)
+  }
+
+  pub fn matches_os(&self, target: &str) -> bool {
+    matches_os_or_cpu_vec(&self.os, target)
   }
 }
 
@@ -346,6 +375,25 @@ pub trait NpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>;
 
+  fn preload_system_info(&self) -> Option<NpmSystemInfo> {
+    None
+  }
+
+  /// Optional method an implementer can use to start downloading a package
+  /// name and version and doing a basic setup of the node_modules directory.
+  ///
+  /// IMPORTANT: deno_npm will not necessarily call this method for every
+  /// required package for the system, because that is really complex. It's
+  /// still up to the implementer to ensure that every package is setup for
+  /// the current system after resolution is complete.
+  fn preload_package_nv(
+    &self,
+    _nv: &PackageNv,
+    _version_info: &Arc<NpmPackageVersionInfo>,
+  ) {
+    // do nothing by default
+  }
+
   /// Marks that new requests for package information should retrieve it
   /// from the npm registry
   ///
@@ -363,9 +411,28 @@ pub trait NpmRegistryApi {
 ///
 /// Note: This test struct is not thread safe for setup
 /// purposes. Construct everything on the same thread.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct TestNpmRegistryApi {
   package_infos: Rc<RefCell<HashMap<String, NpmPackageInfo>>>,
+  #[cfg(test)]
+  system_info: RefCell<Option<NpmSystemInfo>>,
+  #[cfg(test)]
+  seen_preload_nvs: RefCell<std::collections::BTreeSet<String>>,
+}
+
+impl Default for TestNpmRegistryApi {
+  fn default() -> Self {
+    Self {
+      package_infos: Rc::new(RefCell::new(HashMap::new())),
+      #[cfg(test)]
+      system_info: RefCell::new(Some(NpmSystemInfo {
+        os: "linux".to_string(),
+        cpu: "x64".to_string(),
+      })),
+      #[cfg(test)]
+      seen_preload_nvs: RefCell::new(std::collections::BTreeSet::new()),
+    }
+  }
 }
 
 impl TestNpmRegistryApi {
@@ -421,14 +488,14 @@ impl TestNpmRegistryApi {
     if !info.versions.contains_key(&version) {
       info.versions.insert(
         version.clone(),
-        NpmPackageVersionInfo {
+        Arc::new(NpmPackageVersionInfo {
           version,
-          dist: NpmPackageVersionDistInfo {
+          dist: Arc::new(NpmPackageVersionDistInfo {
             integrity: integrity.map(|s| s.to_string()),
             ..Default::default()
-          },
+          }),
           ..Default::default()
-        },
+        }),
       );
     }
   }
@@ -443,8 +510,10 @@ impl TestNpmRegistryApi {
     let mut infos = self.package_infos.borrow_mut();
     let info = infos.get_mut(name).unwrap();
     let version = Version::parse_from_npm(version).unwrap();
-    let version_info = info.versions.get_mut(&version).unwrap();
-    f(version_info);
+    let version_info = info.versions.remove(&version).unwrap();
+    let mut version_info = Arc::unwrap_or_clone(version_info);
+    f(&mut version_info);
+    info.versions.insert(version, Arc::new(version_info));
   }
 
   pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
@@ -505,6 +574,16 @@ impl TestNpmRegistryApi {
       );
     });
   }
+
+  #[cfg(test)]
+  pub(crate) fn disable_preloading(&self) {
+    self.system_info.borrow_mut().take();
+  }
+
+  #[cfg(test)]
+  pub(crate) fn seen_preload_nvs(&self) -> std::collections::BTreeSet<String> {
+    self.seen_preload_nvs.borrow().clone()
+  }
 }
 
 #[async_trait(?Send)]
@@ -520,6 +599,20 @@ impl NpmRegistryApi for TestNpmRegistryApi {
         .cloned()
         .unwrap_or_else(|| panic!("Not found: {name}")),
     ))
+  }
+
+  #[cfg(test)]
+  fn preload_system_info(&self) -> Option<NpmSystemInfo> {
+    self.system_info.borrow().clone()
+  }
+
+  #[cfg(test)]
+  fn preload_package_nv(
+    &self,
+    nv: &PackageNv,
+    _dist: &Arc<NpmPackageVersionInfo>,
+  ) {
+    self.seen_preload_nvs.borrow_mut().insert(nv.to_string());
   }
 }
 
@@ -783,11 +876,11 @@ mod test {
       info,
       NpmPackageVersionInfo {
         version: Version::parse_from_npm("1.0.0").unwrap(),
-        dist: NpmPackageVersionDistInfo {
+        dist: Arc::new(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
           shasum: "test".to_string(),
           integrity: None,
-        },
+        }),
         ..Default::default()
       }
     );
