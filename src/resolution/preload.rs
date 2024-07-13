@@ -73,6 +73,10 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi> PreloadContext<'a, TNpmRegistryApi> {
     }
   }
 
+  pub fn system_info(&self) -> &NpmSystemInfo {
+    &self.system_info
+  }
+
   pub fn mark_required_dep(&mut self, nv: &Rc<PackageNv>) {
     if let Some(status) = self.pkgs.get_mut(nv) {
       match status {

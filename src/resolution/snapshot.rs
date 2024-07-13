@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use deno_lockfile::Lockfile;
@@ -25,14 +24,11 @@ use super::common::NpmVersionResolver;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
-use super::preload::PreloadContext;
-use super::preload::PreloadOptions;
 use super::NpmPackageVersionNotFound;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
-use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
@@ -931,22 +927,6 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
         .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
     }))
   };
-  let new_preload_ctx = || {
-    api.preload_system_info().map(|system_info| {
-      let mut ctx = PreloadContext::new(
-        api,
-        PreloadOptions {
-          system_info,
-          maybe_capacity: Some(incomplete_snapshot.packages.len()),
-        },
-      );
-      for id in incomplete_snapshot.root_packages.values() {
-        ctx.mark_required_dep(&Rc::new(id.nv.clone()));
-      }
-      ctx
-    })
-  };
-  let mut preload_ctx = new_preload_ctx();
   let mut version_infos = get_version_infos();
   let mut i = 0;
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
@@ -975,20 +955,6 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
           }
         }
 
-        if let Some(ctx) = &mut preload_ctx {
-          ctx.handle_package(
-            &Rc::new(snapshot_package.id.nv.clone()),
-            &version_info,
-          );
-          for (key, id) in &snapshot_package.dependencies {
-            if version_info.optional_dependencies.contains_key(key) {
-              ctx.mark_optional_dep(&Rc::new(id.nv.clone()));
-            } else {
-              ctx.mark_required_dep(&Rc::new(id.nv.clone()));
-            }
-          }
-        }
-
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),
@@ -1012,7 +978,6 @@ pub async fn snapshot_from_lockfile<'a, TNpmRegistryApi: NpmRegistryApi>(
           version_infos = get_version_infos();
           i = 0;
           packages.clear();
-          preload_ctx = new_preload_ctx();
         } else {
           return Err(err);
         }

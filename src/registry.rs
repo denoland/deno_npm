@@ -88,7 +88,6 @@ pub enum NpmDependencyEntryErrorSource {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NpmDependencyEntryKind {
   Dep,
-  OptionalDep,
   Peer,
   OptionalPeer,
 }
@@ -102,6 +101,7 @@ impl NpmDependencyEntryKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NpmDependencyEntry {
   pub kind: NpmDependencyEntryKind,
+  pub is_optional: bool,
   pub bare_specifier: String,
   pub name: String,
   pub version_req: VersionReq,
@@ -185,12 +185,14 @@ impl NpmPackageVersionInfo {
     fn parse_dep_entry_inner(
       (key, value): (&String, &String),
       kind: NpmDependencyEntryKind,
+      is_optional: bool,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
         parse_dep_entry_name_and_raw_version(key, value);
       let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
+        is_optional,
         bare_specifier: key.to_string(),
         name: name.to_string(),
         version_req,
@@ -202,8 +204,9 @@ impl NpmPackageVersionInfo {
       nv: (&str, &Version),
       key_value: (&String, &String),
       kind: NpmDependencyEntryKind,
+      is_optional: bool,
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
-      parse_dep_entry_inner(key_value, kind).map_err(|source| {
+      parse_dep_entry_inner(key_value, kind, is_optional).map_err(|source| {
         Box::new(NpmDependencyEntryError {
           parent_nv: PackageNv {
             name: nv.0.to_string(),
@@ -242,27 +245,29 @@ impl NpmPackageVersionInfo {
     );
     let nv = (package_name, &self.version);
     for entry in &self.peer_dependencies {
-      let is_optional = self
+      let is_optional_peer = self
         .peer_dependencies_meta
         .get(entry.0)
         .map(|d| d.optional)
         .unwrap_or(false);
-      let kind = match is_optional {
+      let kind = match is_optional_peer {
         true => NpmDependencyEntryKind::OptionalPeer,
         false => NpmDependencyEntryKind::Peer,
       };
-      let entry = parse_dep_entry(nv, entry, kind)?;
+      let entry = parse_dep_entry(
+        nv,
+        entry,
+        kind,
+        self.optional_dependencies.contains_key(entry.0),
+      )?;
       result.insert(entry.bare_specifier.clone(), entry);
     }
     for entry in normalized_dependencies.iter() {
       let entry = parse_dep_entry(
         nv,
         entry,
-        if self.optional_dependencies.contains_key(entry.0) {
-          NpmDependencyEntryKind::OptionalDep
-        } else {
-          NpmDependencyEntryKind::Dep
-        },
+        NpmDependencyEntryKind::Dep,
+        self.optional_dependencies.contains_key(entry.0),
       )?;
       // people may define a dependency as a peer dependency as well,
       // so in those cases, attempt to resolve as a peer dependency,

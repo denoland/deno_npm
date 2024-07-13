@@ -207,6 +207,23 @@ enum GraphPathNodeOrRoot {
   Root(Rc<PackageNv>),
 }
 
+enum PeerMatchesSystem {
+  Parent(MatchesSystem),
+  Current(MatchesSystem),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchesSystem {
+  Required,
+  Optional,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IsOptionalDep {
+  True,
+  False,
+}
+
 /// Path through the graph that represents a traversal through the graph doing
 /// the dependency resolution. The graph tries to share duplicate package
 /// information and we try to avoid traversing parts of the graph that we know
@@ -215,6 +232,7 @@ struct GraphPath {
   previous_node: Option<GraphPathNodeOrRoot>,
   node_id_ref: NodeIdRef,
   specifier: String,
+  matches_system: MatchesSystem,
   // we could consider not storing this here and instead reference the resolved
   // nodes, but we should performance profile this code first
   nv: Rc<PackageNv>,
@@ -224,12 +242,17 @@ struct GraphPath {
 }
 
 impl GraphPath {
-  pub fn for_root(node_id: NodeId, nv: Rc<PackageNv>) -> Rc<Self> {
+  pub fn for_root(
+    node_id: NodeId,
+    nv: Rc<PackageNv>,
+    matches_system: MatchesSystem,
+  ) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
       // use an empty specifier
       specifier: "".to_string(),
+      matches_system,
       nv,
       linked_circular_descendants: Default::default(),
     })
@@ -252,12 +275,14 @@ impl GraphPath {
     node_id: NodeId,
     specifier: String,
     nv: Rc<PackageNv>,
+    matches_system: MatchesSystem,
   ) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Node(self.clone())),
       node_id_ref: NodeIdRef::new(node_id),
       specifier,
       nv,
+      matches_system,
       linked_circular_descendants: Default::default(),
     })
   }
@@ -759,28 +784,45 @@ impl Graph {
   }
 }
 
-#[derive(Default)]
-struct DepEntryCache(HashMap<Rc<PackageNv>, Rc<Vec<NpmDependencyEntry>>>);
+struct VersionInfoCacheValue {
+  deps: Vec<NpmDependencyEntry>,
+  matches_system: MatchesSystem,
+}
 
-impl DepEntryCache {
+#[derive(Default)]
+struct VersionInfoCache(HashMap<Rc<PackageNv>, Rc<VersionInfoCacheValue>>);
+
+impl VersionInfoCache {
   pub fn store(
     &mut self,
     nv: Rc<PackageNv>,
     version_info: &NpmPackageVersionInfo,
-  ) -> Result<Rc<Vec<NpmDependencyEntry>>, Box<NpmDependencyEntryError>> {
+    system_info: Option<&NpmSystemInfo>,
+  ) -> Result<Rc<VersionInfoCacheValue>, Box<NpmDependencyEntryError>> {
     debug_assert_eq!(nv.version, version_info.version);
     debug_assert!(!self.0.contains_key(&nv)); // we should not be re-inserting
     let mut deps = version_info.dependencies_as_entries(&nv.name)?;
     // Ensure name alphabetical and then version descending
     // so these are resolved in that order
     deps.sort();
-    let deps = Rc::new(deps);
-    self.0.insert(nv, deps.clone());
-    Ok(deps)
+    let value = Rc::new(VersionInfoCacheValue {
+      deps,
+      matches_system: system_info
+        .map(|system_info| {
+          if version_info.matches_system(system_info) {
+            MatchesSystem::Required
+          } else {
+            MatchesSystem::Optional
+          }
+        })
+        .unwrap_or(MatchesSystem::Required),
+    });
+    self.0.insert(nv, value.clone());
+    Ok(value)
   }
 
-  pub fn get(&self, id: &PackageNv) -> Option<&Rc<Vec<NpmDependencyEntry>>> {
-    self.0.get(id)
+  pub fn get(&self, nv: &PackageNv) -> Option<&Rc<VersionInfoCacheValue>> {
+    self.0.get(nv)
   }
 }
 
@@ -798,7 +840,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   unresolved_optional_peers:
     HashMap<Rc<PackageNv>, Vec<UnresolvedOptionalPeer>>,
-  dep_entry_cache: DepEntryCache,
+  version_info_cache: VersionInfoCache,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -824,7 +866,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_resolver,
       pending_unresolved_nodes: Default::default(),
       unresolved_optional_peers: Default::default(),
-      dep_entry_cache: Default::default(),
+      version_info_cache: Default::default(),
     }
   }
 
@@ -837,11 +879,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       return Ok(nv.clone()); // already added
     }
 
-    let (pkg_nv, node_id) = self.resolve_node_from_info(
+    let (pkg_nv, node_id, matches_system) = self.resolve_node_from_info(
       &package_req.name,
       &package_req.version_req,
-      NpmDependencyEntryKind::Dep,
+      IsOptionalDep::False,
       package_info,
+      MatchesSystem::Required,
       None,
     )?;
     self
@@ -849,9 +892,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .package_reqs
       .insert(package_req.clone(), pkg_nv.clone());
     self.graph.root_packages.insert(pkg_nv.clone(), node_id);
-    self
-      .pending_unresolved_nodes
-      .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
+    self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+      node_id,
+      pkg_nv.clone(),
+      matches_system,
+    ));
     Ok(pkg_nv)
   }
 
@@ -861,22 +906,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     package_info: &NpmPackageInfo,
     parent_path: &Rc<GraphPath>,
   ) -> Result<NodeId, NpmResolutionError> {
-    debug_assert!(
-      matches!(
-        entry.kind,
-        NpmDependencyEntryKind::Dep | NpmDependencyEntryKind::OptionalDep
-      ),
-      "{:?}",
-      entry
-    );
+    debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
     let parent_id = parent_path.node_id();
-    let (child_nv, mut child_id) = self.resolve_node_from_info(
-      &entry.name,
-      &entry.version_req,
-      entry.kind,
-      package_info,
-      Some(parent_id),
-    )?;
+    let (child_nv, mut child_id, child_matches_system) = self
+      .resolve_node_from_info(
+        &entry.name,
+        &entry.version_req,
+        if entry.is_optional {
+          IsOptionalDep::True
+        } else {
+          IsOptionalDep::False
+        },
+        package_info,
+        parent_path.matches_system,
+        Some(parent_id),
+      )?;
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
@@ -890,6 +934,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         child_id,
         entry.bare_specifier.to_string(),
         child_nv,
+        child_matches_system,
       );
       if let Some(ancestor) = maybe_ancestor {
         // this node is circular, so we link it to the ancestor
@@ -910,10 +955,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     pkg_req_name: &str,
     version_req: &VersionReq,
-    entry_kind: NpmDependencyEntryKind,
+    is_optional_dep: IsOptionalDep,
     package_info: &NpmPackageInfo,
+    parent_matches_system: MatchesSystem,
     parent_id: Option<NodeId>,
-  ) -> Result<(Rc<PackageNv>, NodeId), NpmResolutionError> {
+  ) -> Result<(Rc<PackageNv>, NodeId, MatchesSystem), NpmResolutionError> {
     let info = self.version_resolver.resolve_best_package_version_info(
       version_req,
       package_info,
@@ -924,6 +970,17 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .or_default()
         .iter(),
     )?;
+    let matches_system = self.resolve_child_matches_system(
+      parent_matches_system,
+      is_optional_dep,
+      |system_info| {
+        if info.matches_system(system_info) {
+          MatchesSystem::Required
+        } else {
+          MatchesSystem::Optional
+        }
+      },
+    );
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
         name: package_info.name.to_string(),
@@ -934,11 +991,15 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let (_, node_id) = self.graph.get_or_create_for_id(&resolved_id);
     let pkg_nv = resolved_id.nv;
 
-    let has_deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
-      !deps.is_empty()
+    let has_deps = if let Some(value) = self.version_info_cache.get(&pkg_nv) {
+      !value.deps.is_empty()
     } else {
-      let deps = self.dep_entry_cache.store(pkg_nv.clone(), info)?;
-      !deps.is_empty()
+      let value = self.version_info_cache.store(
+        pkg_nv.clone(),
+        info,
+        self.preload_ctx.as_ref().map(|p| p.system_info()),
+      )?;
+      !value.deps.is_empty()
     };
 
     if !has_deps {
@@ -960,25 +1021,19 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     if let Some(preload_ctx) = &mut self.preload_ctx {
       preload_ctx.handle_package(&pkg_nv, &info);
-      match entry_kind {
-        NpmDependencyEntryKind::OptionalDep => {
-          preload_ctx.mark_optional_dep(&pkg_nv)
-        }
-        NpmDependencyEntryKind::Dep
-        | NpmDependencyEntryKind::Peer
-        | NpmDependencyEntryKind::OptionalPeer => {
-          preload_ctx.mark_required_dep(&pkg_nv);
-        }
+      match matches_system {
+        MatchesSystem::Required => preload_ctx.mark_required_dep(&pkg_nv),
+        MatchesSystem::Optional => preload_ctx.mark_optional_dep(&pkg_nv),
       }
     }
 
-    Ok((pkg_nv, node_id))
+    Ok((pkg_nv, node_id, matches_system))
   }
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
     // go down through the dependencies by tree depth
     while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
-      let (parent_nv, child_deps) = {
+      let (parent_nv, version_info) = {
         let node_id = parent_path.node_id();
         if self.graph.nodes.get(&node_id).unwrap().no_peers {
           // We can skip as there's no reason to analyze this graph segment further.
@@ -992,7 +1047,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           .unwrap()
           .nv
           .clone();
-        let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
+        let deps = if let Some(deps) = self.version_info_cache.get(&pkg_nv) {
           deps.clone()
         } else {
           // the api is expected to have cached this at this point, so no
@@ -1001,7 +1056,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           let version_info = package_info
             .version_info(&pkg_nv)
             .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
-          self.dep_entry_cache.store(pkg_nv.clone(), &version_info)?
+          self.version_info_cache.store(
+            pkg_nv.clone(),
+            &version_info,
+            self.preload_ctx.as_ref().map(|c| c.system_info()),
+          )?
         };
 
         (pkg_nv, deps)
@@ -1011,18 +1070,19 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       let mut found_peer = false;
 
       let mut infos = futures::stream::FuturesOrdered::from_iter(
-        child_deps
+        version_info
+          .deps
           .iter()
           .map(|dep| self.api.package_info(&dep.name)),
       );
 
-      let mut child_deps_iter = child_deps.iter();
+      let mut child_deps_iter = version_info.deps.iter();
       while let Some(package_info) = infos.next().await {
         let package_info = package_info?;
         let dep = child_deps_iter.next().unwrap();
 
         match dep.kind {
-          NpmDependencyEntryKind::Dep | NpmDependencyEntryKind::OptionalDep => {
+          NpmDependencyEntryKind::Dep => {
             let parent_id = parent_path.node_id();
             let node = self.graph.nodes.get(&parent_id).unwrap();
             let child_id = match node.children.get(&dep.bare_specifier) {
@@ -1038,10 +1098,26 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                   .nv
                   .clone();
                 let maybe_ancestor = parent_path.find_ancestor(&child_nv);
+                let child_matches_system = self.resolve_child_matches_system(
+                  parent_path.matches_system,
+                  if dep.is_optional {
+                    IsOptionalDep::True
+                  } else {
+                    IsOptionalDep::False
+                  },
+                  |_| {
+                    self
+                      .version_info_cache
+                      .get(&child_nv)
+                      .unwrap()
+                      .matches_system
+                  },
+                );
                 let child_path = parent_path.with_id(
                   child_id,
                   dep.bare_specifier.clone(),
                   child_nv,
+                  child_matches_system,
                 );
                 if let Some(ancestor) = maybe_ancestor {
                   // when the nv appears as an ancestor, use that node
@@ -1108,6 +1184,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                         peer_parent,
                         &optional_peer.specifier,
                         new_id,
+                        if dep.is_optional {
+                          IsOptionalDep::True
+                        } else {
+                          IsOptionalDep::False
+                        },
+                        PeerMatchesSystem::Current(parent_path.matches_system),
                       );
                     }
                   }
@@ -1164,7 +1246,18 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       if let Some((peer_parent, peer_dep_id)) = maybe_peer_dep {
         // this will always have an ancestor because we're not at the root
-        self.set_new_peer_dep(&path, peer_parent, specifier, peer_dep_id);
+        self.set_new_peer_dep(
+          &path,
+          peer_parent,
+          specifier,
+          peer_dep_id,
+          if peer_dep.is_optional {
+            IsOptionalDep::True
+          } else {
+            IsOptionalDep::False
+          },
+          PeerMatchesSystem::Parent(ancestor_path.matches_system),
+        );
         return Ok(Some(peer_dep_id));
       }
     }
@@ -1183,7 +1276,18 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           )?;
           if let Some((parent, peer_dep_id)) = maybe_peer_dep {
             // this will always have an ancestor because we're not at the root
-            self.set_new_peer_dep(&path, parent, specifier, peer_dep_id);
+            self.set_new_peer_dep(
+              &path,
+              parent,
+              specifier,
+              peer_dep_id,
+              if peer_dep.is_optional {
+                IsOptionalDep::True
+              } else {
+                IsOptionalDep::False
+              },
+              PeerMatchesSystem::Parent(ancestor_path.matches_system),
+            );
             return Ok(Some(peer_dep_id));
           }
         }
@@ -1195,7 +1299,20 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
           )? {
             let peer_parent = GraphPathNodeOrRoot::Root(root_pkg_nv.clone());
-            self.set_new_peer_dep(&path, peer_parent, specifier, child_id);
+            self.set_new_peer_dep(
+              &path,
+              peer_parent,
+              specifier,
+              child_id,
+              if peer_dep.is_optional {
+                IsOptionalDep::True
+              } else {
+                IsOptionalDep::False
+              },
+              // ok, because the root will be required, so continue using
+              // what the path is currently using
+              PeerMatchesSystem::Current(ancestor_path.matches_system),
+            );
             return Ok(Some(child_id));
           }
         }
@@ -1205,19 +1322,34 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // We didn't find anything by searching the ancestor siblings, so we need
     // to resolve based on the package info
     if !peer_dep.kind.is_optional() {
-      let parent_id = ancestor_path.node_id();
-      let (_, node_id) = self.resolve_node_from_info(
+      let (_, node_id, peer_matches_system) = self.resolve_node_from_info(
         &peer_dep.name,
         peer_dep
           .peer_dep_version_req
           .as_ref()
           .unwrap_or(&peer_dep.version_req),
-        peer_dep.kind,
+        if peer_dep.is_optional {
+          IsOptionalDep::True
+        } else {
+          IsOptionalDep::False
+        },
         peer_package_info,
-        Some(parent_id),
+        ancestor_path.matches_system,
+        Some(ancestor_path.node_id()),
       )?;
       let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
-      self.set_new_peer_dep(&[ancestor_path], peer_parent, specifier, node_id);
+      self.set_new_peer_dep(
+        &[ancestor_path],
+        peer_parent,
+        specifier,
+        node_id,
+        if peer_dep.is_optional {
+          IsOptionalDep::True
+        } else {
+          IsOptionalDep::False
+        },
+        PeerMatchesSystem::Current(peer_matches_system),
+      );
       Ok(Some(node_id))
     } else {
       Ok(None)
@@ -1363,6 +1495,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     peer_dep_parent: GraphPathNodeOrRoot,
     peer_dep_specifier: &str,
     peer_dep_id: NodeId,
+    peer_dep_is_optional: IsOptionalDep,
+    peer_matches_system: PeerMatchesSystem,
   ) {
     debug_assert!(!path.is_empty());
     let peer_dep_nv = self
@@ -1372,6 +1506,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .unwrap()
       .nv
       .clone();
+    let peer_matches_system = match peer_matches_system {
+      PeerMatchesSystem::Parent(parent_matches_system) => self
+        .resolve_child_matches_system(
+          parent_matches_system,
+          peer_dep_is_optional,
+          |_| {
+            self
+              .version_info_cache
+              .get(&peer_dep_nv)
+              .unwrap()
+              .matches_system
+          },
+        ),
+      PeerMatchesSystem::Current(matches_system) => matches_system,
+    };
 
     let peer_dep = ResolvedIdPeerDep::ParentReference {
       parent: peer_dep_parent,
@@ -1400,6 +1549,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       peer_dep_id,
       peer_dep_specifier.to_string(),
       peer_dep_nv,
+      peer_matches_system,
     );
     if let Some(ancestor_node) = maybe_circular_ancestor {
       // it's circular, so link this in step with the ancestor node
@@ -1421,6 +1571,24 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .as_serialized(),
       &self.graph.get_npm_pkg_id(peer_dep_id).as_serialized(),
     );
+  }
+
+  fn resolve_child_matches_system(
+    &self,
+    parent_matches_system: MatchesSystem,
+    is_optional_dep: IsOptionalDep,
+    dep_matches_system: impl FnOnce(&NpmSystemInfo) -> MatchesSystem,
+  ) -> MatchesSystem {
+    let Some(preload_ctx) = self.preload_ctx.as_ref() else {
+      return MatchesSystem::Required;
+    };
+    match parent_matches_system {
+      MatchesSystem::Required => match is_optional_dep {
+        IsOptionalDep::True => dep_matches_system(preload_ctx.system_info()),
+        IsOptionalDep::False => MatchesSystem::Required,
+      },
+      MatchesSystem::Optional => MatchesSystem::Optional,
+    }
   }
 
   fn add_linked_circular_descendant(
