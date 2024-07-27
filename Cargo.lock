@@ -56,7 +56,7 @@ dependencies = [
 [[package]]
 name = "deno_lockfile"
 version = "0.20.0"
-source = "git+https://github.com/zebreus/deno_lockfile.git?branch=work-on-lockfile#63f00cf442c144224eb959ebf511cefb1d1cf9bd"
+source = "git+https://github.com/zebreus/deno_lockfile.git?branch=work-on-lockfile#f600451652cac073caaf3e9f9526f7ff6fe96c91"
 dependencies = [
  "serde",
  "serde_json",
