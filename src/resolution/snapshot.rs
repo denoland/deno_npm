@@ -812,10 +812,10 @@ pub fn incomplete_snapshot_from_lockfile(
   lockfile: &Lockfile,
 ) -> Result<IncompleteSnapshot, IncompleteSnapshotFromLockfileError> {
   let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
-    lockfile.content.packages.specifiers.len(),
+    lockfile.content().specifiers.len(),
   );
   // collect the specifiers to version mappings
-  for (key, value) in &lockfile.content.packages.specifiers {
+  for (key, value) in &lockfile.content().specifiers {
     if let Some(key) = key.strip_prefix("npm:") {
       if let Some(value) = value.strip_prefix("npm:") {
         let package_req = PackageReq::from_str(key).map_err(|e| {
@@ -831,8 +831,8 @@ pub fn incomplete_snapshot_from_lockfile(
   }
 
   // now fill the packages except for the dist information
-  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
-  for (key, package) in &lockfile.content.packages.npm {
+  let mut packages = Vec::with_capacity(lockfile.content().npm.len());
+  for (key, package) in &lockfile.content().npm {
     let id = NpmPackageId::from_serialized(key)?;
 
     // collect the dependencies
@@ -850,7 +850,7 @@ pub fn incomplete_snapshot_from_lockfile(
   }
 
   Ok(IncompleteSnapshot {
-    lockfile_file_name: lockfile.filename.clone(),
+    lockfile_file_name: lockfile.filename().clone(),
     root_packages,
     packages,
   })
