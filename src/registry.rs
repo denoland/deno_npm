@@ -171,6 +171,7 @@ pub struct NpmPackageVersionInfo {
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<String, String>,
+  pub deprecated: Option<String>,
 }
 
 impl NpmPackageVersionInfo {

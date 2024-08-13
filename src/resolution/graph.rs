@@ -662,6 +662,7 @@ impl Graph {
             .collect(),
           bin: version_info.bin.clone(),
           scripts: version_info.scripts.clone(),
+          deprecated: version_info.deprecated.clone(),
         },
       );
     }
