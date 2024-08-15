@@ -171,6 +171,8 @@ pub struct NpmPackageVersionInfo {
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<String, String>,
+  #[serde(default)]
+  #[serde(deserialize_with = "deserializers::option")]
   pub deprecated: Option<String>,
 }
 
@@ -562,6 +564,16 @@ mod deserializers {
     })
   }
 
+  pub fn option<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+  where
+    T: DeserializeOwned,
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_option(OptionVisitor::<T> {
+      marker: std::marker::PhantomData,
+    })
+  }
+
   pub fn vector<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
   where
     T: DeserializeOwned,
@@ -666,6 +678,102 @@ mod deserializers {
       E: de::Error,
     {
       Ok(HashMap::new())
+    }
+  }
+
+  struct OptionVisitor<T> {
+    marker: std::marker::PhantomData<fn() -> Option<T>>,
+  }
+
+  impl<'de, T> Visitor<'de> for OptionVisitor<T>
+  where
+    T: DeserializeOwned,
+  {
+    type Value = Option<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("Option wrapping string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+      M: MapAccess<'de>,
+    {
+      while map
+        .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+        .is_some()
+      {}
+      Ok(None)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+      Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+      D: Deserializer<'de>,
+    {
+      let value = T::deserialize(deserializer);
+      match value {
+        Ok(string_value) => Ok(Some(string_value)),
+        Err(_) => {
+          Ok(None)
+        }
+      }
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_string<E>(self, _v: String) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
     }
   }
 
@@ -789,6 +897,26 @@ mod test {
           shasum: "test".to_string(),
           integrity: None,
         },
+        ..Default::default()
+      }
+    );
+  }
+
+  #[test]
+  fn deserializes_pkg_info_with_deprecated_as_array() {
+    let text = r#"{ "version": "1.0.0", "dist": { "tarball": "value", "shasum": "test" }, "dependencies": ["key","value"], "deprecated": ["aa"] }"#;
+    let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info,
+      NpmPackageVersionInfo {
+        version: Version::parse_from_npm("1.0.0").unwrap(),
+        dist: NpmPackageVersionDistInfo {
+          tarball: "value".to_string(),
+          shasum: "test".to_string(),
+          integrity: None,
+        },
+        dependencies: HashMap::new(),
+        deprecated: Some("aa".to_string()),
         ..Default::default()
       }
     );

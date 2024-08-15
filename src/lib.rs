@@ -270,7 +270,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
         let mut deps = self.optional_dependencies.iter().collect::<Vec<_>>();
         deps.sort();
         deps
-      })
+      }).field("deprecated", &self.deprecated)
       .finish()
   }
 }
