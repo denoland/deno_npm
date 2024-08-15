@@ -728,9 +728,7 @@ mod deserializers {
       let value = T::deserialize(deserializer);
       match value {
         Ok(string_value) => Ok(Some(string_value)),
-        Err(_) => {
-          Ok(None)
-        }
+        Err(_) => Ok(None),
       }
     }
 
