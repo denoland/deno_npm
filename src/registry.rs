@@ -172,7 +172,7 @@ pub struct NpmPackageVersionInfo {
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<String, String>,
   #[serde(default)]
-  #[serde(deserialize_with = "deserializers::option")]
+  #[serde(deserialize_with = "deserializers::string")]
   pub deprecated: Option<String>,
 }
 
@@ -564,14 +564,11 @@ mod deserializers {
     })
   }
 
-  pub fn option<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+  pub fn string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
   where
-    T: DeserializeOwned,
     D: Deserializer<'de>,
   {
-    deserializer.deserialize_option(OptionVisitor::<T> {
-      marker: std::marker::PhantomData,
-    })
+    deserializer.deserialize_any(OptionalStringVisitor)
   }
 
   pub fn vector<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -681,15 +678,10 @@ mod deserializers {
     }
   }
 
-  struct OptionVisitor<T> {
-    marker: std::marker::PhantomData<fn() -> Option<T>>,
-  }
+  struct OptionalStringVisitor;
 
-  impl<'de, T> Visitor<'de> for OptionVisitor<T>
-  where
-    T: DeserializeOwned,
-  {
-    type Value = Option<T>;
+  impl<'de> Visitor<'de> for OptionalStringVisitor {
+    type Value = Option<String>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
       formatter.write_str("Option wrapping string")
@@ -725,7 +717,7 @@ mod deserializers {
     where
       D: Deserializer<'de>,
     {
-      let value = T::deserialize(deserializer);
+      let value = String::deserialize(deserializer);
       match value {
         Ok(string_value) => Ok(Some(string_value)),
         Err(_) => Ok(None),
@@ -760,18 +752,18 @@ mod deserializers {
       Ok(None)
     }
 
-    fn visit_string<E>(self, _v: String) -> Result<Self::Value, E>
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
     where
       E: de::Error,
     {
-      Ok(None)
+      Ok(Some(v))
     }
 
-    fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
       E: de::Error,
     {
-      Ok(None)
+      Ok(Some(v.to_string()))
     }
   }
 
@@ -901,8 +893,13 @@ mod test {
   }
 
   #[test]
-  fn deserializes_pkg_info_with_deprecated_as_array() {
-    let text = r#"{ "version": "1.0.0", "dist": { "tarball": "value", "shasum": "test" }, "dependencies": ["key","value"], "deprecated": ["aa"] }"#;
+  fn deserializes_pkg_info_with_deprecated() {
+    let text = r#"{
+      "version": "1.0.0",
+      "dist": { "tarball": "value", "shasum": "test" },
+      "dependencies": ["key","value"],
+      "deprecated": "aa"
+    }"#;
     let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
     assert_eq!(
       info,
@@ -918,6 +915,43 @@ mod test {
         ..Default::default()
       }
     );
+  }
+
+  #[test]
+  fn deserializes_pkg_info_with_deprecated_invalid() {
+    let values = [
+      r#"["aa"]"#,
+      r#"{ "prop": "aa" }"#,
+      r#"1"#,
+      r#"1.0"#,
+      r#"true"#,
+    ];
+    for value in values {
+      let text = format!(
+        r#"{{
+          "version": "1.0.0",
+          "dist": {{ "tarball": "value", "shasum": "test" }},
+          "dependencies": ["key","value"],
+          "deprecated": {}
+        }}"#,
+        value
+      );
+      let info: NpmPackageVersionInfo = serde_json::from_str(&text).unwrap();
+      assert_eq!(
+        info,
+        NpmPackageVersionInfo {
+          version: Version::parse_from_npm("1.0.0").unwrap(),
+          dist: NpmPackageVersionDistInfo {
+            tarball: "value".to_string(),
+            shasum: "test".to_string(),
+            integrity: None,
+          },
+          dependencies: HashMap::new(),
+          deprecated: None,
+          ..Default::default()
+        }
+      );
+    }
   }
 
   #[test]
