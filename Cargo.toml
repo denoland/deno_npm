@@ -1,6 +1,6 @@
 [package]
 name = "deno_npm"
-version = "0.21.4"
+version = "0.22.0"
 edition = "2021"
 description = "npm registry client and dependency resolver used in the Deno CLI"
 homepage = "https://deno.land/"
@@ -13,7 +13,7 @@ license = "MIT"
 anyhow = "1.0.70"
 async-trait = "0.1.68"
 deno_semver = "0.5.4"
-deno_lockfile = "0.20.0"
+deno_lockfile = "0.21.1"
 monch = "0.5.0"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }

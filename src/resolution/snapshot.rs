@@ -159,7 +159,7 @@ impl SerializedNpmResolutionSnapshot {
   ///
   /// Note: It will still do the verification in debug.
   pub fn into_valid_unsafe(self) -> ValidSerializedNpmResolutionSnapshot {
-    if cfg!(debug) {
+    if cfg!(debug_assertions) {
       self.into_valid().unwrap()
     } else {
       ValidSerializedNpmResolutionSnapshot(self)
@@ -1001,6 +1001,7 @@ pub async fn snapshot_from_lockfile<'a>(
 mod tests {
   use std::path::PathBuf;
 
+  use deno_lockfile::NewLockfileOptions;
   use deno_semver::Version;
   use pretty_assertions::assert_eq;
 
@@ -1261,9 +1262,9 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::with_lockfile_content(
-      PathBuf::from("/deno.lock"),
-      r#"{
+    let lockfile = Lockfile::new(NewLockfileOptions {
+      file_path: PathBuf::from("/deno.lock"),
+      content: r#"{
         "version": "2",
         "remote": {},
         "npm": {
@@ -1283,8 +1284,9 @@ mod tests {
           }
         }
       }"#,
-      false,
-    )
+      overwrite: false,
+      is_deno_future: false,
+    })
     .unwrap();
 
     let incomplete_snapshot =
@@ -1312,9 +1314,9 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::with_lockfile_content(
-      PathBuf::from("/deno.lock"),
-      r#"{
+    let lockfile = Lockfile::new(NewLockfileOptions {
+      file_path: PathBuf::from("/deno.lock"),
+      content: r#"{
         "version": "2",
         "remote": {},
         "npm": {
@@ -1334,8 +1336,9 @@ mod tests {
           }
         }
       }"#,
-      false,
-    )
+      overwrite: false,
+      is_deno_future: false,
+    })
     .unwrap();
 
     let incomplete_snapshot =
@@ -1383,9 +1386,9 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::with_lockfile_content(
-      PathBuf::from("/deno.lock"),
-      r#"{
+    let lockfile = Lockfile::new(NewLockfileOptions {
+      file_path: PathBuf::from("/deno.lock"),
+      content: r#"{
         "version": "3",
         "remote": {},
         "packages": {
@@ -1406,8 +1409,9 @@ mod tests {
           }
         }
       }"#,
-      false,
-    )
+      overwrite: false,
+      is_deno_future: false,
+    })
     .unwrap();
 
     let incomplete_snapshot =
