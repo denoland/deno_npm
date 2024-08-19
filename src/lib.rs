@@ -251,6 +251,7 @@ pub struct NpmResolutionPackage {
   pub optional_dependencies: HashSet<String>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<String, String>,
+  pub deprecated: Option<String>,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -270,6 +271,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
         deps.sort();
         deps
       })
+      .field("deprecated", &self.deprecated)
       .finish()
   }
 }
@@ -284,6 +286,7 @@ impl NpmResolutionPackage {
       optional_dependencies: self.optional_dependencies.clone(),
       bin: self.bin.clone(),
       scripts: self.scripts.clone(),
+      deprecated: self.deprecated.clone(),
     }
   }
 

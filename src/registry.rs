@@ -171,6 +171,9 @@ pub struct NpmPackageVersionInfo {
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<String, String>,
+  #[serde(default)]
+  #[serde(deserialize_with = "deserializers::string")]
+  pub deprecated: Option<String>,
 }
 
 impl NpmPackageVersionInfo {
@@ -561,6 +564,13 @@ mod deserializers {
     })
   }
 
+  pub fn string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    deserializer.deserialize_option(OptionalStringVisitor)
+  }
+
   pub fn vector<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
   where
     T: DeserializeOwned,
@@ -665,6 +675,91 @@ mod deserializers {
       E: de::Error,
     {
       Ok(HashMap::new())
+    }
+  }
+
+  struct OptionalStringVisitor;
+
+  impl<'de> Visitor<'de> for OptionalStringVisitor {
+    type Value = Option<String>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("string or null")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+      M: MapAccess<'de>,
+    {
+      while map
+        .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+        .is_some()
+      {}
+      Ok(None)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+      Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+      D: Deserializer<'de>,
+    {
+      deserializer.deserialize_any(self)
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_u64<E>(self, _v: u64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Some(v))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Some(v.to_string()))
     }
   }
 
@@ -791,6 +886,69 @@ mod test {
         ..Default::default()
       }
     );
+  }
+
+  #[test]
+  fn deserializes_pkg_info_with_deprecated() {
+    let text = r#"{
+      "version": "1.0.0",
+      "dist": { "tarball": "value", "shasum": "test" },
+      "dependencies": ["key","value"],
+      "deprecated": "aa"
+    }"#;
+    let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info,
+      NpmPackageVersionInfo {
+        version: Version::parse_from_npm("1.0.0").unwrap(),
+        dist: NpmPackageVersionDistInfo {
+          tarball: "value".to_string(),
+          shasum: "test".to_string(),
+          integrity: None,
+        },
+        dependencies: HashMap::new(),
+        deprecated: Some("aa".to_string()),
+        ..Default::default()
+      }
+    );
+  }
+
+  #[test]
+  fn deserializes_pkg_info_with_deprecated_invalid() {
+    let values = [
+      r#"["aa"]"#,
+      r#"{ "prop": "aa" }"#,
+      "1",
+      "1.0",
+      "true",
+      "null",
+    ];
+    for value in values {
+      let text = format!(
+        r#"{{
+          "version": "1.0.0",
+          "dist": {{ "tarball": "value", "shasum": "test" }},
+          "dependencies": ["key","value"],
+          "deprecated": {}
+        }}"#,
+        value
+      );
+      let info: NpmPackageVersionInfo = serde_json::from_str(&text).unwrap();
+      assert_eq!(
+        info,
+        NpmPackageVersionInfo {
+          version: Version::parse_from_npm("1.0.0").unwrap(),
+          dist: NpmPackageVersionDistInfo {
+            tarball: "value".to_string(),
+            shasum: "test".to_string(),
+            integrity: None,
+          },
+          dependencies: HashMap::new(),
+          deprecated: None,
+          ..Default::default()
+        }
+      );
+    }
   }
 
   #[test]
