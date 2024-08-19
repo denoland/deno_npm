@@ -568,7 +568,7 @@ mod deserializers {
   where
     D: Deserializer<'de>,
   {
-    deserializer.deserialize_any(OptionalStringVisitor)
+    deserializer.deserialize_option(OptionalStringVisitor)
   }
 
   pub fn vector<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -684,7 +684,7 @@ mod deserializers {
     type Value = Option<String>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-      formatter.write_str("Option wrapping string")
+      formatter.write_str("string or null")
     }
 
     fn visit_none<E>(self) -> Result<Self::Value, E>
@@ -717,11 +717,7 @@ mod deserializers {
     where
       D: Deserializer<'de>,
     {
-      let value = String::deserialize(deserializer);
-      match value {
-        Ok(string_value) => Ok(Some(string_value)),
-        Err(_) => Ok(None),
-      }
+      deserializer.deserialize_any(self)
     }
 
     fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
@@ -922,9 +918,10 @@ mod test {
     let values = [
       r#"["aa"]"#,
       r#"{ "prop": "aa" }"#,
-      r#"1"#,
-      r#"1.0"#,
-      r#"true"#,
+      "1",
+      "1.0",
+      "true",
+      "null",
     ];
     for value in values {
       let text = format!(
