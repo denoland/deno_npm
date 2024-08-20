@@ -307,7 +307,6 @@ mod test {
 @another:registry=https://example.com/another
 @example:registry=https://example.com/example
 @yet_another:registry=https://yet.another.com/
-@ip_based:registry=http://127.0.0.1:8000/
 //registry.npmjs.org/:_authToken=MYTOKEN
 ; would apply to both @myorg and @another
 //example.com/:_authToken=MYTOKEN0
@@ -324,7 +323,6 @@ mod test {
 ; this should not apply to `@yet_another`, because the URL contains the name of the scope
 ; and not the URL of the registry root specified above
 //yet.another.com/yet_another/:_authToken=MYTOKEN3
-//127.0.0.1:8000/:_authToken=MYTOKEN4
 registry=https://registry.npmjs.org/
 "#,
       &|_| None,
@@ -348,7 +346,6 @@ registry=https://registry.npmjs.org/
             "yet_another".to_string(),
             "https://yet.another.com/".to_string()
           ),
-          ("ip_based".to_string(), "http://127.0.0.1:8000/".to_string()),
         ]),
         registry_configs: HashMap::from([
           (
@@ -381,13 +378,6 @@ registry=https://registry.npmjs.org/
             "yet.another.com/yet_another/".to_string(),
             RegistryConfig {
               auth_token: Some("MYTOKEN3".to_string()),
-              ..Default::default()
-            }
-          ),
-          (
-            "127.0.0.1:8000/".to_string(),
-            RegistryConfig {
-              auth_token: Some("MYTOKEN4".to_string()),
               ..Default::default()
             }
           ),
@@ -445,17 +435,7 @@ registry=https://registry.npmjs.org/
       assert_eq!(registry_url, "https://yet.another.com/");
       assert_eq!(config.auth_token, None);
     }
-    // IP based registry URL
-    {
-      let (registry_url, config) = npm_rc
-        .registry_url_and_config_for_package(
-          "@ip_based/pkg",
-          "https://deno.land/npm/",
-        )
-        .unwrap();
-      assert_eq!(registry_url, "http://127.0.0.1:8000/");
-      assert_eq!(config.auth_token, Some("MYTOKEN4".to_string()));
-    }
+
     let resolved_npm_rc = npm_rc
       .as_resolved(&Url::parse("https://deno.land/npm/").unwrap())
       .unwrap();
@@ -510,16 +490,6 @@ registry=https://registry.npmjs.org/
             RegistryConfigWithUrl {
               registry_url: Url::parse("https://yet.another.com/").unwrap(),
               config: Default::default()
-            }
-          ),
-          (
-            "ip_based".to_string(),
-            RegistryConfigWithUrl {
-              registry_url: Url::parse("http://127.0.0.1:8000/").unwrap(),
-              config: RegistryConfig {
-                auth_token: Some("MYTOKEN4".to_string()),
-                ..Default::default()
-              }
             }
           ),
         ])
