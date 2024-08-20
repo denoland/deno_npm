@@ -901,7 +901,7 @@ This could be caused by:
   * the lock file may be corrupt
   * the source itself may be corrupt
 
-Use the --lock-write flag to regenerate the lockfile at \"{filename}\".",
+Investigate the lockfile; delete it to regenerate the lockfile at \"{filename}\".",
 )]
 pub struct IntegrityCheckFailedError {
   pub package_display_id: String,
@@ -919,7 +919,7 @@ pub enum SnapshotFromLockfileError {
     #[from]
     source: NpmPackageVersionNotFound,
   },
-  #[error("The lockfile is corrupt. You can recreate it with --lock-write")]
+  #[error("The lockfile is corrupt. Remove the lockfile to regenerate it.")]
   PackageIdNotFound(#[from] PackageIdNotFoundError),
   #[error(transparent)]
   IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
