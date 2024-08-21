@@ -166,7 +166,14 @@ fn strip_cow_str_suffix<'a>(
 fn trim_cow_str(cow: Cow<str>) -> Cow<str> {
   match cow {
     Cow::Borrowed(s) => Cow::Borrowed(s.trim()),
-    Cow::Owned(s) => Cow::Owned(s.trim().to_string()),
+    Cow::Owned(s) => Cow::Owned({
+      let trimmed = s.trim();
+      if trimmed.len() == s.len() {
+        s // don't allocate
+      } else {
+        trimmed.to_string()
+      }
+    }),
   }
 }
 
