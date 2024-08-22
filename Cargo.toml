@@ -12,8 +12,8 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.70"
 async-trait = "0.1.68"
-deno_semver = "0.5.4"
-deno_lockfile = "0.21.1"
+deno_semver = "0.5.10"
+deno_lockfile = "0.22.0"
 monch = "0.5.0"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
