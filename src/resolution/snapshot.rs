@@ -1285,7 +1285,6 @@ mod tests {
         }
       }"#,
       overwrite: false,
-      is_deno_future: false,
     })
     .unwrap();
 
@@ -1337,7 +1336,6 @@ mod tests {
         }
       }"#,
       overwrite: false,
-      is_deno_future: false,
     })
     .unwrap();
 
@@ -1389,28 +1387,24 @@ mod tests {
     let lockfile = Lockfile::new(NewLockfileOptions {
       file_path: PathBuf::from("/deno.lock"),
       content: r#"{
-        "version": "3",
-        "remote": {},
-        "packages": {
-          "specifiers": {
-            "npm:chalk@5": "npm:chalk@5.3.0",
-            "npm:emoji-regex": "npm:emoji-regex@10.2.1",
-            "deno:path": "deno:@std/path@1.0.0"
+        "version": "4",
+        "specifiers": {
+          "npm:chalk@5": "npm:chalk@5.3.0",
+          "npm:emoji-regex": "npm:emoji-regex@10.2.1",
+          "deno:path": "deno:@std/path@1.0.0"
+        },
+        "npm": {
+          "chalk@5.3.0": {
+            "integrity": "sha512-integrity1",
+            "dependencies": []
           },
-          "npm": {
-            "chalk@5.3.0": {
-              "integrity": "sha512-integrity1",
-              "dependencies": {}
-            },
-            "emoji-regex@10.2.1": {
-              "integrity": "sha512-integrity2",
-              "dependencies": {}
-            }
+          "emoji-regex@10.2.1": {
+            "integrity": "sha512-integrity2",
+            "dependencies": []
           }
         }
       }"#,
       overwrite: false,
-      is_deno_future: false,
     })
     .unwrap();
 
