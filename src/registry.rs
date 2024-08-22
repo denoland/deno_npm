@@ -81,7 +81,7 @@ pub struct NpmDependencyEntryError {
 pub enum NpmDependencyEntryErrorSource {
   #[error(transparent)]
   NpmVersionReqParseError(#[from] NpmVersionReqParseError),
-  #[error("Package specified a dependency outside of npm ({}). Deno does not install these for security reasons. The npm package should be improved to keep all its data centralized on npm.
+  #[error("Package specified a dependency outside of npm ({}). Deno does not install these for security reasons. The npm package should be improved to have all its dependencies on npm.
 
 To work around this, you can use a package.json and install the dependencies via `npm install`.", .specifier)]
   RemoteDependency { specifier: String },
