@@ -4,6 +4,7 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::unused_async)]
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -54,9 +55,9 @@ impl NpmPackageId {
     let mut result = format!(
       "{}@{}",
       if level == 0 {
-        self.nv.name.to_string()
+        Cow::Borrowed(&self.nv.name)
       } else {
-        self.nv.name.replace('/', "+")
+        Cow::Owned(self.nv.name.replace('/', "+"))
       },
       self.nv.version
     );
@@ -91,14 +92,14 @@ impl NpmPackageId {
       if_not_empty(substring(skip_while(|c| c != '_')))(input)
     }
 
-    fn parse_name_and_version(input: &str) -> ParseResult<(String, Version)> {
+    fn parse_name_and_version(input: &str) -> ParseResult<(&str, Version)> {
       let (input, name) = parse_name(input)?;
       let (input, _) = ch('@')(input)?;
       let at_version_input = input;
       let (input, version) = parse_version(input)?;
       // todo: improve monch to provide the error message without source
       match Version::parse_from_npm(version) {
-        Ok(version) => Ok((input, (name.to_string(), version))),
+        Ok(version) => Ok((input, (name, version))),
         Err(err) => ParseError::fail(
           at_version_input,
           format!("Invalid npm version. {}", err.message()),
@@ -147,7 +148,7 @@ impl NpmPackageId {
         let name = if level > 0 {
           name.replace('+', "/")
         } else {
-          name
+          name.to_string()
         };
         let (input, peer_dependencies) =
           parse_peers_at_level(level + 1)(input)?;
@@ -311,8 +312,8 @@ pub struct NpmSystemInfo {
 impl Default for NpmSystemInfo {
   fn default() -> Self {
     Self {
-      os: node_js_os(std::env::consts::OS),
-      cpu: node_js_cpu(std::env::consts::ARCH),
+      os: node_js_os(std::env::consts::OS).to_string(),
+      cpu: node_js_cpu(std::env::consts::ARCH).to_string(),
     }
   }
 }
@@ -320,8 +321,8 @@ impl Default for NpmSystemInfo {
 impl NpmSystemInfo {
   pub fn from_rust(os: &str, cpu: &str) -> Self {
     Self {
-      os: node_js_os(os),
-      cpu: node_js_cpu(cpu),
+      os: node_js_os(os).to_string(),
+      cpu: node_js_cpu(cpu).to_string(),
     }
   }
 }
@@ -344,7 +345,7 @@ fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
   had_negation
 }
 
-fn node_js_cpu(rust_arch: &str) -> String {
+fn node_js_cpu(rust_arch: &str) -> &str {
   // possible values: https://nodejs.org/api/process.html#processarch
   // 'arm', 'arm64', 'ia32', 'mips','mipsel', 'ppc', 'ppc64', 's390', 's390x', and 'x64'
   match rust_arch {
@@ -352,10 +353,9 @@ fn node_js_cpu(rust_arch: &str) -> String {
     "aarch64" => "arm64",
     value => value,
   }
-  .to_string()
 }
 
-fn node_js_os(rust_os: &str) -> String {
+fn node_js_os(rust_os: &str) -> &str {
   // possible values: https://nodejs.org/api/process.html#processplatform
   // 'aix', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', and 'win32'
   match rust_os {
@@ -363,7 +363,6 @@ fn node_js_os(rust_os: &str) -> String {
     "windows" => "win32",
     value => value,
   }
-  .to_string()
 }
 
 #[cfg(test)]
