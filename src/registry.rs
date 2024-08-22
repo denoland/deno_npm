@@ -81,6 +81,10 @@ pub struct NpmDependencyEntryError {
 pub enum NpmDependencyEntryErrorSource {
   #[error(transparent)]
   NpmVersionReqParseError(#[from] NpmVersionReqParseError),
+  #[error("Package specified a dependency outside of npm ({}). Deno does not install these for security reasons. The npm package should be improved to have all its dependencies on npm.
+
+To work around this, you can use a package.json and install the dependencies via `npm install`.", .specifier)]
+  RemoteDependency { specifier: String },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -204,6 +208,8 @@ impl NpmPackageVersionInfo {
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
+        let (_name, version_req) =
+          parse_dep_entry_name_and_raw_version(key_value.0, key_value.1);
         Box::new(NpmDependencyEntryError {
           parent_nv: PackageNv {
             name: nv.0.to_string(),
@@ -211,7 +217,17 @@ impl NpmPackageVersionInfo {
           },
           key: key_value.0.to_string(),
           version_req: key_value.1.to_string(),
-          source,
+          source: if version_req.starts_with("https://")
+            || version_req.starts_with("http://")
+            || version_req.starts_with("git:")
+            || version_req.starts_with("git+")
+          {
+            NpmDependencyEntryErrorSource::RemoteDependency {
+              specifier: version_req.to_string(),
+            }
+          } else {
+            source
+          },
         })
       })
     }
@@ -1153,6 +1169,27 @@ mod test {
     for (key, value, expected_result) in cases {
       let result = parse_dep_entry_name_and_raw_version(key, value);
       assert_eq!(result, expected_result);
+    }
+  }
+
+  #[test]
+  fn remote_deps_as_entries() {
+    for specifier in [
+      "https://example.com/something.tgz",
+      "git://github.com/example/example",
+      "git+ssh://github.com/example/example",
+    ] {
+      let deps = NpmPackageVersionInfo {
+        dependencies: HashMap::from([("a".to_string(), specifier.to_string())]),
+        ..Default::default()
+      };
+      let err = deps.dependencies_as_entries("pkg-name").unwrap_err();
+      match err.source {
+        NpmDependencyEntryErrorSource::RemoteDependency {
+          specifier: err_specifier,
+        } => assert_eq!(err_specifier, specifier),
+        _ => unreachable!(),
+      }
     }
   }
 }
