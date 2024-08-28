@@ -84,7 +84,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "deno_lockfile"
-version = "0.22.0"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb68a4a666c69eabd8fe505d6fdc4ed4a2d962fe1680dbfa8b0c8a2975d58ed0"
 dependencies = [
  "deno_semver",
  "serde",
@@ -113,9 +115,9 @@ dependencies = [
 
 [[package]]
 name = "deno_semver"
-version = "0.5.11"
+version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bbee630608a10a9da8802e5945eccfeb01e7b7676fe4dc4e37825b61dc234bc"
+checksum = "eef522937758930b9d6897631fa94bc69bcbbe78613c939ab2054ca96191afbd"
 dependencies = [
  "monch",
  "once_cell",

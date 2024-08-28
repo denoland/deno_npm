@@ -13,7 +13,7 @@ license = "MIT"
 anyhow = "1.0.70"
 async-trait = "0.1.68"
 deno_semver = "0.5.11"
-deno_lockfile = "0.22.0"
+deno_lockfile = "0.23.0"
 monch = "0.5.0"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
@@ -25,6 +25,3 @@ url = "2"
 [dev-dependencies]
 pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
-
-[patch.crates-io]
-deno_lockfile = { path = "../deno_lockfile" }
