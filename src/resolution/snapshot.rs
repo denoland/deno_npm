@@ -11,7 +11,6 @@ use std::sync::Arc;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
-use deno_semver::package::PackageReqParseError;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
@@ -781,12 +780,6 @@ fn name_without_path(name: &str) -> &str {
 
 #[derive(Debug, Error)]
 pub enum IncompleteSnapshotFromLockfileError {
-  #[error("Unable to parse npm specifier: {key}")]
-  ReqParse {
-    key: String,
-    #[source]
-    source: PackageReqParseError,
-  },
   #[error(transparent)]
   PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
@@ -819,17 +812,15 @@ pub fn incomplete_snapshot_from_lockfile(
   );
   // collect the specifiers to version mappings
   for (key, value) in &lockfile.content.packages.specifiers {
-    if let Some(key) = key.strip_prefix("npm:") {
-      if let Some(value) = value.strip_prefix("npm:") {
-        let package_req = PackageReq::from_str(key).map_err(|e| {
-          IncompleteSnapshotFromLockfileError::ReqParse {
-            key: key.to_string(),
-            source: e,
-          }
-        })?;
-        let package_id = NpmPackageId::from_serialized(value)?;
-        root_packages.insert(package_req, package_id.clone());
+    match key.kind {
+      deno_semver::package::PackageKind::Npm => {
+        let package_id = NpmPackageId::from_serialized(&format!(
+          "{}@{}",
+          key.req.name, value
+        ))?;
+        root_packages.insert(key.req.clone(), package_id);
       }
+      deno_semver::package::PackageKind::Jsr => {}
     }
   }
 
@@ -1371,7 +1362,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn test_snapshot_from_lockfile_v3() {
+  async fn test_snapshot_from_lockfile_v4() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version_with_integrity(
       "chalk",
@@ -1389,9 +1380,9 @@ mod tests {
       content: r#"{
         "version": "4",
         "specifiers": {
-          "npm:chalk@5": "npm:chalk@5.3.0",
-          "npm:emoji-regex": "npm:emoji-regex@10.2.1",
-          "deno:path": "deno:@std/path@1.0.0"
+          "npm:chalk@5": "5.3.0",
+          "npm:emoji-regex": "10.2.1",
+          "jsr:@std/path": "1.0.0"
         },
         "npm": {
           "chalk@5.3.0": {

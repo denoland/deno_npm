@@ -50,17 +50,26 @@ impl NpmPackageId {
     self.as_serialized_with_level(0)
   }
 
+  pub fn peer_deps_serialized(&self) -> String {
+    self.peer_serialized_with_level(0)
+  }
+
   fn as_serialized_with_level(&self, level: usize) -> String {
     // WARNING: This should not change because it's used in the lockfile
-    let mut result = format!(
-      "{}@{}",
+    format!(
+      "{}@{}{}",
       if level == 0 {
         Cow::Borrowed(&self.nv.name)
       } else {
         Cow::Owned(self.nv.name.replace('/', "+"))
       },
-      self.nv.version
-    );
+      self.nv.version,
+      self.peer_serialized_with_level(level)
+    )
+  }
+
+  fn peer_serialized_with_level(&self, level: usize) -> String {
+    let mut result = String::new();
     for peer in &self.peer_dependencies {
       // unfortunately we can't do something like `_3` when
       // this gets deep because npm package names can start

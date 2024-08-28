@@ -64,7 +64,7 @@ impl NpmPackageInfo {
 
 #[derive(Debug, Clone, Error)]
 #[error(
-  "Error in {parent_nv} parsing version requirement for dependency: {key}@{version_req}\n\n{source:#}"
+  "Error in {parent_nv} parsing version requirement for dependency: {key}@{version_req}"
 )]
 pub struct NpmDependencyEntryError {
   /// Name and version of the package that has this dependency.
