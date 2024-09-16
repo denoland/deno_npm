@@ -18,28 +18,6 @@ use thiserror::Error;
 
 use crate::resolution::NpmPackageVersionNotFound;
 
-/// Gets the name and raw version constraint for a registry info or
-/// package.json dependency entry taking into account npm package aliases.
-pub fn parse_dep_entry_name_and_raw_version<'a>(
-  key: &'a str,
-  value: &'a str,
-) -> (&'a str, &'a str) {
-  if let Some(package_and_version) = value.strip_prefix("npm:") {
-    if let Some((name, version)) = package_and_version.rsplit_once('@') {
-      // if empty, then the name was scoped and there's no version
-      if name.is_empty() {
-        (package_and_version, "*")
-      } else {
-        (name, version)
-      }
-    } else {
-      (package_and_version, "*")
-    }
-  } else {
-    (key, value)
-  }
-}
-
 // npm registry docs: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
@@ -64,15 +42,15 @@ impl NpmPackageInfo {
 
 #[derive(Debug, Clone, Error)]
 #[error(
-  "Error in {parent_nv} parsing version requirement for dependency: {key}@{version_req}"
+  "Error in {parent_nv} parsing version requirement for dependency \"{key}\": \"{value}\""
 )]
 pub struct NpmDependencyEntryError {
   /// Name and version of the package that has this dependency.
   pub parent_nv: PackageNv,
   /// Bare specifier.
   pub key: String,
-  /// Version requirement text.
-  pub version_req: String,
+  /// Value of the dependency.
+  pub value: String,
   #[source]
   pub source: NpmDependencyEntryErrorSource,
 }
@@ -191,7 +169,7 @@ impl NpmPackageVersionInfo {
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
-        parse_dep_entry_name_and_raw_version(key, value);
+        parse_dep_entry_name_and_raw_version(key, value)?;
       let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
@@ -208,26 +186,14 @@ impl NpmPackageVersionInfo {
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
-        let (_name, version_req) =
-          parse_dep_entry_name_and_raw_version(key_value.0, key_value.1);
         Box::new(NpmDependencyEntryError {
           parent_nv: PackageNv {
             name: nv.0.to_string(),
             version: nv.1.clone(),
           },
           key: key_value.0.to_string(),
-          version_req: key_value.1.to_string(),
-          source: if version_req.starts_with("https://")
-            || version_req.starts_with("http://")
-            || version_req.starts_with("git:")
-            || version_req.starts_with("git+")
-          {
-            NpmDependencyEntryErrorSource::RemoteDependency {
-              specifier: version_req.to_string(),
-            }
-          } else {
-            source
-          },
+          value: key_value.1.to_string(),
+          source,
         })
       })
     }
@@ -282,6 +248,40 @@ impl NpmPackageVersionInfo {
       }
     }
     Ok(result.into_values().collect())
+  }
+}
+
+/// Gets the name and raw version constraint for a registry info or
+/// package.json dependency entry taking into account npm package aliases.
+fn parse_dep_entry_name_and_raw_version<'a>(
+  key: &'a str,
+  value: &'a str,
+) -> Result<(&'a str, &'a str), NpmDependencyEntryErrorSource> {
+  let (name, version_req) =
+    if let Some(package_and_version) = value.strip_prefix("npm:") {
+      if let Some((name, version)) = package_and_version.rsplit_once('@') {
+        // if empty, then the name was scoped and there's no version
+        if name.is_empty() {
+          (package_and_version, "*")
+        } else {
+          (name, version)
+        }
+      } else {
+        (package_and_version, "*")
+      }
+    } else {
+      (key, value)
+    };
+  if version_req.starts_with("https://")
+    || version_req.starts_with("http://")
+    || version_req.starts_with("git:")
+    || version_req.starts_with("git+")
+  {
+    Err(NpmDependencyEntryErrorSource::RemoteDependency {
+      specifier: version_req.to_string(),
+    })
+  } else {
+    Ok((name, version_req))
   }
 }
 
@@ -1167,8 +1167,20 @@ mod test {
       ("test", "npm:@scope/package@1", ("@scope/package", "1")),
     ];
     for (key, value, expected_result) in cases {
-      let result = parse_dep_entry_name_and_raw_version(key, value);
+      let result = parse_dep_entry_name_and_raw_version(key, value).unwrap();
       assert_eq!(result, expected_result);
+    }
+  }
+
+  #[test]
+  fn test_parse_dep_entry_name_and_raw_version_error() {
+    let err =
+      parse_dep_entry_name_and_raw_version("test", "git:somerepo").unwrap_err();
+    match err {
+      NpmDependencyEntryErrorSource::RemoteDependency { specifier } => {
+        assert_eq!(specifier, "git:somerepo")
+      }
+      _ => unreachable!(),
     }
   }
 
