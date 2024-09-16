@@ -275,6 +275,7 @@ fn parse_dep_entry_name_and_raw_version<'a>(
   if version_req.starts_with("https://")
     || version_req.starts_with("http://")
     || version_req.starts_with("git:")
+    || version_req.starts_with("github:")
     || version_req.starts_with("git+")
   {
     Err(NpmDependencyEntryErrorSource::RemoteDependency {
