@@ -534,12 +534,11 @@ impl NpmRegistryApi for TestNpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
     let infos = self.package_infos.borrow();
-    Ok(Arc::new(
-      infos
-        .get(name)
-        .cloned()
-        .unwrap_or_else(|| panic!("Not found: {name}")),
-    ))
+    Ok(Arc::new(infos.get(name).cloned().ok_or_else(|| {
+      NpmRegistryPackageInfoLoadError::PackageNotExists {
+        package_name: name.into(),
+      }
+    })?))
   }
 }
 
