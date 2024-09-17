@@ -981,8 +981,17 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       let mut child_deps_iter = child_deps.iter();
       while let Some(package_info) = infos.next().await {
-        let package_info = package_info?;
         let dep = child_deps_iter.next().unwrap();
+        let package_info = match package_info {
+          Ok(info) => info,
+          // npm doesn't fail on non-existent optional peer dependencies
+          Err(NpmRegistryPackageInfoLoadError::PackageNotExists { .. })
+            if matches!(dep.kind, NpmDependencyEntryKind::OptionalPeer) =>
+          {
+            continue
+          }
+          Err(e) => return Err(e.into()),
+        };
 
         match dep.kind {
           NpmDependencyEntryKind::Dep => {
