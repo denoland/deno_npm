@@ -981,8 +981,17 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       let mut child_deps_iter = child_deps.iter();
       while let Some(package_info) = infos.next().await {
-        let package_info = package_info?;
         let dep = child_deps_iter.next().unwrap();
+        let package_info = match package_info {
+          Ok(info) => info,
+          // npm doesn't fail on non-existent optional peer dependencies
+          Err(NpmRegistryPackageInfoLoadError::PackageNotExists { .. })
+            if matches!(dep.kind, NpmDependencyEntryKind::OptionalPeer) =>
+          {
+            continue
+          }
+          Err(e) => return Err(e.into()),
+        };
 
         match dep.kind {
           NpmDependencyEntryKind::Dep => {
@@ -3893,6 +3902,31 @@ mod test {
       },
       _ => unreachable!(),
     }
+  }
+
+  #[tokio::test]
+  async fn non_existent_optional_peer_dep() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.add_optional_peer_dependency(
+      ("package-b", "1.0.0"),
+      ("package-non-existent", "*"),
+    );
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "*"));
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["package-a@1.0.0"]).await;
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86_64".to_string(),
+      },
+    );
+    assert_eq!(
+      packages,
+      vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string(),]
+    );
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
