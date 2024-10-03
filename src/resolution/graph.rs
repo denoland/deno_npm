@@ -1356,6 +1356,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     } else {
       (None, path)
     };
+
+    if path.is_empty() {
+      // the peer dep is the same as the parent, so we don't need to do anything
+      return;
+    }
+
     self.add_peer_deps_to_path(path, &[(&peer_dep, peer_dep_nv.clone())]);
 
     // now set the peer dependency
