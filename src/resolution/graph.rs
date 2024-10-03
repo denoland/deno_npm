@@ -1356,6 +1356,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     } else {
       (None, path)
     };
+
+    if path.is_empty() {
+      // the peer dep is the same as the parent, so we don't need to do anything
+      return;
+    }
+
     self.add_peer_deps_to_path(path, &[(&peer_dep, peer_dep_nv.clone())]);
 
     // now set the peer dependency
@@ -3902,6 +3908,24 @@ mod test {
       },
       _ => unreachable!(),
     }
+  }
+
+  #[tokio::test]
+  async fn peer_dep_on_self() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.add_peer_dependency(("package-a", "1.0.0"), ("package-a", "1"));
+
+    let snapshot =
+      run_resolver_and_get_snapshot(api, vec!["package-a@1.0.0"]).await;
+    let packages = package_names_with_info(
+      &snapshot,
+      &NpmSystemInfo {
+        os: "darwin".to_string(),
+        cpu: "x86_64".to_string(),
+      },
+    );
+    assert_eq!(packages, vec!["package-a@1.0.0".to_string()]);
   }
 
   #[tokio::test]
