@@ -405,7 +405,9 @@ impl Graph {
           created_package_ids,
           &ancestor_ids_with_current,
         );
-        graph.set_child_of_parent_node(node_id, name, child_node_id);
+        if node_id != child_node_id {
+          graph.set_child_of_parent_node(node_id, name, child_node_id);
+        }
       }
       node_id
     }
@@ -858,7 +860,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
-    if child_id != parent_id {
+    if child_nv != parent_path.nv {
       let maybe_ancestor = parent_path.find_ancestor(&child_nv);
       if let Some(ancestor) = &maybe_ancestor {
         child_id = ancestor.node_id();
@@ -3773,6 +3775,49 @@ mod test {
   }
 
   #[tokio::test]
+  async fn dep_depending_on_self_when_has_peer_deps() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "*"));
+    api.add_peer_dependency(("package-c", "1.0.0"), ("package-b", "*"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-c", "1.0.0"));
+    let (packages, package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-c".to_string(),
+            "package-c@1.0.0_package-b@1.0.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0_package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string())]
+    );
+  }
+
+  #[tokio::test]
   async fn resolve_optional_deps() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
@@ -3951,6 +3996,36 @@ mod test {
       packages,
       vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string(),]
     );
+  }
+
+  #[tokio::test]
+  async fn graph_from_snapshot_dep_on_self() {
+    // there are some lockfiles in the wild that when loading have a dependency
+    // on themselves and causes a panic, so ensure this doesn't panic
+    let snapshot = SerializedNpmResolutionSnapshot {
+      root_packages: HashMap::from([(
+        PackageReq::from_str("package-0").unwrap(),
+        NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
+      )]),
+      packages: Vec::from([
+        crate::resolution::SerializedNpmResolutionSnapshotPackage {
+          id: NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
+          system: Default::default(),
+          dist: Default::default(),
+          dependencies: HashMap::from([(
+            "package-a".to_string(),
+            NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
+          )]),
+          optional_dependencies: HashSet::new(),
+          bin: None,
+          scripts: HashMap::new(),
+          deprecated: None,
+        },
+      ]),
+    };
+    let snapshot = NpmResolutionSnapshot::new(snapshot.into_valid().unwrap());
+    // assert this doesn't panic
+    let _graph = Graph::from_snapshot(snapshot);
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
