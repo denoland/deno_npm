@@ -405,6 +405,9 @@ impl Graph {
           created_package_ids,
           &ancestor_ids_with_current,
         );
+        // this condition is only for past graphs that have been incorrectly created
+        // with a child that points to itself (see the graph_from_snapshot_dep_on_self
+        // test)
         if node_id != child_node_id {
           graph.set_child_of_parent_node(node_id, name, child_node_id);
         }
