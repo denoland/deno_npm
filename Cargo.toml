@@ -12,13 +12,13 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.70"
 async-trait = "0.1.68"
-deno_semver = "0.5.11"
-deno_lockfile = "0.23.0"
+deno_semver = "0.6.0"
+deno_lockfile = "0.23.2"
 monch = "0.5.0"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 serde_json = { version = "1.0.67", features = ["preserve_order"] }
-thiserror = "1.0.24"
+thiserror = "2.0.3"
 futures = "0.3.28"
 url = "2"
 
