@@ -1495,12 +1495,6 @@ mod tests {
       .collect()
   }
 
-  fn snapshot_from_serialized(
-    serialized: SerializedNpmResolutionSnapshot,
-  ) -> NpmResolutionSnapshot {
-    NpmResolutionSnapshot::new(serialized.into_valid().unwrap())
-  }
-
   #[track_caller]
   fn assert_snapshot_eq(
     a: &SerializedNpmResolutionSnapshot,
@@ -1524,13 +1518,14 @@ mod tests {
     let b = package("b@1.0.0", &[("d", "d@1.0.0")]);
     let c = package("c@1.0.0", &[("e", "e@1.0.0")]);
     let d = package("d@1.0.0", &[]);
-    let e = package("e@1.0.0", &[]);
+    let e = package("e@1.0.0", &[("f", "f@1.0.0")]);
     let f = package("f@1.0.0", &[("g", "g@1.0.0")]);
     let g = package("g@1.0.0", &[("e", "e@1.0.0")]);
-    let snapshot = snapshot_from_serialized(SerializedNpmResolutionSnapshot {
+    let serialized = SerializedNpmResolutionSnapshot {
       root_packages: root_pkgs(&[("a@1", "a@1.0.0"), ("f@1", "f@1.0.0")]),
       packages: vec![a, b, c, d, e.clone(), f.clone(), g.clone()],
-    });
+    };
+    let snapshot = NpmResolutionSnapshot::new(serialized.into_valid().unwrap());
     let subset = snapshot.subset(&reqs(["f@1"])).unwrap();
     assert_snapshot_eq(
       subset.as_valid_serialized().as_serialized(),
