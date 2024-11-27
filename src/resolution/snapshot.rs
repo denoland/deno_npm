@@ -295,7 +295,7 @@ impl NpmResolutionSnapshot {
     }
 
     while let Some(id) = stack.pop() {
-      let package = self.package_from_id(&id)?;
+      let package = self.package_from_id(id)?;
       packages_by_name
         .entry(package.id.nv.name.to_string())
         .or_default()
