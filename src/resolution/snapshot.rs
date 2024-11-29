@@ -268,14 +268,7 @@ impl NpmResolutionSnapshot {
     }
   }
 
-  pub fn subset(&self, package_reqs: &[PackageReq]) -> Option<Self> {
-    if !package_reqs
-      .iter()
-      .all(|req| self.package_reqs.contains_key(req))
-    {
-      return None;
-    }
-
+  pub fn subset(&self, package_reqs: &[PackageReq]) -> Self {
     let mut new_package_reqs = HashMap::with_capacity(package_reqs.len());
     let mut packages = HashMap::with_capacity(package_reqs.len() * 2);
     let mut packages_by_name: HashMap<String, Vec<NpmPackageId>> =
@@ -286,21 +279,29 @@ impl NpmResolutionSnapshot {
 
     let mut stack = Vec::new();
     for req in package_reqs {
-      let nv = self.package_reqs.get(req)?.clone();
-      let id = self.root_packages.get(&nv)?;
+      let Some(nv) = self.package_reqs.get(req) else {
+        continue;
+      };
+      let Some(id) = self.root_packages.get(nv) else {
+        continue;
+      };
       new_package_reqs.insert(req.clone(), nv.clone());
-      root_packages.insert(nv, id.clone());
+      root_packages.insert(nv.clone(), id.clone());
       visited.insert(id);
       stack.push(id);
     }
 
     while let Some(id) = stack.pop() {
-      let package = self.package_from_id(id)?;
+      let Some(package) = self.package_from_id(id) else {
+        continue;
+      };
       packages_by_name
         .entry(package.id.nv.name.to_string())
         .or_default()
         .push(package.id.clone());
-      let package = self.package_from_id(id)?;
+      let Some(package) = self.package_from_id(id) else {
+        continue;
+      };
       packages.insert(id.clone(), package.clone());
       for dep in package.dependencies.values() {
         if visited.insert(dep) {
@@ -309,12 +310,12 @@ impl NpmResolutionSnapshot {
       }
     }
 
-    Some(Self {
+    Self {
       package_reqs: new_package_reqs,
       packages,
       packages_by_name,
       root_packages,
-    })
+    }
   }
 
   /// Gets the snapshot as a valid serialized snapshot.
@@ -1526,7 +1527,7 @@ mod tests {
       packages: vec![a, b, c, d, e.clone(), f.clone(), g.clone()],
     };
     let snapshot = NpmResolutionSnapshot::new(serialized.into_valid().unwrap());
-    let subset = snapshot.subset(&reqs(["f@1"])).unwrap();
+    let subset = snapshot.subset(&reqs(["f@1", "z@1"]));
     assert_snapshot_eq(
       subset.as_valid_serialized().as_serialized(),
       &SerializedNpmResolutionSnapshot {
