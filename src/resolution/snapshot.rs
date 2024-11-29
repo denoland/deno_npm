@@ -1536,6 +1536,15 @@ mod tests {
         root_packages: root_pkgs(&[("f@1", "f@1.0.0")]),
         packages: vec![e, f, g],
       },
-    )
+    );
+
+    let empty_subset = snapshot.subset(&reqs(["z@1"]));
+    assert_snapshot_eq(
+      empty_subset.as_valid_serialized().as_serialized(),
+      &SerializedNpmResolutionSnapshot {
+        root_packages: Default::default(),
+        packages: Default::default(),
+      },
+    );
   }
 }
