@@ -268,6 +268,58 @@ impl NpmResolutionSnapshot {
     }
   }
 
+  /// Returns a new snapshot made from a subset of this snapshot's package reqs.
+  /// Requirements not present in this snapshot will be ignored.
+  pub fn subset(&self, package_reqs: &[PackageReq]) -> Self {
+    let mut new_package_reqs = HashMap::with_capacity(package_reqs.len());
+    let mut packages = HashMap::with_capacity(package_reqs.len() * 2);
+    let mut packages_by_name: HashMap<String, Vec<NpmPackageId>> =
+      HashMap::with_capacity(package_reqs.len());
+    let mut root_packages = HashMap::with_capacity(package_reqs.len());
+
+    let mut visited = HashSet::with_capacity(packages.len());
+
+    let mut stack = Vec::new();
+    for req in package_reqs {
+      let Some(nv) = self.package_reqs.get(req) else {
+        continue;
+      };
+      let Some(id) = self.root_packages.get(nv) else {
+        continue;
+      };
+      new_package_reqs.insert(req.clone(), nv.clone());
+      root_packages.insert(nv.clone(), id.clone());
+      visited.insert(id);
+      stack.push(id);
+    }
+
+    while let Some(id) = stack.pop() {
+      let Some(package) = self.package_from_id(id) else {
+        continue;
+      };
+      packages_by_name
+        .entry(package.id.nv.name.to_string())
+        .or_default()
+        .push(package.id.clone());
+      let Some(package) = self.package_from_id(id) else {
+        continue;
+      };
+      packages.insert(id.clone(), package.clone());
+      for dep in package.dependencies.values() {
+        if visited.insert(dep) {
+          stack.push(dep);
+        }
+      }
+    }
+
+    Self {
+      package_reqs: new_package_reqs,
+      packages,
+      packages_by_name,
+      root_packages,
+    }
+  }
+
   /// Gets the snapshot as a valid serialized snapshot.
   pub fn as_valid_serialized(&self) -> ValidSerializedNpmResolutionSnapshot {
     ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
@@ -1420,6 +1472,79 @@ mod tests {
           NpmPackageId::from_serialized("emoji-regex@10.2.1").unwrap()
         )
       ])
+    );
+  }
+
+  fn package(
+    id: &str,
+    dependencies: &[(&str, &str)],
+  ) -> SerializedNpmResolutionSnapshotPackage {
+    SerializedNpmResolutionSnapshotPackage {
+      id: NpmPackageId::from_serialized(id).unwrap(),
+      dependencies: deps(dependencies),
+      system: Default::default(),
+      dist: Default::default(),
+      optional_dependencies: Default::default(),
+      bin: None,
+      scripts: Default::default(),
+      deprecated: Default::default(),
+    }
+  }
+
+  fn reqs<'a>(reqs: impl IntoIterator<Item = &'a str>) -> Vec<PackageReq> {
+    reqs
+      .into_iter()
+      .map(|s| PackageReq::from_str_loose(s).unwrap())
+      .collect()
+  }
+
+  #[track_caller]
+  fn assert_snapshot_eq(
+    a: &SerializedNpmResolutionSnapshot,
+    b: &SerializedNpmResolutionSnapshot,
+  ) {
+    let mut a_root_packages = a.root_packages.iter().collect::<Vec<_>>();
+    a_root_packages.sort();
+    let mut b_root_packages = b.root_packages.iter().collect::<Vec<_>>();
+    b_root_packages.sort();
+    let mut a_packages = a.packages.clone();
+    a_packages.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut b_packages = b.packages.clone();
+    b_packages.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(a_root_packages, b_root_packages);
+    assert_eq!(a_packages, b_packages);
+  }
+
+  #[test]
+  fn snapshot_subset() {
+    let a = package("a@1.0.0", &[("b", "b@1.0.0"), ("c", "c@1.0.0")]);
+    let b = package("b@1.0.0", &[("d", "d@1.0.0")]);
+    let c = package("c@1.0.0", &[("e", "e@1.0.0")]);
+    let d = package("d@1.0.0", &[]);
+    let e = package("e@1.0.0", &[("f", "f@1.0.0")]);
+    let f = package("f@1.0.0", &[("g", "g@1.0.0")]);
+    let g = package("g@1.0.0", &[("e", "e@1.0.0")]);
+    let serialized = SerializedNpmResolutionSnapshot {
+      root_packages: root_pkgs(&[("a@1", "a@1.0.0"), ("f@1", "f@1.0.0")]),
+      packages: vec![a, b, c, d, e.clone(), f.clone(), g.clone()],
+    };
+    let snapshot = NpmResolutionSnapshot::new(serialized.into_valid().unwrap());
+    let subset = snapshot.subset(&reqs(["f@1", "z@1"]));
+    assert_snapshot_eq(
+      subset.as_valid_serialized().as_serialized(),
+      &SerializedNpmResolutionSnapshot {
+        root_packages: root_pkgs(&[("f@1", "f@1.0.0")]),
+        packages: vec![e, f, g],
+      },
+    );
+
+    let empty_subset = snapshot.subset(&reqs(["z@1"]));
+    assert_snapshot_eq(
+      empty_subset.as_valid_serialized().as_serialized(),
+      &SerializedNpmResolutionSnapshot {
+        root_packages: Default::default(),
+        packages: Default::default(),
+      },
     );
   }
 }
