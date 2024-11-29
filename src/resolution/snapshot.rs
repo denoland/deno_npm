@@ -268,6 +268,8 @@ impl NpmResolutionSnapshot {
     }
   }
 
+  /// Returns a new snapshot made from a subset of this snapshot's package reqs.
+  /// Requirements not present in this snapshot will be ignored.
   pub fn subset(&self, package_reqs: &[PackageReq]) -> Self {
     let mut new_package_reqs = HashMap::with_capacity(package_reqs.len());
     let mut packages = HashMap::with_capacity(package_reqs.len() * 2);
