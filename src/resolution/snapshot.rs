@@ -278,7 +278,7 @@ impl NpmResolutionSnapshot {
   }
 
   /// Resolves the provided package requirements adding them to the snapshot.
-  pub async fn add_pkg_reqs_to_snapshot(
+  pub async fn add_pkg_reqs(
     self,
     api: &impl NpmRegistryApi,
     options: AddPkgReqsOptions<'_>,
