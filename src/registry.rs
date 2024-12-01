@@ -299,7 +299,7 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
   LegacySha1Hex(&'a str),
 }
 
-impl<'a> NpmPackageVersionDistInfoIntegrity<'a> {
+impl NpmPackageVersionDistInfoIntegrity<'_> {
   pub fn for_lockfile(&self) -> String {
     match self {
       NpmPackageVersionDistInfoIntegrity::Integrity {
