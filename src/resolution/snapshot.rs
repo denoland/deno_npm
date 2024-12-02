@@ -179,6 +179,15 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct AddPkgReqsOptions<'a> {
+  pub package_reqs: &'a [PackageReq],
+  /// Known good version requirement to use for the `@types/node` package
+  /// when the version is unspecified or "latest".
+  pub types_node_version_req: Option<VersionReq>,
+}
+
+#[derive(Debug)]
 pub struct AddPkgReqsResult {
   /// Results from adding the individual packages.
   ///
@@ -265,6 +274,89 @@ impl NpmResolutionSnapshot {
       root_packages,
       packages_by_name,
       packages,
+    }
+  }
+
+  /// Resolves the provided package requirements adding them to the snapshot.
+  pub async fn add_pkg_reqs(
+    self,
+    api: &impl NpmRegistryApi,
+    options: AddPkgReqsOptions<'_>,
+  ) -> AddPkgReqsResult {
+    enum InfoOrNv {
+      InfoResult(Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>),
+      Nv(PackageNv),
+    }
+    // convert the snapshot to a traversable graph
+    let mut graph = Graph::from_snapshot(self);
+
+    let reqs_with_in_graph = options
+      .package_reqs
+      .iter()
+      .map(|req| (req, graph.get_req_nv(req).map(|r| r.as_ref().clone())));
+    let mut top_level_packages = FuturesOrdered::from_iter({
+      reqs_with_in_graph.map(|(req, maybe_nv)| async move {
+        let maybe_info = if let Some(nv) = maybe_nv {
+          InfoOrNv::Nv(nv)
+        } else {
+          InfoOrNv::InfoResult(api.package_info(&req.name).await)
+        };
+        (req, maybe_info)
+      })
+    });
+
+    let version_resolver = NpmVersionResolver {
+      types_node_version_req: options.types_node_version_req,
+    };
+    // go over the top level package names first (npm package reqs and pending unresolved),
+    // then down the tree one level at a time through all the branches
+    let mut resolver =
+      GraphDependencyResolver::new(&mut graph, api, &version_resolver);
+
+    // The package reqs and ids should already be sorted
+    // in the order they should be resolved in.
+    let mut results = Vec::with_capacity(options.package_reqs.len());
+    let mut first_resolution_error = None;
+    while let Some(result) = top_level_packages.next().await {
+      let (req, info_or_nv) = result;
+      match info_or_nv {
+        InfoOrNv::InfoResult(info_result) => {
+          match info_result
+            .map_err(|err| err.into())
+            .and_then(|info| resolver.add_package_req(req, &info))
+          {
+            Ok(nv) => {
+              results.push(Ok(nv.as_ref().clone()));
+            }
+            Err(err) => {
+              if first_resolution_error.is_none() {
+                first_resolution_error = Some(err.clone());
+              }
+              results.push(Err(err));
+            }
+          }
+        }
+        InfoOrNv::Nv(nv) => {
+          results.push(Ok(nv));
+        }
+      }
+    }
+    drop(top_level_packages); // stop borrow of api
+
+    let dep_graph_result = match first_resolution_error {
+      Some(err) => Err(err),
+      None => match resolver.resolve_pending().await {
+        Ok(()) => graph
+          .into_snapshot(api)
+          .await
+          .map_err(NpmResolutionError::Registry),
+        Err(err) => Err(err),
+      },
+    };
+
+    AddPkgReqsResult {
+      results,
+      dep_graph_result,
     }
   }
 
@@ -694,123 +786,6 @@ impl SnapshotPackageCopyIndexResolver {
         .or_insert(0);
       self.packages_to_copy_index.insert(node_id.clone(), index);
       index
-    }
-  }
-}
-
-pub struct NpmResolutionSnapshotPendingResolverOptions<
-  'a,
-  TNpmRegistryApi: NpmRegistryApi,
-> {
-  pub api: &'a TNpmRegistryApi,
-  /// Known good version requirement to use for the `@types/node` package
-  /// when the version is unspecified or "latest".
-  pub types_node_version_req: Option<VersionReq>,
-}
-
-/// Resolves pending packages in the npm snapshot.
-pub struct NpmResolutionSnapshotPendingResolver<
-  'a,
-  TNpmRegistryApi: NpmRegistryApi,
-> {
-  version_resolver: NpmVersionResolver,
-  api: &'a TNpmRegistryApi,
-}
-
-impl<'a, TNpmRegistryApi: NpmRegistryApi>
-  NpmResolutionSnapshotPendingResolver<'a, TNpmRegistryApi>
-{
-  pub fn new(
-    options: NpmResolutionSnapshotPendingResolverOptions<'a, TNpmRegistryApi>,
-  ) -> Self {
-    Self {
-      api: options.api,
-      version_resolver: NpmVersionResolver {
-        types_node_version_req: options.types_node_version_req,
-      },
-    }
-  }
-
-  /// Resolves the provided package requirements.
-  pub async fn add_pkg_reqs(
-    &self,
-    snapshot: NpmResolutionSnapshot,
-    package_reqs: &[PackageReq],
-  ) -> AddPkgReqsResult {
-    enum InfoOrNv {
-      InfoResult(Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>),
-      Nv(PackageNv),
-    }
-    // convert the snapshot to a traversable graph
-    let mut graph = Graph::from_snapshot(snapshot);
-
-    let api = &self.api;
-    let reqs_with_in_graph = package_reqs
-      .iter()
-      .map(|req| (req, graph.get_req_nv(req).map(|r| r.as_ref().clone())));
-    let mut top_level_packages = FuturesOrdered::from_iter({
-      reqs_with_in_graph.map(|(req, maybe_nv)| async move {
-        let maybe_info = if let Some(nv) = maybe_nv {
-          InfoOrNv::Nv(nv)
-        } else {
-          InfoOrNv::InfoResult(api.package_info(&req.name).await)
-        };
-        (req, maybe_info)
-      })
-    });
-
-    // go over the top level package names first (npm package reqs and pending unresolved),
-    // then down the tree one level at a time through all the branches
-    let mut resolver = GraphDependencyResolver::new(
-      &mut graph,
-      self.api,
-      &self.version_resolver,
-    );
-
-    // The package reqs and ids should already be sorted
-    // in the order they should be resolved in.
-    let mut results = Vec::with_capacity(package_reqs.len());
-    let mut first_resolution_error = None;
-    while let Some(result) = top_level_packages.next().await {
-      let (req, info_or_nv) = result;
-      match info_or_nv {
-        InfoOrNv::InfoResult(info_result) => {
-          match info_result
-            .map_err(|err| err.into())
-            .and_then(|info| resolver.add_package_req(req, &info))
-          {
-            Ok(nv) => {
-              results.push(Ok(nv.as_ref().clone()));
-            }
-            Err(err) => {
-              if first_resolution_error.is_none() {
-                first_resolution_error = Some(err.clone());
-              }
-              results.push(Err(err));
-            }
-          }
-        }
-        InfoOrNv::Nv(nv) => {
-          results.push(Ok(nv));
-        }
-      }
-    }
-    drop(top_level_packages); // stop borrow of api
-
-    let dep_graph_result = match first_resolution_error {
-      Some(err) => Err(err),
-      None => match resolver.resolve_pending().await {
-        Ok(()) => graph
-          .into_snapshot(self.api)
-          .await
-          .map_err(NpmResolutionError::Registry),
-        Err(err) => Err(err),
-      },
-    };
-
-    AddPkgReqsResult {
-      results,
-      dep_graph_result,
     }
   }
 }

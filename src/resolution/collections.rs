@@ -11,7 +11,7 @@ pub struct OneDirectionalLinkedList<'a, T> {
   value: OneDirectionalLinkedListItem<'a, T>,
 }
 
-impl<'a, T> Default for OneDirectionalLinkedList<'a, T> {
+impl<T> Default for OneDirectionalLinkedList<'_, T> {
   fn default() -> Self {
     Self {
       parent: None,
