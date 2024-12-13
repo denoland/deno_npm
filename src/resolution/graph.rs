@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
-
+use deno_error::JsError;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use deno_semver::Version;
@@ -38,12 +38,15 @@ use crate::NpmResolutionPackage;
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, JsError)]
 pub enum NpmResolutionError {
+  #[class(inherit)]
   #[error(transparent)]
   Registry(#[from] NpmRegistryPackageInfoLoadError),
+  #[class(inherit)]
   #[error(transparent)]
   Resolution(#[from] NpmPackageVersionResolutionError),
+  #[class(inherit)]
   #[error(transparent)]
   DependencyEntry(#[from] Box<NpmDependencyEntryError>),
 }

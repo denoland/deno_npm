@@ -10,12 +10,14 @@ use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
 
 /// Error that occurs when the version is not found in the package information.
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, deno_error::JsError)]
+#[class(type)]
 #[error("Could not find version '{}' for npm package '{}'.", .0.version, .0.name)]
 pub struct NpmPackageVersionNotFound(pub PackageNv);
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, deno_error::JsError)]
 pub enum NpmPackageVersionResolutionError {
+  #[class(type)]
   #[error(
     "Could not find dist-tag '{dist_tag}' for npm package '{package_name}'."
   )]
@@ -23,6 +25,7 @@ pub enum NpmPackageVersionResolutionError {
     dist_tag: String,
     package_name: String,
   },
+  #[class(type)]
   #[error(
     "Could not find version '{version}' referenced in dist-tag '{dist_tag}' for npm package '{package_name}'."
   )]
@@ -31,8 +34,10 @@ pub enum NpmPackageVersionResolutionError {
     dist_tag: String,
     version: String,
   },
+  #[class(inherit)]
   #[error(transparent)]
   VersionNotFound(#[from] NpmPackageVersionNotFound),
+  #[class(type)]
   #[error(
     "Could not find npm package '{package_name}' matching '{version_req}'."
   )]

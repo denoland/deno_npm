@@ -1,6 +1,5 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use anyhow::Context;
 use monch::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -29,6 +28,19 @@ pub struct NpmRc {
   pub registry: Option<String>,
   pub scope_registries: HashMap<String, String>,
   pub registry_configs: HashMap<String, Arc<RegistryConfig>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveError {
+  #[error("failed parsing npm registry url for scope '{scope}'")]
+  UrlScope {
+    scope: String,
+    #[source] error: url::ParseError,
+  },
+  #[error("failed resolving .npmrc config for scope '{0}'")]
+  NpmrcScope(String),
+  #[error("failed parsing npm registry url")]
+  Url(#[source] url::ParseError),
 }
 
 impl NpmRc {
@@ -112,7 +124,7 @@ impl NpmRc {
   pub fn as_resolved(
     &self,
     env_registry_url: &Url,
-  ) -> Result<ResolvedNpmRc, anyhow::Error> {
+  ) -> Result<ResolvedNpmRc, ResolveError> {
     let mut scopes = HashMap::with_capacity(self.scope_registries.len());
     for scope in self.scope_registries.keys() {
       let (url, config) = match self.registry_url_and_config_for_maybe_scope(
@@ -120,13 +132,14 @@ impl NpmRc {
         env_registry_url.as_str(),
       ) {
         Some((url, config)) => (
-          Url::parse(&url).with_context(|| {
-            format!("failed parsing npm registry url for scope '{}'", scope)
+          Url::parse(&url).map_err(|e| ResolveError::UrlScope {
+            scope: scope.clone(),
+            error: e,
           })?,
           config.clone(),
         ),
         None => {
-          anyhow::bail!("failed resolving .npmrc config for scope '{}'", scope)
+          return Err(ResolveError::NpmrcScope(scope.clone()));
         }
       };
       scopes.insert(
@@ -141,7 +154,7 @@ impl NpmRc {
       .registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str())
     {
       Some((default_url, default_config)) => (
-        Url::parse(&default_url).context("failed parsing npm registry url")?,
+        Url::parse(&default_url).map_err(ResolveError::Url)?,
         default_config,
       ),
       None => (
