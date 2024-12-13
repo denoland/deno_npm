@@ -1,12 +1,5 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use std::collections::hash_map;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::sync::Arc;
 use deno_error::JsError;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
@@ -16,6 +9,13 @@ use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::hash_map;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 use super::common::NpmVersionResolver;

@@ -1,5 +1,11 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use deno_semver::package::PackageNv;
+use deno_semver::package::PackageReq;
+use deno_semver::Version;
+use deno_semver::VersionReq;
+use futures::StreamExt;
+use log::debug;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -9,12 +15,6 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
-use deno_semver::package::PackageNv;
-use deno_semver::package::PackageReq;
-use deno_semver::Version;
-use deno_semver::VersionReq;
-use futures::StreamExt;
-use log::debug;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;

@@ -35,7 +35,8 @@ pub enum ResolveError {
   #[error("failed parsing npm registry url for scope '{scope}'")]
   UrlScope {
     scope: String,
-    #[source] error: url::ParseError,
+    #[source]
+    error: url::ParseError,
   },
   #[error("failed resolving .npmrc config for scope '{0}'")]
   NpmrcScope(String),
