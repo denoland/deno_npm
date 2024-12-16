@@ -40,7 +40,8 @@ impl NpmPackageInfo {
   }
 }
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, deno_error::JsError)]
+#[class(type)]
 #[error(
   "Error in {parent_nv} parsing version requirement for dependency \"{key}\": \"{value}\""
 )]
@@ -342,12 +343,14 @@ impl NpmPackageVersionDistInfo {
 }
 
 /// Error that occurs when loading the package info from the npm registry fails.
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, deno_error::JsError)]
 pub enum NpmRegistryPackageInfoLoadError {
+  #[class(type)]
   #[error("npm package '{package_name}' does not exist.")]
   PackageNotExists { package_name: String },
+  #[class(inherit)]
   #[error(transparent)]
-  LoadError(#[from] Arc<anyhow::Error>),
+  LoadError(Arc<dyn deno_error::JsErrorClass>),
 }
 
 /// A trait for getting package information from the npm registry.

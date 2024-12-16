@@ -1,5 +1,11 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use deno_semver::package::PackageNv;
+use deno_semver::package::PackageReq;
+use deno_semver::Version;
+use deno_semver::VersionReq;
+use futures::StreamExt;
+use log::debug;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -9,13 +15,6 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
-
-use deno_semver::package::PackageNv;
-use deno_semver::package::PackageReq;
-use deno_semver::Version;
-use deno_semver::VersionReq;
-use futures::StreamExt;
-use log::debug;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
@@ -38,12 +37,15 @@ use crate::NpmResolutionPackage;
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, deno_error::JsError)]
 pub enum NpmResolutionError {
+  #[class(inherit)]
   #[error(transparent)]
   Registry(#[from] NpmRegistryPackageInfoLoadError),
+  #[class(inherit)]
   #[error(transparent)]
   Resolution(#[from] NpmPackageVersionResolutionError),
+  #[class(inherit)]
   #[error(transparent)]
   DependencyEntry(#[from] Box<NpmDependencyEntryError>),
 }

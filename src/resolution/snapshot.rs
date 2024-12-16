@@ -1,13 +1,6 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use std::collections::hash_map;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::sync::Arc;
-
+use deno_error::JsError;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
@@ -16,6 +9,13 @@ use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::hash_map;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 use super::common::NpmVersionResolver;
@@ -36,23 +36,28 @@ use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 #[error("Could not find '{}' in the list of packages.", self.0.as_serialized())]
 pub struct PackageIdNotFoundError(pub NpmPackageId);
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 #[error("Could not find constraint '{0}' in the list of packages.")]
 pub struct PackageReqNotFoundError(pub PackageReq);
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 #[error("Could not find '{0}' in the list of packages.")]
 pub struct PackageNvNotFoundError(pub PackageNv);
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 #[error("Could not find package folder id '{0}' in the list of packages.")]
 pub struct PackageCacheFolderIdNotFoundError(pub NpmPackageCacheFolderId);
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 pub enum PackageNotFoundFromReferrerError {
   #[error("Could not find referrer npm package '{0}'.")]
   Referrer(NpmPackageCacheFolderId),
