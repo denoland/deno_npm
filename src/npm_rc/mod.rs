@@ -36,7 +36,7 @@ pub enum ResolveError {
   UrlScope {
     scope: String,
     #[source]
-    error: url::ParseError,
+    source: url::ParseError,
   },
   #[error("failed resolving .npmrc config for scope '{0}'")]
   NpmrcScope(String),
@@ -135,7 +135,7 @@ impl NpmRc {
         Some((url, config)) => (
           Url::parse(&url).map_err(|e| ResolveError::UrlScope {
             scope: scope.clone(),
-            error: e,
+            source: e,
           })?,
           config.clone(),
         ),
