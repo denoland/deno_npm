@@ -1,6 +1,7 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
 use deno_semver::package::PackageNv;
+use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use deno_semver::WILDCARD_VERSION_REQ;
@@ -23,14 +24,14 @@ pub enum NpmPackageVersionResolutionError {
   )]
   DistTagNotFound {
     dist_tag: String,
-    package_name: String,
+    package_name: StackString,
   },
   #[class(type)]
   #[error(
     "Could not find version '{version}' referenced in dist-tag '{dist_tag}' for npm package '{package_name}'."
   )]
   DistTagVersionNotFound {
-    package_name: String,
+    package_name: StackString,
     dist_tag: String,
     version: String,
   },
@@ -42,7 +43,7 @@ pub enum NpmPackageVersionResolutionError {
     "Could not find npm package '{package_name}' matching '{version_req}'."
   )]
   VersionReqNotMatched {
-    package_name: String,
+    package_name: StackString,
     version_req: VersionReq,
   },
 }
@@ -224,10 +225,10 @@ mod test {
     // dist tag where version doesn't exist
     let package_req = PackageReq::from_str("test@latest").unwrap();
     let package_info = NpmPackageInfo {
-      name: "test".to_string(),
+      name: "test".into(),
       versions: HashMap::new(),
       dist_tags: HashMap::from([(
-        "latest".to_string(),
+        "latest".into(),
         Version::parse_from_npm("1.0.0-alpha").unwrap(),
       )]),
     };
@@ -246,7 +247,7 @@ mod test {
     // dist tag where version is a pre-release
     let package_req = PackageReq::from_str("test@latest").unwrap();
     let package_info = NpmPackageInfo {
-      name: "test".to_string(),
+      name: "test".into(),
       versions: HashMap::from([
         (
           Version::parse_from_npm("0.1.0").unwrap(),
@@ -261,7 +262,7 @@ mod test {
         ),
       ]),
       dist_tags: HashMap::from([(
-        "latest".to_string(),
+        "latest".into(),
         Version::parse_from_npm("1.0.0-alpha").unwrap(),
       )]),
     };
@@ -278,7 +279,7 @@ mod test {
     // for the "types_node_version_req" even though the latest is 1.1.0
     let package_req = PackageReq::from_str("@types/node").unwrap();
     let package_info = NpmPackageInfo {
-      name: "@types/node".to_string(),
+      name: "@types/node".into(),
       versions: HashMap::from([
         (
           Version::parse_from_npm("1.0.0").unwrap(),
@@ -296,7 +297,7 @@ mod test {
         ),
       ]),
       dist_tags: HashMap::from([(
-        "latest".to_string(),
+        "latest".into(),
         Version::parse_from_npm("1.1.0").unwrap(),
       )]),
     };
@@ -316,7 +317,7 @@ mod test {
   fn test_wildcard_version_req() {
     let package_req = PackageReq::from_str("some-pkg").unwrap();
     let package_info = NpmPackageInfo {
-      name: "some-pkg".to_string(),
+      name: "some-pkg".into(),
       versions: HashMap::from([
         (
           Version::parse_from_npm("1.0.0-rc.1").unwrap(),
@@ -334,7 +335,7 @@ mod test {
         ),
       ]),
       dist_tags: HashMap::from([(
-        "latest".to_string(),
+        "latest".into(),
         Version::parse_from_npm("1.0.0-rc.1").unwrap(),
       )]),
     };
@@ -351,7 +352,7 @@ mod test {
   #[test]
   fn test_latest_tag_version_req() {
     let package_info = NpmPackageInfo {
-      name: "some-pkg".to_string(),
+      name: "some-pkg".into(),
       versions: HashMap::from([
         (
           Version::parse_from_npm("0.1.0-alpha.1").unwrap(),
@@ -384,11 +385,11 @@ mod test {
       ]),
       dist_tags: HashMap::from([
         (
-          "latest".to_string(),
+          "latest".into(),
           Version::parse_from_npm("0.1.0-alpha.2").unwrap(),
         ),
         (
-          "dev".to_string(),
+          "dev".into(),
           Version::parse_from_npm("0.1.0-beta.2").unwrap(),
         ),
       ]),

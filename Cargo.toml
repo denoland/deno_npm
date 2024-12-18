@@ -21,7 +21,14 @@ serde_json = { version = "1.0.67", features = ["preserve_order"] }
 thiserror = "2.0.3"
 futures = "0.3.28"
 url = "2"
+ecow = "0.2.3"
+capacity_builder = "0.4.1"
 
 [dev-dependencies]
 pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
+
+[patch.crates-io]
+capacity_builder = { path = "../capacity_builder" }
+deno_lockfile = { path = "../deno_lockfile" }
+deno_semver = { path = "../deno_semver" }

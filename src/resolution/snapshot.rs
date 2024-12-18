@@ -4,6 +4,8 @@ use deno_error::JsError;
 use deno_lockfile::Lockfile;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
+use deno_semver::SmallStackString;
+use deno_semver::StackString;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
@@ -112,10 +114,10 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
-  pub dependencies: HashMap<String, NpmPackageId>,
-  pub optional_dependencies: HashSet<String>,
+  pub dependencies: HashMap<StackString, NpmPackageId>,
+  pub optional_dependencies: HashSet<StackString>,
   pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<String, String>,
+  pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
 }
 
@@ -220,7 +222,7 @@ pub struct NpmResolutionSnapshot {
   pub(super) package_reqs: HashMap<PackageReq, PackageNv>,
   // Each root level npm package name and version maps to an exact npm package node id.
   pub(super) root_packages: HashMap<PackageNv, NpmPackageId>,
-  pub(super) packages_by_name: HashMap<String, Vec<NpmPackageId>>,
+  pub(super) packages_by_name: HashMap<StackString, Vec<NpmPackageId>>,
   pub(super) packages: HashMap<NpmPackageId, NpmResolutionPackage>,
 }
 
@@ -234,7 +236,7 @@ impl NpmResolutionSnapshot {
       snapshot.root_packages.len(),
     );
     let mut packages_by_name =
-      HashMap::<String, Vec<NpmPackageId>>::with_capacity(
+      HashMap::<StackString, Vec<NpmPackageId>>::with_capacity(
         snapshot.packages.len(),
       ); // close enough
     let mut packages =
@@ -253,7 +255,7 @@ impl NpmResolutionSnapshot {
     // then the packages
     for package in snapshot.packages {
       packages_by_name
-        .entry(package.id.nv.name.to_string())
+        .entry(package.id.nv.name.clone())
         .or_default()
         .push(package.id.clone());
 
@@ -370,7 +372,7 @@ impl NpmResolutionSnapshot {
   pub fn subset(&self, package_reqs: &[PackageReq]) -> Self {
     let mut new_package_reqs = HashMap::with_capacity(package_reqs.len());
     let mut packages = HashMap::with_capacity(package_reqs.len() * 2);
-    let mut packages_by_name: HashMap<String, Vec<NpmPackageId>> =
+    let mut packages_by_name: HashMap<StackString, Vec<NpmPackageId>> =
       HashMap::with_capacity(package_reqs.len());
     let mut root_packages = HashMap::with_capacity(package_reqs.len());
 
@@ -395,7 +397,7 @@ impl NpmResolutionSnapshot {
         continue;
       };
       packages_by_name
-        .entry(package.id.nv.name.to_string())
+        .entry(package.id.nv.name.clone())
         .or_default()
         .push(package.id.clone());
       let Some(package) = self.package_from_id(id) else {
@@ -819,7 +821,7 @@ pub enum IncompleteSnapshotFromLockfileError {
 struct IncompletePackageInfo {
   id: NpmPackageId,
   integrity: String,
-  dependencies: HashMap<String, NpmPackageId>,
+  dependencies: HashMap<StackString, NpmPackageId>,
 }
 
 pub struct IncompleteSnapshot {
@@ -1094,7 +1096,7 @@ mod tests {
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
           system: Default::default(),
           dist: Default::default(),
-          optional_dependencies: HashSet::from(["c".to_string()]),
+          optional_dependencies: HashSet::from(["c".into()]),
           bin: None,
           scripts: Default::default(),
           deprecated: Default::default(),
@@ -1113,8 +1115,8 @@ mod tests {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
           dependencies: deps(&[("b", "b@1.0.0"), ("d", "d@1.0.0")]),
           system: NpmResolutionPackageSystemInfo {
-            os: vec!["win32".to_string()],
-            cpu: vec!["x64".to_string()],
+            os: vec!["win32".into()],
+            cpu: vec!["x64".into()],
           },
           dist: Default::default(),
           optional_dependencies: Default::default(),
@@ -1227,7 +1229,7 @@ mod tests {
   ) -> NpmPackageCacheFolderId {
     NpmPackageCacheFolderId {
       nv: PackageNv {
-        name: name.to_string(),
+        name: name.into(),
         version: Version::parse_standard(version).unwrap(),
       },
       copy_index,
@@ -1247,12 +1249,12 @@ mod tests {
     }
   }
 
-  fn deps(deps: &[(&str, &str)]) -> HashMap<String, NpmPackageId> {
+  fn deps(deps: &[(&str, &str)]) -> HashMap<StackString, NpmPackageId> {
     deps
       .iter()
       .map(|(key, value)| {
         (
-          key.to_string(),
+          StackString::from(*key),
           NpmPackageId::from_serialized(value).unwrap(),
         )
       })

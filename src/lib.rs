@@ -4,14 +4,17 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::unused_async)]
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use capacity_builder::StringBuilder;
 use deno_semver::package::PackageNv;
+use deno_semver::SmallStackString;
+use deno_semver::StackString;
 use deno_semver::Version;
+use ecow::EcoVec;
 use registry::NpmPackageVersionBinEntry;
 use registry::NpmPackageVersionDistInfo;
 use resolution::SerializedNpmResolutionSnapshotPackage;
@@ -35,7 +38,7 @@ pub struct NpmPackageIdDeserializationError {
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NpmPackageId {
   pub nv: PackageNv,
-  pub peer_dependencies: Vec<NpmPackageId>,
+  pub peer_dependencies: EcoVec<NpmPackageId>,
 }
 
 // Custom debug implementation for more concise test output
@@ -47,37 +50,45 @@ impl std::fmt::Debug for NpmPackageId {
 
 impl NpmPackageId {
   pub fn as_serialized(&self) -> String {
-    self.as_serialized_with_level(0)
+    StringBuilder::build(|builder| self.as_serialized_with_level(builder, 0))
+      .unwrap()
   }
 
   pub fn peer_deps_serialized(&self) -> String {
-    self.peer_serialized_with_level(0)
+    StringBuilder::build(|builder| self.peer_serialized_with_level(builder, 0))
+      .unwrap()
   }
 
-  fn as_serialized_with_level(&self, level: usize) -> String {
+  fn as_serialized_with_level<'a, TString: capacity_builder::StringType>(
+    &'a self,
+    builder: &mut StringBuilder<'a, TString>,
+    level: usize,
+  ) {
     // WARNING: This should not change because it's used in the lockfile
-    format!(
-      "{}@{}{}",
-      if level == 0 {
-        Cow::Borrowed(&self.nv.name)
-      } else {
-        Cow::Owned(self.nv.name.replace('/', "+"))
-      },
-      self.nv.version,
-      self.peer_serialized_with_level(level)
-    )
+    if level == 0 {
+      builder.append(self.nv.name.as_str());
+    } else {
+      builder.append_with_replace(self.nv.name.as_str(), "/", "+");
+    }
+    builder.append('@');
+    builder.append(&self.nv.version);
+    self.peer_serialized_with_level(builder, level);
   }
 
-  fn peer_serialized_with_level(&self, level: usize) -> String {
-    let mut result = String::new();
+  fn peer_serialized_with_level<'a, TString: capacity_builder::StringType>(
+    &'a self,
+    builder: &mut StringBuilder<'a, TString>,
+    level: usize,
+  ) {
     for peer in &self.peer_dependencies {
       // unfortunately we can't do something like `_3` when
       // this gets deep because npm package names can start
       // with a number
-      result.push_str(&"_".repeat(level + 1));
-      result.push_str(&peer.as_serialized_with_level(level + 1));
+      for _ in 0..level + 1 {
+        builder.append('_');
+      }
+      peer.as_serialized_with_level(builder, level + 1);
     }
-    result
   }
 
   pub fn from_serialized(
@@ -136,9 +147,9 @@ impl NpmPackageId {
 
     fn parse_peers_at_level<'a>(
       level: usize,
-    ) -> impl Fn(&'a str) -> ParseResult<'a, Vec<NpmPackageId>> {
+    ) -> impl Fn(&'a str) -> ParseResult<'a, EcoVec<NpmPackageId>> {
       move |mut input| {
-        let mut peers = Vec::new();
+        let mut peers = EcoVec::new();
         while let Ok((level_input, _)) = parse_level_at_level(level)(input) {
           input = level_input;
           let peer_result = parse_id_at_level(level)(input)?;
@@ -155,9 +166,10 @@ impl NpmPackageId {
       move |input| {
         let (input, (name, version)) = parse_name_and_version(input)?;
         let name = if level > 0 {
-          name.replace('+', "/")
+          // todo(dsherret): avoid `String` allocation here due to replace
+          StackString::from(name.replace('+', "/"))
         } else {
-          name.to_string()
+          StackString::from(name)
         };
         let (input, peer_dependencies) =
           parse_peers_at_level(level + 1)(input)?;
@@ -226,8 +238,8 @@ impl std::fmt::Display for NpmPackageCacheFolderId {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmResolutionPackageSystemInfo {
-  pub os: Vec<String>,
-  pub cpu: Vec<String>,
+  pub os: Vec<SmallStackString>,
+  pub cpu: Vec<SmallStackString>,
 }
 
 impl NpmResolutionPackageSystemInfo {
@@ -257,10 +269,10 @@ pub struct NpmResolutionPackage {
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
-  pub dependencies: HashMap<String, NpmPackageId>,
-  pub optional_dependencies: HashSet<String>,
+  pub dependencies: HashMap<StackString, NpmPackageId>,
+  pub optional_dependencies: HashSet<StackString>,
   pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<String, String>,
+  pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
 }
 
@@ -336,7 +348,7 @@ impl NpmSystemInfo {
   }
 }
 
-fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
+fn matches_os_or_cpu_vec(items: &[SmallStackString], target: &str) -> bool {
   if items.is_empty() {
     return true;
   }
@@ -382,28 +394,28 @@ mod test {
   fn serialize_npm_package_id() {
     let id = NpmPackageId {
       nv: PackageNv::from_str("pkg-a@1.2.3").unwrap(),
-      peer_dependencies: vec![
+      peer_dependencies: EcoVec::from([
         NpmPackageId {
           nv: PackageNv::from_str("pkg-b@3.2.1").unwrap(),
-          peer_dependencies: vec![
+          peer_dependencies: EcoVec::from([
             NpmPackageId {
               nv: PackageNv::from_str("pkg-c@1.3.2").unwrap(),
-              peer_dependencies: vec![],
+              peer_dependencies: Default::default(),
             },
             NpmPackageId {
               nv: PackageNv::from_str("pkg-d@2.3.4").unwrap(),
-              peer_dependencies: vec![],
+              peer_dependencies: Default::default(),
             },
-          ],
+          ]),
         },
         NpmPackageId {
           nv: PackageNv::from_str("pkg-e@2.3.1").unwrap(),
-          peer_dependencies: vec![NpmPackageId {
+          peer_dependencies: EcoVec::from([NpmPackageId {
             nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
-            peer_dependencies: vec![],
-          }],
+            peer_dependencies: Default::default(),
+          }]),
         },
-      ],
+      ]),
     };
 
     // this shouldn't change because it's used in the lockfile
@@ -455,33 +467,25 @@ mod test {
   #[test]
   fn test_matches_os_or_cpu_vec() {
     assert!(matches_os_or_cpu_vec(&[], "x64"));
-    assert!(matches_os_or_cpu_vec(&["x64".to_string()], "x64"));
-    assert!(!matches_os_or_cpu_vec(&["!x64".to_string()], "x64"));
-    assert!(matches_os_or_cpu_vec(&["!arm64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["x64".into()], "x64"));
+    assert!(!matches_os_or_cpu_vec(&["!x64".into()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["!arm64".into()], "x64"));
     assert!(matches_os_or_cpu_vec(
-      &["!arm64".to_string(), "!x86".to_string()],
+      &["!arm64".into(), "!x86".into()],
       "x64"
     ));
     assert!(!matches_os_or_cpu_vec(
-      &["!arm64".to_string(), "!x86".to_string()],
+      &["!arm64".into(), "!x86".into()],
       "x86"
     ));
     assert!(!matches_os_or_cpu_vec(
-      &[
-        "!arm64".to_string(),
-        "!x86".to_string(),
-        "other".to_string()
-      ],
+      &["!arm64".into(), "!x86".into(), "other".into()],
       "x86"
     ));
 
     // not explicitly excluded and there's an include, so it's considered a match
     assert!(matches_os_or_cpu_vec(
-      &[
-        "!arm64".to_string(),
-        "!x86".to_string(),
-        "other".to_string()
-      ],
+      &["!arm64".into(), "!x86".into(), "other".into()],
       "x64"
     ));
   }
