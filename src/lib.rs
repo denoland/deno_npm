@@ -380,9 +380,9 @@ impl NpmResolutionPackage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmSystemInfo {
   /// `process.platform` value from Node.js
-  pub os: StackString,
+  pub os: SmallStackString,
   /// `process.arch` value from Node.js
-  pub cpu: StackString,
+  pub cpu: SmallStackString,
 }
 
 impl Default for NpmSystemInfo {
