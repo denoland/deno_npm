@@ -8,11 +8,10 @@ fn main() {
 }
 
 mod resolution {
-
   use super::*;
 
   #[divan::bench]
-  fn test() {
+  fn test(bencher: divan::Bencher) {
     let api = TestNpmRegistryApi::default();
     let mut initial_pkgs = Vec::new();
     const VERSION_COUNT: usize = 25;
@@ -41,17 +40,20 @@ mod resolution {
     let rt = tokio::runtime::Builder::new_current_thread()
       .build()
       .unwrap();
-    let snapshot = rt.block_on(async {
-      run_resolver_and_get_snapshot(api, initial_pkgs).await
-    });
 
-    assert_eq!(snapshot.top_level_packages().count(), VERSION_COUNT);
+    bencher.bench_local(|| {
+      let snapshot = rt.block_on(async {
+        run_resolver_and_get_snapshot(&api, &initial_pkgs).await
+      });
+
+      assert_eq!(snapshot.top_level_packages().count(), VERSION_COUNT);
+    });
   }
 }
 
 async fn run_resolver_and_get_snapshot(
-  api: TestNpmRegistryApi,
-  reqs: Vec<String>,
+  api: &TestNpmRegistryApi,
+  reqs: &[String],
 ) -> NpmResolutionSnapshot {
   let snapshot = NpmResolutionSnapshot::new(Default::default());
   let reqs = reqs
@@ -60,7 +62,7 @@ async fn run_resolver_and_get_snapshot(
     .collect::<Vec<_>>();
   let result = snapshot
     .add_pkg_reqs(
-      &api,
+      api,
       AddPkgReqsOptions {
         package_reqs: &reqs,
         types_node_version_req: None,
