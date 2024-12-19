@@ -882,7 +882,7 @@ pub fn incomplete_snapshot_from_lockfile(
   })
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 #[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
 is the same as when the lockfile was generated.
 
@@ -902,7 +902,7 @@ pub struct IntegrityCheckFailedError {
   pub filename: String,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum SnapshotFromLockfileError {
   #[error(transparent)]
   PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
@@ -947,15 +947,21 @@ pub async fn snapshot_from_lockfile<'a>(
         .package_info(&nv.name)
         .await
         .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      package_info
-        .version_info(nv)
-        .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
+      Ok((package_info, nv))
     }))
   };
   let mut version_infos = get_version_infos();
   let mut i = 0;
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
   while let Some(result) = version_infos.next().await {
+    let result = result
+      .as_ref()
+      .map_err(|e: &SnapshotFromLockfileError| e.clone())
+      .and_then(|(package_info, nv)| {
+        package_info
+          .version_info(nv)
+          .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
+      });
     match result {
       Ok(version_info) => {
         let snapshot_package = &incomplete_snapshot.packages[i];
@@ -982,14 +988,15 @@ pub async fn snapshot_from_lockfile<'a>(
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist,
+          dist: version_info.dist.clone(),
           system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu,
-            os: version_info.os,
+            cpu: version_info.cpu.clone(),
+            os: version_info.os.clone(),
           },
           optional_dependencies: version_info
             .optional_dependencies
-            .into_keys()
+            .keys()
+            .cloned()
             .collect(),
           bin: version_info.bin.clone(),
           scripts: version_info.scripts.clone(),

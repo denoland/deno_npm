@@ -971,7 +971,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           let version_info = package_info
             .version_info(&pkg_nv)
             .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
-          self.dep_entry_cache.store(pkg_nv.clone(), &version_info)?
+          self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
         };
 
         (pkg_nv, deps)

@@ -32,8 +32,8 @@ impl NpmPackageInfo {
   pub fn version_info(
     &self,
     nv: &PackageNv,
-  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
-    match self.versions.get(&nv.version).cloned() {
+  ) -> Result<&NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    match self.versions.get(&nv.version) {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
