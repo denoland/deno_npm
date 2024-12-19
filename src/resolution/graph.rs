@@ -1,7 +1,9 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
+use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
@@ -64,7 +66,7 @@ struct Node {
   /// Note: We don't want to store the children as a `NodeRef` because
   /// multiple paths might visit through the children and we don't want
   /// to share those references with those paths.
-  pub children: BTreeMap<String, NodeId>,
+  pub children: BTreeMap<StackString, NodeId>,
   /// Whether the node has demonstrated to have no peer dependencies in its
   /// descendants. If this is true then we can skip analyzing this node
   /// again when we encounter it another time in the dependency tree, which
@@ -213,7 +215,7 @@ enum GraphPathNodeOrRoot {
 struct GraphPath {
   previous_node: Option<GraphPathNodeOrRoot>,
   node_id_ref: NodeIdRef,
-  specifier: String,
+  specifier: StackString,
   // we could consider not storing this here and instead reference the resolved
   // nodes, but we should performance profile this code first
   nv: Rc<PackageNv>,
@@ -228,7 +230,7 @@ impl GraphPath {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
       // use an empty specifier
-      specifier: "".to_string(),
+      specifier: "".into(),
       nv,
       linked_circular_descendants: Default::default(),
     })
@@ -238,7 +240,7 @@ impl GraphPath {
     self.node_id_ref.get()
   }
 
-  pub fn specifier(&self) -> &str {
+  pub fn specifier(&self) -> &StackString {
     &self.specifier
   }
 
@@ -249,7 +251,7 @@ impl GraphPath {
   pub fn with_id(
     self: &Rc<GraphPath>,
     node_id: NodeId,
-    specifier: String,
+    specifier: StackString,
     nv: Rc<PackageNv>,
   ) -> Rc<Self> {
     Rc::new(Self {
@@ -324,7 +326,7 @@ pub struct Graph {
   /// Note: Uses a BTreeMap in order to create some determinism
   /// when creating the snapshot.
   root_packages: BTreeMap<Rc<PackageNv>, NodeId>,
-  package_name_versions: HashMap<String, HashSet<Version>>,
+  package_name_versions: HashMap<StackString, HashSet<Version>>,
   nodes: HashMap<NodeId, Node>,
   resolved_node_ids: ResolvedNodeIds,
   // This will be set when creating from a snapshot, then
@@ -467,12 +469,12 @@ impl Graph {
     if resolved_id.peer_dependencies.is_empty() {
       NpmPackageId {
         nv: (*resolved_id.nv).clone(),
-        peer_dependencies: Vec::new(),
+        peer_dependencies: Default::default(),
       }
     } else {
       let mut npm_pkg_id = NpmPackageId {
         nv: (*resolved_id.nv).clone(),
-        peer_dependencies: Vec::with_capacity(
+        peer_dependencies: crate::NpmPackageIdPeerDependencies::with_capacity(
           resolved_id.peer_dependencies.len(),
         ),
       };
@@ -498,7 +500,7 @@ impl Graph {
           } else {
             npm_pkg_id.peer_dependencies.push(NpmPackageId {
               nv: (*child_resolved_id.nv).clone(),
-              peer_dependencies: Vec::new(),
+              peer_dependencies: Default::default(),
             });
           }
         }
@@ -584,12 +586,12 @@ impl Graph {
   fn set_child_of_parent_node(
     &mut self,
     parent_id: NodeId,
-    specifier: &str,
+    specifier: &StackString,
     child_id: NodeId,
   ) {
     assert_ne!(child_id, parent_id);
     let parent = self.borrow_node_mut(parent_id);
-    parent.children.insert(specifier.to_string(), child_id);
+    parent.children.insert(specifier.clone(), child_id);
   }
 
   pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
@@ -608,7 +610,7 @@ impl Graph {
       );
     let mut packages: HashMap<NpmPackageId, NpmResolutionPackage> =
       HashMap::with_capacity(self.nodes.len());
-    let mut packages_by_name: HashMap<String, Vec<_>> =
+    let mut packages_by_name: HashMap<PackageName, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
 
     // todo(dsherret): there is a lurking bug within the peer dependencies code.
@@ -790,7 +792,7 @@ impl DepEntryCache {
 }
 
 struct UnresolvedOptionalPeer {
-  specifier: String,
+  specifier: StackString,
   graph_path: Rc<GraphPath>,
 }
 
@@ -871,11 +873,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         child_id = ancestor.node_id();
       }
 
-      let new_path = parent_path.with_id(
-        child_id,
-        entry.bare_specifier.to_string(),
-        child_nv,
-      );
+      let new_path =
+        parent_path.with_id(child_id, entry.bare_specifier.clone(), child_nv);
       if let Some(ancestor) = maybe_ancestor {
         // this node is circular, so we link it to the ancestor
         self.add_linked_circular_descendant(&ancestor, new_path);
@@ -910,7 +909,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     )?;
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
-        name: package_info.name.to_string(),
+        name: package_info.name.clone(),
         version: info.version.clone(),
       }),
       peer_dependencies: Vec::new(),
@@ -935,7 +934,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       "{} - Resolved {}@{} to {}",
       match parent_id {
         Some(parent_id) => self.graph.get_npm_pkg_id(parent_id).as_serialized(),
-        None => "<package-req>".to_string(),
+        None => "<package-req>".into(),
       },
       pkg_req_name,
       version_req.version_text(),
@@ -1117,7 +1116,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   fn resolve_peer_dep(
     &mut self,
-    specifier: &str,
+    specifier: &StackString,
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
     ancestor_path: &Rc<GraphPath>,
@@ -1328,7 +1327,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           let parent_node = self.graph.borrow_node_mut(parent_node_id);
           parent_node
             .children
-            .insert(graph_path_node.specifier().to_string(), new_node_id);
+            .insert(graph_path_node.specifier().clone(), new_node_id);
         }
       }
     }
@@ -1339,7 +1338,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // path from the node above the resolved dep to just above the peer dep
     path: &[&Rc<GraphPath>],
     peer_dep_parent: GraphPathNodeOrRoot,
-    peer_dep_specifier: &str,
+    peer_dep_specifier: &StackString,
     peer_dep_id: NodeId,
   ) {
     debug_assert!(!path.is_empty());
@@ -1380,11 +1379,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     );
 
     // queue next step
-    let new_path = bottom_node.with_id(
-      peer_dep_id,
-      peer_dep_specifier.to_string(),
-      peer_dep_nv,
-    );
+    let new_path =
+      bottom_node.with_id(peer_dep_id, peer_dep_specifier.clone(), peer_dep_nv);
     if let Some(ancestor_node) = maybe_circular_ancestor {
       // it's circular, so link this in step with the ancestor node
       ancestor_node
@@ -3835,10 +3831,10 @@ mod test {
     api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
     api.add_optional_dep(("package-d", "1.0.0"), ("package-e", "1"));
     api.with_version_info(("package-c", "1.0.0"), |info| {
-      info.os = vec!["win32".to_string(), "darwin".to_string()];
+      info.os = vec!["win32".into(), "darwin".into()];
     });
     api.with_version_info(("package-e", "1.0.0"), |info| {
-      info.os = vec!["win32".to_string()];
+      info.os = vec!["win32".into()];
     });
 
     let snapshot =
@@ -3846,8 +3842,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "win32".to_string(),
-        cpu: "x86".to_string(),
+        os: "win32".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3864,8 +3860,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86".to_string(),
+        os: "darwin".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3881,8 +3877,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "linux".to_string(),
-        cpu: "x86".to_string(),
+        os: "linux".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3912,10 +3908,10 @@ mod test {
     api.add_dep_and_optional_dep(("package-d", "1.0.0"), ("package-e", "1"));
 
     api.with_version_info(("package-c", "1.0.0"), |info| {
-      info.os = vec!["win32".to_string()];
+      info.os = vec!["win32".into()];
     });
     api.with_version_info(("package-e", "1.0.0"), |info| {
-      info.os = vec!["win32".to_string()];
+      info.os = vec!["win32".into()];
     });
 
     let snapshot =
@@ -3924,8 +3920,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86".to_string(),
+        os: "darwin".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3971,8 +3967,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86_64".to_string(),
+        os: "darwin".into(),
+        cpu: "x86_64".into(),
       },
     );
     assert_eq!(packages, vec!["package-a@1.0.0".to_string()]);
@@ -3993,8 +3989,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86_64".to_string(),
+        os: "darwin".into(),
+        cpu: "x86_64".into(),
       },
     );
     assert_eq!(
@@ -4018,7 +4014,7 @@ mod test {
           system: Default::default(),
           dist: Default::default(),
           dependencies: HashMap::from([(
-            "package-a".to_string(),
+            "package-a".into(),
             NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           )]),
           optional_dependencies: HashSet::new(),
@@ -4056,7 +4052,12 @@ mod test {
       .map(|(a, b)| {
         (
           a.to_string(),
-          snapshot.root_packages.get(&b).unwrap().as_serialized(),
+          snapshot
+            .root_packages
+            .get(&b)
+            .unwrap()
+            .as_serialized()
+            .to_string(),
         )
       })
       .collect::<Vec<_>>();
@@ -4065,12 +4066,14 @@ mod test {
     let packages = packages
       .into_iter()
       .map(|pkg| TestNpmResolutionPackage {
-        pkg_id: pkg.id.as_serialized(),
+        pkg_id: pkg.id.as_serialized().to_string(),
         copy_index: pkg.copy_index,
         dependencies: pkg
           .dependencies
           .into_iter()
-          .map(|(key, value)| (key, value.as_serialized()))
+          .map(|(key, value)| {
+            (key.to_string(), value.as_serialized().to_string())
+          })
           .collect(),
       })
       .collect();
@@ -4085,7 +4088,7 @@ mod test {
     let mut packages = snapshot
       .all_system_packages(system_info)
       .into_iter()
-      .map(|p| p.id.as_serialized())
+      .map(|p| p.id.as_serialized().to_string())
       .collect::<Vec<_>>();
     packages.sort();
     let mut serialized_pkgs = snapshot
@@ -4093,7 +4096,7 @@ mod test {
       .into_serialized()
       .packages
       .into_iter()
-      .map(|p| p.id.as_serialized())
+      .map(|p| p.id.as_serialized().to_string())
       .collect::<Vec<_>>();
     serialized_pkgs.sort();
     // ensure the output of both of these are the same

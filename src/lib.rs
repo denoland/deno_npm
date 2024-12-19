@@ -4,13 +4,18 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::unused_async)]
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use capacity_builder::CapacityDisplay;
+use capacity_builder::StringAppendable;
+use capacity_builder::StringBuilder;
 use deno_semver::package::PackageNv;
+use deno_semver::CowVec;
+use deno_semver::SmallStackString;
+use deno_semver::StackString;
 use deno_semver::Version;
 use registry::NpmPackageVersionBinEntry;
 use registry::NpmPackageVersionDistInfo;
@@ -30,12 +35,77 @@ pub struct NpmPackageIdDeserializationError {
   text: String,
 }
 
+#[derive(
+  Clone,
+  Default,
+  PartialEq,
+  Eq,
+  Hash,
+  Serialize,
+  Deserialize,
+  PartialOrd,
+  Ord,
+  CapacityDisplay,
+)]
+pub struct NpmPackageIdPeerDependencies(CowVec<NpmPackageId>);
+
+impl<const N: usize> From<[NpmPackageId; N]> for NpmPackageIdPeerDependencies {
+  fn from(value: [NpmPackageId; N]) -> Self {
+    Self(CowVec::from(value))
+  }
+}
+
+impl NpmPackageIdPeerDependencies {
+  pub fn with_capacity(capacity: usize) -> Self {
+    Self(CowVec::with_capacity(capacity))
+  }
+
+  pub fn as_serialized(&self) -> StackString {
+    capacity_builder::appendable_to_string(self)
+  }
+
+  pub fn push(&mut self, id: NpmPackageId) {
+    self.0.push(id);
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = &NpmPackageId> {
+    self.0.iter()
+  }
+
+  fn peer_serialized_with_level<'a, TString: capacity_builder::StringType>(
+    &'a self,
+    builder: &mut StringBuilder<'a, TString>,
+    level: usize,
+  ) {
+    for peer in &self.0 {
+      // unfortunately we can't do something like `_3` when
+      // this gets deep because npm package names can start
+      // with a number
+      for _ in 0..level + 1 {
+        builder.append('_');
+      }
+      peer.as_serialized_with_level(builder, level + 1);
+    }
+  }
+}
+
+impl<'a> StringAppendable<'a> for &'a NpmPackageIdPeerDependencies {
+  fn append_to_builder<TString: capacity_builder::StringType>(
+    self,
+    builder: &mut StringBuilder<'a, TString>,
+  ) {
+    self.peer_serialized_with_level(builder, 0)
+  }
+}
+
 /// A resolved unique identifier for an npm package. This contains
 /// the resolved name, version, and peer dependency resolution identifiers.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+  Clone, PartialEq, Eq, Hash, Serialize, Deserialize, CapacityDisplay,
+)]
 pub struct NpmPackageId {
   pub nv: PackageNv,
-  pub peer_dependencies: Vec<NpmPackageId>,
+  pub peer_dependencies: NpmPackageIdPeerDependencies,
 }
 
 // Custom debug implementation for more concise test output
@@ -46,38 +116,26 @@ impl std::fmt::Debug for NpmPackageId {
 }
 
 impl NpmPackageId {
-  pub fn as_serialized(&self) -> String {
-    self.as_serialized_with_level(0)
+  pub fn as_serialized(&self) -> StackString {
+    capacity_builder::appendable_to_string(self)
   }
 
-  pub fn peer_deps_serialized(&self) -> String {
-    self.peer_serialized_with_level(0)
-  }
-
-  fn as_serialized_with_level(&self, level: usize) -> String {
+  fn as_serialized_with_level<'a, TString: capacity_builder::StringType>(
+    &'a self,
+    builder: &mut StringBuilder<'a, TString>,
+    level: usize,
+  ) {
     // WARNING: This should not change because it's used in the lockfile
-    format!(
-      "{}@{}{}",
-      if level == 0 {
-        Cow::Borrowed(&self.nv.name)
-      } else {
-        Cow::Owned(self.nv.name.replace('/', "+"))
-      },
-      self.nv.version,
-      self.peer_serialized_with_level(level)
-    )
-  }
-
-  fn peer_serialized_with_level(&self, level: usize) -> String {
-    let mut result = String::new();
-    for peer in &self.peer_dependencies {
-      // unfortunately we can't do something like `_3` when
-      // this gets deep because npm package names can start
-      // with a number
-      result.push_str(&"_".repeat(level + 1));
-      result.push_str(&peer.as_serialized_with_level(level + 1));
+    if level == 0 {
+      builder.append(self.nv.name.as_str());
+    } else {
+      builder.append_with_replace(self.nv.name.as_str(), "/", "+");
     }
-    result
+    builder.append('@');
+    builder.append(&self.nv.version);
+    self
+      .peer_dependencies
+      .peer_serialized_with_level(builder, level);
   }
 
   pub fn from_serialized(
@@ -136,9 +194,9 @@ impl NpmPackageId {
 
     fn parse_peers_at_level<'a>(
       level: usize,
-    ) -> impl Fn(&'a str) -> ParseResult<'a, Vec<NpmPackageId>> {
+    ) -> impl Fn(&'a str) -> ParseResult<'a, CowVec<NpmPackageId>> {
       move |mut input| {
-        let mut peers = Vec::new();
+        let mut peers = CowVec::new();
         while let Ok((level_input, _)) = parse_level_at_level(level)(input) {
           input = level_input;
           let peer_result = parse_id_at_level(level)(input)?;
@@ -155,9 +213,9 @@ impl NpmPackageId {
       move |input| {
         let (input, (name, version)) = parse_name_and_version(input)?;
         let name = if level > 0 {
-          name.replace('+', "/")
+          StackString::from_str(name).replace("+", "/")
         } else {
-          name.to_string()
+          StackString::from_str(name)
         };
         let (input, peer_dependencies) =
           parse_peers_at_level(level + 1)(input)?;
@@ -165,7 +223,7 @@ impl NpmPackageId {
           input,
           NpmPackageId {
             nv: PackageNv { name, version },
-            peer_dependencies,
+            peer_dependencies: NpmPackageIdPeerDependencies(peer_dependencies),
           },
         ))
       }
@@ -177,6 +235,15 @@ impl NpmPackageId {
         text: id.to_string(),
       }
     })
+  }
+}
+
+impl<'a> capacity_builder::StringAppendable<'a> for &'a NpmPackageId {
+  fn append_to_builder<TString: capacity_builder::StringType>(
+    self,
+    builder: &mut capacity_builder::StringBuilder<'a, TString>,
+  ) {
+    self.as_serialized_with_level(builder, 0)
   }
 }
 
@@ -226,8 +293,8 @@ impl std::fmt::Display for NpmPackageCacheFolderId {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmResolutionPackageSystemInfo {
-  pub os: Vec<String>,
-  pub cpu: Vec<String>,
+  pub os: Vec<SmallStackString>,
+  pub cpu: Vec<SmallStackString>,
 }
 
 impl NpmResolutionPackageSystemInfo {
@@ -257,10 +324,10 @@ pub struct NpmResolutionPackage {
   pub dist: NpmPackageVersionDistInfo,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
-  pub dependencies: HashMap<String, NpmPackageId>,
-  pub optional_dependencies: HashSet<String>,
+  pub dependencies: HashMap<StackString, NpmPackageId>,
+  pub optional_dependencies: HashSet<StackString>,
   pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<String, String>,
+  pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
 }
 
@@ -313,16 +380,16 @@ impl NpmResolutionPackage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmSystemInfo {
   /// `process.platform` value from Node.js
-  pub os: String,
+  pub os: SmallStackString,
   /// `process.arch` value from Node.js
-  pub cpu: String,
+  pub cpu: SmallStackString,
 }
 
 impl Default for NpmSystemInfo {
   fn default() -> Self {
     Self {
-      os: node_js_os(std::env::consts::OS).to_string(),
-      cpu: node_js_cpu(std::env::consts::ARCH).to_string(),
+      os: node_js_os(std::env::consts::OS).into(),
+      cpu: node_js_cpu(std::env::consts::ARCH).into(),
     }
   }
 }
@@ -330,13 +397,13 @@ impl Default for NpmSystemInfo {
 impl NpmSystemInfo {
   pub fn from_rust(os: &str, cpu: &str) -> Self {
     Self {
-      os: node_js_os(os).to_string(),
-      cpu: node_js_cpu(cpu).to_string(),
+      os: node_js_os(os).into(),
+      cpu: node_js_cpu(cpu).into(),
     }
   }
 }
 
-fn matches_os_or_cpu_vec(items: &[String], target: &str) -> bool {
+fn matches_os_or_cpu_vec(items: &[SmallStackString], target: &str) -> bool {
   if items.is_empty() {
     return true;
   }
@@ -382,28 +449,30 @@ mod test {
   fn serialize_npm_package_id() {
     let id = NpmPackageId {
       nv: PackageNv::from_str("pkg-a@1.2.3").unwrap(),
-      peer_dependencies: vec![
+      peer_dependencies: NpmPackageIdPeerDependencies::from([
         NpmPackageId {
           nv: PackageNv::from_str("pkg-b@3.2.1").unwrap(),
-          peer_dependencies: vec![
+          peer_dependencies: NpmPackageIdPeerDependencies::from([
             NpmPackageId {
               nv: PackageNv::from_str("pkg-c@1.3.2").unwrap(),
-              peer_dependencies: vec![],
+              peer_dependencies: Default::default(),
             },
             NpmPackageId {
               nv: PackageNv::from_str("pkg-d@2.3.4").unwrap(),
-              peer_dependencies: vec![],
+              peer_dependencies: Default::default(),
             },
-          ],
+          ]),
         },
         NpmPackageId {
           nv: PackageNv::from_str("pkg-e@2.3.1").unwrap(),
-          peer_dependencies: vec![NpmPackageId {
-            nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
-            peer_dependencies: vec![],
-          }],
+          peer_dependencies: NpmPackageIdPeerDependencies::from([
+            NpmPackageId {
+              nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
+              peer_dependencies: Default::default(),
+            },
+          ]),
         },
-      ],
+      ]),
     };
 
     // this shouldn't change because it's used in the lockfile
@@ -455,33 +524,25 @@ mod test {
   #[test]
   fn test_matches_os_or_cpu_vec() {
     assert!(matches_os_or_cpu_vec(&[], "x64"));
-    assert!(matches_os_or_cpu_vec(&["x64".to_string()], "x64"));
-    assert!(!matches_os_or_cpu_vec(&["!x64".to_string()], "x64"));
-    assert!(matches_os_or_cpu_vec(&["!arm64".to_string()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["x64".into()], "x64"));
+    assert!(!matches_os_or_cpu_vec(&["!x64".into()], "x64"));
+    assert!(matches_os_or_cpu_vec(&["!arm64".into()], "x64"));
     assert!(matches_os_or_cpu_vec(
-      &["!arm64".to_string(), "!x86".to_string()],
+      &["!arm64".into(), "!x86".into()],
       "x64"
     ));
     assert!(!matches_os_or_cpu_vec(
-      &["!arm64".to_string(), "!x86".to_string()],
+      &["!arm64".into(), "!x86".into()],
       "x86"
     ));
     assert!(!matches_os_or_cpu_vec(
-      &[
-        "!arm64".to_string(),
-        "!x86".to_string(),
-        "other".to_string()
-      ],
+      &["!arm64".into(), "!x86".into(), "other".into()],
       "x86"
     ));
 
     // not explicitly excluded and there's an include, so it's considered a match
     assert!(matches_os_or_cpu_vec(
-      &[
-        "!arm64".to_string(),
-        "!x86".to_string(),
-        "other".to_string()
-      ],
+      &["!arm64".into(), "!x86".into(), "other".into()],
       "x64"
     ));
   }
