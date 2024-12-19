@@ -27,6 +27,10 @@ divan = "0.1.17"
 pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
 
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
 [[bench]]
 name = "bench"
 harness = false
