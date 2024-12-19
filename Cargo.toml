@@ -29,5 +29,8 @@ pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
 
 [patch.crates-io]
-deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile.git", branch = "deno_semver_0_7" }
-deno_semver = { git = "https://github.com/dsherret/deno_semver.git", branch = "perf_stack_strings" }
+# deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile.git", branch = "deno_semver_0_7" }
+# deno_semver = { git = "https://github.com/dsherret/deno_semver.git", branch = "perf_stack_strings" }
+deno_lockfile = { path = "../deno_lockfile" }
+deno_semver = { path = "../deno_semver" }
+capacity_builder = { path = "../capacity_builder" }

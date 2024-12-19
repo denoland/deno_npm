@@ -177,7 +177,7 @@ impl NpmPackageVersionInfo {
       Ok(NpmDependencyEntry {
         kind,
         bare_specifier: key.clone(),
-        name,
+        name: StackString::from_str(name),
         version_req,
         peer_dep_version_req: None,
       })
@@ -257,30 +257,23 @@ impl NpmPackageVersionInfo {
 /// Gets the name and raw version constraint for a registry info or
 /// package.json dependency entry taking into account npm package aliases.
 fn parse_dep_entry_name_and_raw_version<'a>(
-  key: &'a StackString,
-  value: &'a StackString,
-) -> Result<(StackString, Cow<'a, StackString>), NpmDependencyEntryErrorSource>
-{
+  key: &'a str,
+  value: &'a str,
+) -> Result<(&'a str, &'a str), NpmDependencyEntryErrorSource> {
   let (name, version_req) =
     if let Some(package_and_version) = value.strip_prefix("npm:") {
       if let Some((name, version)) = package_and_version.rsplit_once('@') {
         // if empty, then the name was scoped and there's no version
         if name.is_empty() {
-          (
-            package_and_version,
-            Cow::Owned(StackString::from_static("*")),
-          )
+          (package_and_version, "*")
         } else {
-          (name, Cow::Owned(version))
+          (name, version)
         }
       } else {
-        (
-          package_and_version,
-          Cow::Owned(StackString::from_static("*")),
-        )
+        (package_and_version, "*")
       }
     } else {
-      (key.clone(), Cow::Borrowed(value))
+      (key, value)
     };
   if version_req.starts_with("https://")
     || version_req.starts_with("http://")
@@ -1178,7 +1171,7 @@ mod test {
       let value = StackString::from(value);
       let (name, version) =
         parse_dep_entry_name_and_raw_version(&key, &value).unwrap();
-      assert_eq!((name.as_str(), version.as_str()), expected_result);
+      assert_eq!((name, version), expected_result);
     }
   }
 

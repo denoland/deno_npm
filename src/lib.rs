@@ -192,10 +192,9 @@ impl NpmPackageId {
       move |input| {
         let (input, (name, version)) = parse_name_and_version(input)?;
         let name = if level > 0 {
-          // todo(dsherret): avoid `String` allocation here due to replace
-          StackString::from(name.replace('+', "/"))
+          StackString::from_str(name).replace("+", "/")
         } else {
-          StackString::from(name)
+          StackString::from_str(name)
         };
         let (input, peer_dependencies) =
           parse_peers_at_level(level + 1)(input)?;
