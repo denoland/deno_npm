@@ -23,5 +23,10 @@ futures = "0.3.28"
 url = "2"
 
 [dev-dependencies]
+divan = "0.1.17"
 pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
+
+[[bench]]
+name = "bench"
+harness = false
