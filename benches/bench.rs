@@ -31,7 +31,7 @@ mod resolution {
         if pkg_index < 25 {
           api.add_dependency(
             (pkg_name.as_str(), version.as_str()),
-            (next_pkg.as_str(), &version.as_str()),
+            (next_pkg.as_str(), version.as_str()),
           );
         }
       }
