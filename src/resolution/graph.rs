@@ -474,8 +474,8 @@ impl Graph {
     } else {
       let mut npm_pkg_id = NpmPackageId {
         nv: (*resolved_id.nv).clone(),
-        peer_dependencies: EcoVec::with_capacity(
-          resolved_id.peer_dependencies.len(),
+        peer_dependencies: crate::NpmPackageIdPeerDependencies(
+          EcoVec::with_capacity(resolved_id.peer_dependencies.len()),
         ),
       };
       let mut seen_children_resolved_ids =
@@ -934,7 +934,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       "{} - Resolved {}@{} to {}",
       match parent_id {
         Some(parent_id) => self.graph.get_npm_pkg_id(parent_id).as_serialized(),
-        None => "<package-req>".to_string(),
+        None => "<package-req>".into(),
       },
       pkg_req_name,
       version_req.version_text(),
@@ -4052,7 +4052,12 @@ mod test {
       .map(|(a, b)| {
         (
           a.to_string(),
-          snapshot.root_packages.get(&b).unwrap().as_serialized(),
+          snapshot
+            .root_packages
+            .get(&b)
+            .unwrap()
+            .as_serialized()
+            .to_string(),
         )
       })
       .collect::<Vec<_>>();
@@ -4061,12 +4066,14 @@ mod test {
     let packages = packages
       .into_iter()
       .map(|pkg| TestNpmResolutionPackage {
-        pkg_id: pkg.id.as_serialized(),
+        pkg_id: pkg.id.as_serialized().to_string(),
         copy_index: pkg.copy_index,
         dependencies: pkg
           .dependencies
           .into_iter()
-          .map(|(key, value)| (key.to_string(), value.as_serialized()))
+          .map(|(key, value)| {
+            (key.to_string(), value.as_serialized().to_string())
+          })
           .collect(),
       })
       .collect();
@@ -4081,7 +4088,7 @@ mod test {
     let mut packages = snapshot
       .all_system_packages(system_info)
       .into_iter()
-      .map(|p| p.id.as_serialized())
+      .map(|p| p.id.as_serialized().to_string())
       .collect::<Vec<_>>();
     packages.sort();
     let mut serialized_pkgs = snapshot
@@ -4089,7 +4096,7 @@ mod test {
       .into_serialized()
       .packages
       .into_iter()
-      .map(|p| p.id.as_serialized())
+      .map(|p| p.id.as_serialized().to_string())
       .collect::<Vec<_>>();
     serialized_pkgs.sort();
     // ensure the output of both of these are the same

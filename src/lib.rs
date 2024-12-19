@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use capacity_builder::StringAppendable;
 use capacity_builder::StringBuilder;
 use deno_semver::package::PackageNv;
 use deno_semver::SmallStackString;
@@ -33,12 +34,56 @@ pub struct NpmPackageIdDeserializationError {
   text: String,
 }
 
+#[derive(
+  Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord,
+)]
+pub struct NpmPackageIdPeerDependencies(EcoVec<NpmPackageId>);
+
+impl NpmPackageIdPeerDependencies {
+  pub fn as_serialized(&self) -> StackString {
+    StringBuilder::build(|builder| builder.append(self)).unwrap()
+  }
+
+  pub fn push(&mut self, id: NpmPackageId) {
+    self.0.push(id);
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = &NpmPackageId> {
+    self.0.iter()
+  }
+
+  fn peer_serialized_with_level<'a, TString: capacity_builder::StringType>(
+    &'a self,
+    builder: &mut StringBuilder<'a, TString>,
+    level: usize,
+  ) {
+    for peer in &self.0 {
+      // unfortunately we can't do something like `_3` when
+      // this gets deep because npm package names can start
+      // with a number
+      for _ in 0..level + 1 {
+        builder.append('_');
+      }
+      peer.as_serialized_with_level(builder, level + 1);
+    }
+  }
+}
+
+impl<'a> StringAppendable<'a> for &'a NpmPackageIdPeerDependencies {
+  fn append_to_builder<TString: capacity_builder::StringType>(
+    self,
+    builder: &mut StringBuilder<'a, TString>,
+  ) {
+    self.peer_serialized_with_level(builder, 0)
+  }
+}
+
 /// A resolved unique identifier for an npm package. This contains
 /// the resolved name, version, and peer dependency resolution identifiers.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NpmPackageId {
   pub nv: PackageNv,
-  pub peer_dependencies: EcoVec<NpmPackageId>,
+  pub peer_dependencies: NpmPackageIdPeerDependencies,
 }
 
 // Custom debug implementation for more concise test output
@@ -49,13 +94,8 @@ impl std::fmt::Debug for NpmPackageId {
 }
 
 impl NpmPackageId {
-  pub fn as_serialized(&self) -> String {
+  pub fn as_serialized(&self) -> StackString {
     StringBuilder::build(|builder| self.as_serialized_with_level(builder, 0))
-      .unwrap()
-  }
-
-  pub fn peer_deps_serialized(&self) -> String {
-    StringBuilder::build(|builder| self.peer_serialized_with_level(builder, 0))
       .unwrap()
   }
 
@@ -72,23 +112,9 @@ impl NpmPackageId {
     }
     builder.append('@');
     builder.append(&self.nv.version);
-    self.peer_serialized_with_level(builder, level);
-  }
-
-  fn peer_serialized_with_level<'a, TString: capacity_builder::StringType>(
-    &'a self,
-    builder: &mut StringBuilder<'a, TString>,
-    level: usize,
-  ) {
-    for peer in &self.peer_dependencies {
-      // unfortunately we can't do something like `_3` when
-      // this gets deep because npm package names can start
-      // with a number
-      for _ in 0..level + 1 {
-        builder.append('_');
-      }
-      peer.as_serialized_with_level(builder, level + 1);
-    }
+    self
+      .peer_dependencies
+      .peer_serialized_with_level(builder, level);
   }
 
   pub fn from_serialized(
@@ -177,7 +203,7 @@ impl NpmPackageId {
           input,
           NpmPackageId {
             nv: PackageNv { name, version },
-            peer_dependencies,
+            peer_dependencies: NpmPackageIdPeerDependencies(peer_dependencies),
           },
         ))
       }
@@ -394,10 +420,10 @@ mod test {
   fn serialize_npm_package_id() {
     let id = NpmPackageId {
       nv: PackageNv::from_str("pkg-a@1.2.3").unwrap(),
-      peer_dependencies: EcoVec::from([
+      peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
         NpmPackageId {
           nv: PackageNv::from_str("pkg-b@3.2.1").unwrap(),
-          peer_dependencies: EcoVec::from([
+          peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
             NpmPackageId {
               nv: PackageNv::from_str("pkg-c@1.3.2").unwrap(),
               peer_dependencies: Default::default(),
@@ -406,16 +432,18 @@ mod test {
               nv: PackageNv::from_str("pkg-d@2.3.4").unwrap(),
               peer_dependencies: Default::default(),
             },
-          ]),
+          ])),
         },
         NpmPackageId {
           nv: PackageNv::from_str("pkg-e@2.3.1").unwrap(),
-          peer_dependencies: EcoVec::from([NpmPackageId {
-            nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
-            peer_dependencies: Default::default(),
-          }]),
+          peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
+            NpmPackageId {
+              nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
+              peer_dependencies: Default::default(),
+            },
+          ])),
         },
-      ]),
+      ])),
     };
 
     // this shouldn't change because it's used in the lockfile
