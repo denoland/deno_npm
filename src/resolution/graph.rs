@@ -1,11 +1,11 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
-use ecow::EcoVec;
 use futures::StreamExt;
 use log::debug;
 use std::cell::RefCell;
@@ -474,8 +474,8 @@ impl Graph {
     } else {
       let mut npm_pkg_id = NpmPackageId {
         nv: (*resolved_id.nv).clone(),
-        peer_dependencies: crate::NpmPackageIdPeerDependencies(
-          EcoVec::with_capacity(resolved_id.peer_dependencies.len()),
+        peer_dependencies: crate::NpmPackageIdPeerDependencies::with_capacity(
+          resolved_id.peer_dependencies.len(),
         ),
       };
       let mut seen_children_resolved_ids =
@@ -610,7 +610,7 @@ impl Graph {
       );
     let mut packages: HashMap<NpmPackageId, NpmResolutionPackage> =
       HashMap::with_capacity(self.nodes.len());
-    let mut packages_by_name: HashMap<StackString, Vec<_>> =
+    let mut packages_by_name: HashMap<PackageName, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
 
     // todo(dsherret): there is a lurking bug within the peer dependencies code.

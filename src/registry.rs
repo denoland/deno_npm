@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use deno_semver::npm::NpmVersionReqParseError;
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::SmallStackString;
 use deno_semver::StackString;
@@ -24,7 +25,7 @@ use crate::resolution::NpmPackageVersionNotFound;
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct NpmPackageInfo {
-  pub name: StackString,
+  pub name: PackageName,
   pub versions: HashMap<Version, NpmPackageVersionInfo>,
   #[serde(rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
@@ -85,7 +86,7 @@ impl NpmDependencyEntryKind {
 pub struct NpmDependencyEntry {
   pub kind: NpmDependencyEntryKind,
   pub bare_specifier: StackString,
-  pub name: StackString,
+  pub name: PackageName,
   pub version_req: VersionReq,
   /// When the dependency is also marked as a peer dependency,
   /// use this entry to resolve the dependency when it can't
@@ -177,7 +178,7 @@ impl NpmPackageVersionInfo {
       Ok(NpmDependencyEntry {
         kind,
         bare_specifier: key.clone(),
-        name: StackString::from_str(name),
+        name: PackageName::from_str(name),
         version_req,
         peer_dep_version_req: None,
       })

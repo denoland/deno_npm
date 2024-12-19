@@ -9,13 +9,14 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use capacity_builder::CapacityDisplay;
 use capacity_builder::StringAppendable;
 use capacity_builder::StringBuilder;
 use deno_semver::package::PackageNv;
 use deno_semver::SmallStackString;
+use deno_semver::SmallVec;
 use deno_semver::StackString;
 use deno_semver::Version;
-use ecow::EcoVec;
 use registry::NpmPackageVersionBinEntry;
 use registry::NpmPackageVersionDistInfo;
 use resolution::SerializedNpmResolutionSnapshotPackage;
@@ -35,13 +36,32 @@ pub struct NpmPackageIdDeserializationError {
 }
 
 #[derive(
-  Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord,
+  Clone,
+  Default,
+  PartialEq,
+  Eq,
+  Hash,
+  Serialize,
+  Deserialize,
+  PartialOrd,
+  Ord,
+  CapacityDisplay,
 )]
-pub struct NpmPackageIdPeerDependencies(EcoVec<NpmPackageId>);
+pub struct NpmPackageIdPeerDependencies(SmallVec<NpmPackageId>);
+
+impl<const N: usize> From<[NpmPackageId; N]> for NpmPackageIdPeerDependencies {
+  fn from(value: [NpmPackageId; N]) -> Self {
+    Self(SmallVec::from(value))
+  }
+}
 
 impl NpmPackageIdPeerDependencies {
+  pub fn with_capacity(capacity: usize) -> Self {
+    Self(SmallVec::with_capacity(capacity))
+  }
+
   pub fn as_serialized(&self) -> StackString {
-    StringBuilder::build(|builder| builder.append(self)).unwrap()
+    capacity_builder::appendable_to_string(self)
   }
 
   pub fn push(&mut self, id: NpmPackageId) {
@@ -80,7 +100,9 @@ impl<'a> StringAppendable<'a> for &'a NpmPackageIdPeerDependencies {
 
 /// A resolved unique identifier for an npm package. This contains
 /// the resolved name, version, and peer dependency resolution identifiers.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+  Clone, PartialEq, Eq, Hash, Serialize, Deserialize, CapacityDisplay,
+)]
 pub struct NpmPackageId {
   pub nv: PackageNv,
   pub peer_dependencies: NpmPackageIdPeerDependencies,
@@ -95,8 +117,7 @@ impl std::fmt::Debug for NpmPackageId {
 
 impl NpmPackageId {
   pub fn as_serialized(&self) -> StackString {
-    StringBuilder::build(|builder| self.as_serialized_with_level(builder, 0))
-      .unwrap()
+    capacity_builder::appendable_to_string(self)
   }
 
   fn as_serialized_with_level<'a, TString: capacity_builder::StringType>(
@@ -173,9 +194,9 @@ impl NpmPackageId {
 
     fn parse_peers_at_level<'a>(
       level: usize,
-    ) -> impl Fn(&'a str) -> ParseResult<'a, EcoVec<NpmPackageId>> {
+    ) -> impl Fn(&'a str) -> ParseResult<'a, SmallVec<NpmPackageId>> {
       move |mut input| {
-        let mut peers = EcoVec::new();
+        let mut peers = SmallVec::new();
         while let Ok((level_input, _)) = parse_level_at_level(level)(input) {
           input = level_input;
           let peer_result = parse_id_at_level(level)(input)?;
@@ -214,6 +235,15 @@ impl NpmPackageId {
         text: id.to_string(),
       }
     })
+  }
+}
+
+impl<'a> capacity_builder::StringAppendable<'a> for &'a NpmPackageId {
+  fn append_to_builder<TString: capacity_builder::StringType>(
+    self,
+    builder: &mut capacity_builder::StringBuilder<'a, TString>,
+  ) {
+    self.as_serialized_with_level(builder, 0)
   }
 }
 
@@ -419,10 +449,10 @@ mod test {
   fn serialize_npm_package_id() {
     let id = NpmPackageId {
       nv: PackageNv::from_str("pkg-a@1.2.3").unwrap(),
-      peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
+      peer_dependencies: NpmPackageIdPeerDependencies::from([
         NpmPackageId {
           nv: PackageNv::from_str("pkg-b@3.2.1").unwrap(),
-          peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
+          peer_dependencies: NpmPackageIdPeerDependencies::from([
             NpmPackageId {
               nv: PackageNv::from_str("pkg-c@1.3.2").unwrap(),
               peer_dependencies: Default::default(),
@@ -431,18 +461,18 @@ mod test {
               nv: PackageNv::from_str("pkg-d@2.3.4").unwrap(),
               peer_dependencies: Default::default(),
             },
-          ])),
+          ]),
         },
         NpmPackageId {
           nv: PackageNv::from_str("pkg-e@2.3.1").unwrap(),
-          peer_dependencies: NpmPackageIdPeerDependencies(EcoVec::from([
+          peer_dependencies: NpmPackageIdPeerDependencies::from([
             NpmPackageId {
               nv: PackageNv::from_str("pkg-f@2.3.1").unwrap(),
               peer_dependencies: Default::default(),
             },
-          ])),
+          ]),
         },
-      ])),
+      ]),
     };
 
     // this shouldn't change because it's used in the lockfile

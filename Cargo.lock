@@ -63,7 +63,9 @@ checksum = "8318a53db07bb3f8dca91a600466bdb3f2eaadeedfdbcf02e1accbad9271ba50"
 
 [[package]]
 name = "capacity_builder"
-version = "0.4.2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f2d24a6dcf0cd402a21b65d35340f3a49ff3475dc5fdac91d22d2733e6641c6"
 dependencies = [
  "capacity_builder_macros",
  "ecow",
@@ -73,7 +75,9 @@ dependencies = [
 
 [[package]]
 name = "capacity_builder_macros"
-version = "0.2.1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b4a6cae9efc04cc6cbb8faf338d2c497c165c83e74509cf4dbedea948bbf6e5"
 dependencies = [
  "quote",
  "syn",
@@ -134,7 +138,6 @@ dependencies = [
  "deno_error",
  "deno_lockfile",
  "deno_semver",
- "ecow",
  "futures",
  "log",
  "monch",
