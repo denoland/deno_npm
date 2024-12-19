@@ -3842,8 +3842,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "win32".to_string(),
-        cpu: "x86".to_string(),
+        os: "win32".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3860,8 +3860,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86".to_string(),
+        os: "darwin".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3877,8 +3877,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "linux".to_string(),
-        cpu: "x86".to_string(),
+        os: "linux".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3920,8 +3920,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86".to_string(),
+        os: "darwin".into(),
+        cpu: "x86".into(),
       },
     );
     assert_eq!(
@@ -3967,8 +3967,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86_64".to_string(),
+        os: "darwin".into(),
+        cpu: "x86_64".into(),
       },
     );
     assert_eq!(packages, vec!["package-a@1.0.0".to_string()]);
@@ -3989,8 +3989,8 @@ mod test {
     let packages = package_names_with_info(
       &snapshot,
       &NpmSystemInfo {
-        os: "darwin".to_string(),
-        cpu: "x86_64".to_string(),
+        os: "darwin".into(),
+        cpu: "x86_64".into(),
       },
     );
     assert_eq!(

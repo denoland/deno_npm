@@ -13,8 +13,8 @@ use capacity_builder::CapacityDisplay;
 use capacity_builder::StringAppendable;
 use capacity_builder::StringBuilder;
 use deno_semver::package::PackageNv;
+use deno_semver::CowVec;
 use deno_semver::SmallStackString;
-use deno_semver::SmallVec;
 use deno_semver::StackString;
 use deno_semver::Version;
 use registry::NpmPackageVersionBinEntry;
@@ -47,17 +47,17 @@ pub struct NpmPackageIdDeserializationError {
   Ord,
   CapacityDisplay,
 )]
-pub struct NpmPackageIdPeerDependencies(SmallVec<NpmPackageId>);
+pub struct NpmPackageIdPeerDependencies(CowVec<NpmPackageId>);
 
 impl<const N: usize> From<[NpmPackageId; N]> for NpmPackageIdPeerDependencies {
   fn from(value: [NpmPackageId; N]) -> Self {
-    Self(SmallVec::from(value))
+    Self(CowVec::from(value))
   }
 }
 
 impl NpmPackageIdPeerDependencies {
   pub fn with_capacity(capacity: usize) -> Self {
-    Self(SmallVec::with_capacity(capacity))
+    Self(CowVec::with_capacity(capacity))
   }
 
   pub fn as_serialized(&self) -> StackString {
@@ -194,9 +194,9 @@ impl NpmPackageId {
 
     fn parse_peers_at_level<'a>(
       level: usize,
-    ) -> impl Fn(&'a str) -> ParseResult<'a, SmallVec<NpmPackageId>> {
+    ) -> impl Fn(&'a str) -> ParseResult<'a, CowVec<NpmPackageId>> {
       move |mut input| {
-        let mut peers = SmallVec::new();
+        let mut peers = CowVec::new();
         while let Ok((level_input, _)) = parse_level_at_level(level)(input) {
           input = level_input;
           let peer_result = parse_id_at_level(level)(input)?;
@@ -380,16 +380,16 @@ impl NpmResolutionPackage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NpmSystemInfo {
   /// `process.platform` value from Node.js
-  pub os: String,
+  pub os: StackString,
   /// `process.arch` value from Node.js
-  pub cpu: String,
+  pub cpu: StackString,
 }
 
 impl Default for NpmSystemInfo {
   fn default() -> Self {
     Self {
-      os: node_js_os(std::env::consts::OS).to_string(),
-      cpu: node_js_cpu(std::env::consts::ARCH).to_string(),
+      os: node_js_os(std::env::consts::OS).into(),
+      cpu: node_js_cpu(std::env::consts::ARCH).into(),
     }
   }
 }
@@ -397,8 +397,8 @@ impl Default for NpmSystemInfo {
 impl NpmSystemInfo {
   pub fn from_rust(os: &str, cpu: &str) -> Self {
     Self {
-      os: node_js_os(os).to_string(),
-      cpu: node_js_cpu(cpu).to_string(),
+      os: node_js_os(os).into(),
+      cpu: node_js_cpu(cpu).into(),
     }
   }
 }

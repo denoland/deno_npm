@@ -1143,8 +1143,8 @@ mod tests {
     {
       let mut actual = snapshot
         .as_valid_serialized_for_system(&NpmSystemInfo {
-          os: "win32".to_string(),
-          cpu: "x64".to_string(),
+          os: "win32".into(),
+          cpu: "x64".into(),
         })
         .into_serialized();
       actual.packages.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1160,8 +1160,8 @@ mod tests {
     {
       let mut actual = snapshot
         .as_valid_serialized_for_system(&NpmSystemInfo {
-          os: "darwin".to_string(),
-          cpu: "x64".to_string(),
+          os: "darwin".into(),
+          cpu: "x64".into(),
         })
         .into_serialized();
       actual.packages.sort_by(|a, b| a.id.cmp(&b.id));
