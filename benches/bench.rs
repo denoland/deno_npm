@@ -21,6 +21,21 @@ mod deserialization {
 
   #[divan::bench]
   fn packument(bencher: divan::Bencher) {
+    let text = get_next_packument_text();
+    bencher.bench_local(|| {
+      let value = serde_json::from_str::<NpmPackageInfo>(&text).unwrap();
+      value.name.len()
+    });
+  }
+
+  #[divan::bench]
+  fn packument_no_drop(bencher: divan::Bencher) {
+    let text = get_next_packument_text();
+    bencher
+      .bench_local(|| serde_json::from_str::<NpmPackageInfo>(&text).unwrap());
+  }
+
+  fn get_next_packument_text() -> String {
     build_rt().block_on(async {
       // ensure the fs cache is populated
       let _ = RealBenchRegistryApi::default()
@@ -29,11 +44,7 @@ mod deserialization {
         .unwrap();
     });
 
-    let text =
-      std::fs::read_to_string(packument_cache_filepath("next")).unwrap();
-    bencher.bench_local(|| {
-      serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap()
-    });
+    std::fs::read_to_string(packument_cache_filepath("next")).unwrap()
   }
 }
 
