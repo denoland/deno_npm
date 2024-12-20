@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use deno_semver::npm::NpmVersionReqParseError;
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
+use deno_semver::SmallStackString;
+use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use serde::Deserialize;
@@ -22,7 +25,7 @@ use crate::resolution::NpmPackageVersionNotFound;
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct NpmPackageInfo {
-  pub name: String,
+  pub name: PackageName,
   pub versions: HashMap<Version, NpmPackageVersionInfo>,
   #[serde(rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
@@ -82,8 +85,8 @@ impl NpmDependencyEntryKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NpmDependencyEntry {
   pub kind: NpmDependencyEntryKind,
-  pub bare_specifier: String,
-  pub name: String,
+  pub bare_specifier: StackString,
+  pub name: PackageName,
   pub version_req: VersionReq,
   /// When the dependency is also marked as a peer dependency,
   /// use this entry to resolve the dependency when it can't
@@ -135,25 +138,25 @@ pub struct NpmPackageVersionInfo {
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub dependencies: HashMap<String, String>,
+  pub dependencies: HashMap<StackString, StackString>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub optional_dependencies: HashMap<String, String>,
+  pub optional_dependencies: HashMap<StackString, StackString>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub peer_dependencies: HashMap<String, String>,
+  pub peer_dependencies: HashMap<StackString, StackString>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub peer_dependencies_meta: HashMap<String, NpmPeerDependencyMeta>,
+  pub peer_dependencies_meta: HashMap<StackString, NpmPeerDependencyMeta>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::vector")]
-  pub os: Vec<String>,
+  pub os: Vec<SmallStackString>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::vector")]
-  pub cpu: Vec<String>,
+  pub cpu: Vec<SmallStackString>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub scripts: HashMap<String, String>,
+  pub scripts: HashMap<SmallStackString, String>,
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::string")]
   pub deprecated: Option<String>,
@@ -166,7 +169,7 @@ impl NpmPackageVersionInfo {
     package_name: &str,
   ) -> Result<Vec<NpmDependencyEntry>, Box<NpmDependencyEntryError>> {
     fn parse_dep_entry_inner(
-      (key, value): (&String, &String),
+      (key, value): (&StackString, &StackString),
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
@@ -174,23 +177,23 @@ impl NpmPackageVersionInfo {
       let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
-        bare_specifier: key.to_string(),
-        name: name.to_string(),
+        bare_specifier: key.clone(),
+        name: PackageName::from_str(name),
         version_req,
         peer_dep_version_req: None,
       })
     }
 
     fn parse_dep_entry(
-      nv: (&str, &Version),
-      key_value: (&String, &String),
+      parent_nv: (&str, &Version),
+      key_value: (&StackString, &StackString),
       kind: NpmDependencyEntryKind,
     ) -> Result<NpmDependencyEntry, Box<NpmDependencyEntryError>> {
       parse_dep_entry_inner(key_value, kind).map_err(|source| {
         Box::new(NpmDependencyEntryError {
           parent_nv: PackageNv {
-            name: nv.0.to_string(),
-            version: nv.1.clone(),
+            name: parent_nv.0.into(),
+            version: parent_nv.1.clone(),
           },
           key: key_value.0.to_string(),
           value: key_value.1.to_string(),
@@ -405,7 +408,7 @@ impl TestNpmRegistryApi {
       self.add_package_info(
         name,
         NpmPackageInfo {
-          name: name.to_string(),
+          name: name.into(),
           ..Default::default()
         },
       );
@@ -473,9 +476,7 @@ impl TestNpmRegistryApi {
 
   pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
     self.with_version_info(package, |version| {
-      version
-        .dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
+      version.dependencies.insert(entry.0.into(), entry.1.into());
     })
   }
 
@@ -485,12 +486,10 @@ impl TestNpmRegistryApi {
     entry: (&str, &str),
   ) {
     self.with_version_info(package, |version| {
-      version
-        .dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
+      version.dependencies.insert(entry.0.into(), entry.1.into());
       version
         .optional_dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
+        .insert(entry.0.into(), entry.1.into());
     })
   }
 
@@ -498,7 +497,7 @@ impl TestNpmRegistryApi {
     self.with_version_info(package, |version| {
       version
         .optional_dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
+        .insert(entry.0.into(), entry.1.into());
     })
   }
 
@@ -510,7 +509,7 @@ impl TestNpmRegistryApi {
     self.with_version_info(package, |version| {
       version
         .peer_dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
+        .insert(entry.0.into(), entry.1.into());
     });
   }
 
@@ -522,11 +521,10 @@ impl TestNpmRegistryApi {
     self.with_version_info(package, |version| {
       version
         .peer_dependencies
-        .insert(entry.0.to_string(), entry.1.to_string());
-      version.peer_dependencies_meta.insert(
-        entry.0.to_string(),
-        NpmPeerDependencyMeta { optional: true },
-      );
+        .insert(entry.0.into(), entry.1.into());
+      version
+        .peer_dependencies_meta
+        .insert(entry.0.into(), NpmPeerDependencyMeta { optional: true });
     });
   }
 }
@@ -1124,7 +1122,7 @@ mod test {
     let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
     assert_eq!(
       info.dependencies,
-      HashMap::from([("value10".to_string(), "valid".to_string())])
+      HashMap::from([("value10".into(), "valid".into())])
     );
     assert_eq!(info.os, Vec::from(["valid".to_string()]));
   }
@@ -1171,15 +1169,21 @@ mod test {
       ("test", "npm:@scope/package@1", ("@scope/package", "1")),
     ];
     for (key, value, expected_result) in cases {
-      let result = parse_dep_entry_name_and_raw_version(key, value).unwrap();
-      assert_eq!(result, expected_result);
+      let key = StackString::from(key);
+      let value = StackString::from(value);
+      let (name, version) =
+        parse_dep_entry_name_and_raw_version(&key, &value).unwrap();
+      assert_eq!((name, version), expected_result);
     }
   }
 
   #[test]
   fn test_parse_dep_entry_name_and_raw_version_error() {
-    let err =
-      parse_dep_entry_name_and_raw_version("test", "git:somerepo").unwrap_err();
+    let err = parse_dep_entry_name_and_raw_version(
+      &StackString::from("test"),
+      &StackString::from("git:somerepo"),
+    )
+    .unwrap_err();
     match err {
       NpmDependencyEntryErrorSource::RemoteDependency { specifier } => {
         assert_eq!(specifier, "git:somerepo")
@@ -1196,7 +1200,7 @@ mod test {
       "git+ssh://github.com/example/example",
     ] {
       let deps = NpmPackageVersionInfo {
-        dependencies: HashMap::from([("a".to_string(), specifier.to_string())]),
+        dependencies: HashMap::from([("a".into(), specifier.into())]),
         ..Default::default()
       };
       let err = deps.dependencies_as_entries("pkg-name").unwrap_err();
