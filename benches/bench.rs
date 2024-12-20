@@ -124,8 +124,9 @@ impl NpmRegistryApi for RealBenchRegistryApi {
         package_name: name.to_string(),
       });
     }
-    let data = resp.json::<Arc<NpmPackageInfo>>().await.unwrap();
-    std::fs::write(&file_path, serde_json::to_string(&data).unwrap()).unwrap();
+    let text = resp.text().await.unwrap();
+    std::fs::write(&file_path, serde_json::to_string(&text).unwrap()).unwrap();
+    let data = serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap();
     self
       .data
       .borrow_mut()
