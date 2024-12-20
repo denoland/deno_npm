@@ -24,8 +24,17 @@ url = "2"
 capacity_builder = "0.5.0"
 
 [dev-dependencies]
+divan = "0.1.17"
 pretty_assertions = "1.0.0"
 tokio = { version = "1.27.0", features = ["full"] }
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
+[[bench]]
+name = "bench"
+harness = false
 
 [patch.crates-io]
 # deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile.git", branch = "deno_semver_0_7" }

@@ -35,8 +35,8 @@ impl NpmPackageInfo {
   pub fn version_info(
     &self,
     nv: &PackageNv,
-  ) -> Result<NpmPackageVersionInfo, NpmPackageVersionNotFound> {
-    match self.versions.get(&nv.version).cloned() {
+  ) -> Result<&NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    match self.versions.get(&nv.version) {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
@@ -391,7 +391,7 @@ pub trait NpmRegistryApi {
 /// purposes. Construct everything on the same thread.
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Rc<RefCell<HashMap<String, NpmPackageInfo>>>,
+  package_infos: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
 impl TestNpmRegistryApi {
@@ -399,7 +399,7 @@ impl TestNpmRegistryApi {
     let previous = self
       .package_infos
       .borrow_mut()
-      .insert(name.to_string(), info);
+      .insert(name.to_string(), Arc::new(info));
     assert!(previous.is_none());
   }
 
@@ -418,8 +418,9 @@ impl TestNpmRegistryApi {
   pub fn with_package(&self, name: &str, f: impl FnOnce(&mut NpmPackageInfo)) {
     self.ensure_package(name);
     let mut infos = self.package_infos.borrow_mut();
-    let info = infos.get_mut(name).unwrap();
-    f(info);
+    let mut info = infos.get_mut(name).unwrap().as_ref().clone();
+    f(&mut info);
+    infos.insert(name.to_string(), Arc::new(info));
   }
 
   pub fn add_dist_tag(&self, package_name: &str, tag: &str, version: &str) {
@@ -441,22 +442,22 @@ impl TestNpmRegistryApi {
     integrity: Option<&str>,
   ) {
     self.ensure_package(name);
-    let mut infos = self.package_infos.borrow_mut();
-    let info = infos.get_mut(name).unwrap();
-    let version = Version::parse_from_npm(version).unwrap();
-    if !info.versions.contains_key(&version) {
-      info.versions.insert(
-        version.clone(),
-        NpmPackageVersionInfo {
-          version,
-          dist: NpmPackageVersionDistInfo {
-            integrity: integrity.map(|s| s.to_string()),
+    self.with_package(name, |info| {
+      let version = Version::parse_from_npm(version).unwrap();
+      if !info.versions.contains_key(&version) {
+        info.versions.insert(
+          version.clone(),
+          NpmPackageVersionInfo {
+            version,
+            dist: NpmPackageVersionDistInfo {
+              integrity: integrity.map(|s| s.to_string()),
+              ..Default::default()
+            },
             ..Default::default()
           },
-          ..Default::default()
-        },
-      );
-    }
+        );
+      }
+    })
   }
 
   pub fn with_version_info(
@@ -466,11 +467,11 @@ impl TestNpmRegistryApi {
   ) {
     let (name, version) = package;
     self.ensure_package_version(name, version);
-    let mut infos = self.package_infos.borrow_mut();
-    let info = infos.get_mut(name).unwrap();
-    let version = Version::parse_from_npm(version).unwrap();
-    let version_info = info.versions.get_mut(&version).unwrap();
-    f(version_info);
+    self.with_package(name, |info| {
+      let version = Version::parse_from_npm(version).unwrap();
+      let version_info = info.versions.get_mut(&version).unwrap();
+      f(version_info);
+    });
   }
 
   pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
@@ -535,11 +536,11 @@ impl NpmRegistryApi for TestNpmRegistryApi {
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
     let infos = self.package_infos.borrow();
-    Ok(Arc::new(infos.get(name).cloned().ok_or_else(|| {
+    Ok(infos.get(name).cloned().ok_or_else(|| {
       NpmRegistryPackageInfoLoadError::PackageNotExists {
         package_name: name.into(),
       }
-    })?))
+    })?)
   }
 }
 
