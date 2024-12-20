@@ -23,7 +23,7 @@ mod resolution {
   fn test(bencher: divan::Bencher) {
     let api = TestNpmRegistryApi::default();
     let mut initial_pkgs = Vec::new();
-    const VERSION_COUNT: usize = 10;
+    const VERSION_COUNT: usize = 100;
     for pkg_index in 0..26 {
       let pkg_name = format!("a{}", pkg_index);
       let next_pkg = format!("a{}", pkg_index + 1);
@@ -59,7 +59,7 @@ mod resolution {
     });
   }
 
-  #[divan::bench]
+  #[divan::bench(sample_count = 1000)]
   fn nextjs_resolve(bencher: divan::Bencher) {
     let api = RealBenchRegistryApi::default();
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -124,8 +124,9 @@ impl NpmRegistryApi for RealBenchRegistryApi {
         package_name: name.to_string(),
       });
     }
-    let data = resp.json::<Arc<NpmPackageInfo>>().await.unwrap();
-    std::fs::write(&file_path, serde_json::to_string(&data).unwrap()).unwrap();
+    let text = resp.text().await.unwrap();
+    std::fs::write(&file_path, &text).unwrap();
+    let data = serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap();
     self
       .data
       .borrow_mut()
