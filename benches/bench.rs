@@ -108,8 +108,12 @@ impl NpmRegistryApi for RealBenchRegistryApi {
     let encoded_name = name.replace("/", "%2F");
     let file_path = format!("target/.deno_npm/{}", encoded_name);
     if let Ok(data) = std::fs::read_to_string(&file_path) {
-      if let Ok(data) = serde_json::from_str(&data) {
-        return Ok(Arc::new(data));
+      if let Ok(data) = serde_json::from_str::<Arc<NpmPackageInfo>>(&data) {
+        self
+          .data
+          .borrow_mut()
+          .insert(name.to_string(), data.clone());
+        return Ok(data);
       }
     }
     let url = format!("https://registry.npmjs.org/{}", encoded_name);
@@ -120,9 +124,8 @@ impl NpmRegistryApi for RealBenchRegistryApi {
         package_name: name.to_string(),
       });
     }
-    let data = resp.json::<NpmPackageInfo>().await.unwrap();
+    let data = resp.json::<Arc<NpmPackageInfo>>().await.unwrap();
     std::fs::write(&file_path, serde_json::to_string(&data).unwrap()).unwrap();
-    let data = Arc::new(data);
     self
       .data
       .borrow_mut()
