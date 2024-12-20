@@ -16,6 +16,38 @@ fn main() {
   divan::main();
 }
 
+mod deserialization {
+  use super::*;
+
+  #[divan::bench]
+  fn packument(bencher: divan::Bencher) {
+    let text = get_next_packument_text();
+    bencher.bench_local(|| {
+      let value = serde_json::from_str::<NpmPackageInfo>(&text).unwrap();
+      value.name.len()
+    });
+  }
+
+  #[divan::bench]
+  fn packument_no_drop(bencher: divan::Bencher) {
+    let text = get_next_packument_text();
+    bencher
+      .bench_local(|| serde_json::from_str::<NpmPackageInfo>(&text).unwrap());
+  }
+
+  fn get_next_packument_text() -> String {
+    build_rt().block_on(async {
+      // ensure the fs cache is populated
+      let _ = RealBenchRegistryApi::default()
+        .package_info("next")
+        .await
+        .unwrap();
+    });
+
+    std::fs::read_to_string(packument_cache_filepath("next")).unwrap()
+  }
+}
+
 mod resolution {
   use super::*;
 
@@ -46,9 +78,7 @@ mod resolution {
       }
     }
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-      .build()
-      .unwrap();
+    let rt = build_rt();
 
     bencher.bench_local(|| {
       let snapshot = rt.block_on(async {
@@ -62,11 +92,7 @@ mod resolution {
   #[divan::bench(sample_count = 1000)]
   fn nextjs_resolve(bencher: divan::Bencher) {
     let api = RealBenchRegistryApi::default();
-    let rt = tokio::runtime::Builder::new_current_thread()
-      .enable_io()
-      .enable_time()
-      .build()
-      .unwrap();
+    let rt = build_rt();
 
     // run once to fill the caches
     rt.block_on(async {
@@ -105,8 +131,7 @@ impl NpmRegistryApi for RealBenchRegistryApi {
     if let Some(data) = self.data.borrow_mut().get(name).cloned() {
       return Ok(data);
     }
-    let encoded_name = name.replace("/", "%2F");
-    let file_path = format!("target/.deno_npm/{}", encoded_name);
+    let file_path = packument_cache_filepath(name);
     if let Ok(data) = std::fs::read_to_string(&file_path) {
       if let Ok(data) = serde_json::from_str::<Arc<NpmPackageInfo>>(&data) {
         self
@@ -116,7 +141,7 @@ impl NpmRegistryApi for RealBenchRegistryApi {
         return Ok(data);
       }
     }
-    let url = format!("https://registry.npmjs.org/{}", encoded_name);
+    let url = packument_url(name);
     eprintln!("Downloading {}", url);
     let resp = reqwest::get(&url).await.unwrap();
     if resp.status() == StatusCode::NOT_FOUND {
@@ -133,6 +158,26 @@ impl NpmRegistryApi for RealBenchRegistryApi {
       .insert(name.to_string(), data.clone());
     Ok(data)
   }
+}
+
+fn build_rt() -> tokio::runtime::Runtime {
+  tokio::runtime::Builder::new_current_thread()
+    .enable_io()
+    .enable_time()
+    .build()
+    .unwrap()
+}
+
+fn packument_cache_filepath(name: &str) -> String {
+  format!("target/.deno_npm/{}", encode_package_name(name))
+}
+
+fn packument_url(name: &str) -> String {
+  format!("https://registry.npmjs.org/{}", encode_package_name(name))
+}
+
+fn encode_package_name(name: &str) -> String {
+  name.replace("/", "%2F")
 }
 
 async fn run_resolver_and_get_snapshot(
