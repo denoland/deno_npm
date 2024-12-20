@@ -174,7 +174,7 @@ impl NpmPackageVersionInfo {
     ) -> Result<NpmDependencyEntry, NpmDependencyEntryErrorSource> {
       let (name, version_req) =
         parse_dep_entry_name_and_raw_version(key, value)?;
-      let version_req = VersionReq::parse_from_npm(&version_req)?;
+      let version_req = VersionReq::parse_from_npm(version_req)?;
       Ok(NpmDependencyEntry {
         kind,
         bare_specifier: key.clone(),
