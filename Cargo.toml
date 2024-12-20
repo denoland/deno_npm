@@ -25,6 +25,7 @@ url = "2"
 [dev-dependencies]
 divan = "0.1.17"
 pretty_assertions = "1.0.0"
+reqwest = "0.12.9"
 tokio = { version = "1.27.0", features = ["full"] }
 
 [profile.release-with-debug]
