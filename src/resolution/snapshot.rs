@@ -216,7 +216,7 @@ impl AddPkgReqsResult {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct NpmResolutionSnapshot {
   /// The unique package requirements map to a single npm package name and version.
   pub(super) package_reqs: HashMap<PackageReq, PackageNv>,
