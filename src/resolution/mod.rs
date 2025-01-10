@@ -12,6 +12,8 @@ pub use snapshot::incomplete_snapshot_from_lockfile;
 pub use snapshot::snapshot_from_lockfile;
 pub use snapshot::AddPkgReqsOptions;
 pub use snapshot::AddPkgReqsResult;
+pub use snapshot::IncompleteSnapshotFromLockfileError;
+pub use snapshot::IntegrityCheckFailedError;
 pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;
 pub use snapshot::PackageCacheFolderIdNotFoundError;

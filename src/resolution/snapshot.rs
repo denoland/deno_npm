@@ -812,9 +812,10 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, JsError)]
 pub enum IncompleteSnapshotFromLockfileError {
   #[error(transparent)]
+  #[class(inherit)]
   PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
@@ -884,7 +885,8 @@ pub fn incomplete_snapshot_from_lockfile(
   })
 }
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, JsError)]
+#[class(type)]
 #[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
 is the same as when the lockfile was generated.
 
@@ -904,18 +906,22 @@ pub struct IntegrityCheckFailedError {
   pub filename: String,
 }
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, JsError)]
 pub enum SnapshotFromLockfileError {
   #[error(transparent)]
+  #[class(inherit)]
   PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
   #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  #[class(inherit)]
   VersionNotFound {
     #[from]
     source: NpmPackageVersionNotFound,
   },
   #[error("The lockfile is corrupt. Remove the lockfile to regenerate it.")]
+  #[class(inherit)]
   PackageIdNotFound(#[from] PackageIdNotFoundError),
   #[error(transparent)]
+  #[class(inherit)]
   IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
 }
 

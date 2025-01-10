@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use capacity_builder::CapacityDisplay;
 use capacity_builder::StringAppendable;
 use capacity_builder::StringBuilder;
+use deno_error::JsError;
 use deno_semver::package::PackageNv;
 use deno_semver::CowVec;
 use deno_semver::SmallStackString;
@@ -28,7 +29,8 @@ pub mod npm_rc;
 pub mod registry;
 pub mod resolution;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, JsError)]
+#[class(type)]
 #[error("Invalid npm package id '{text}'. {message}")]
 pub struct NpmPackageIdDeserializationError {
   message: String,
