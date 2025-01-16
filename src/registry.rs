@@ -1,10 +1,9 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use crate::arc::{MaybeArc, MaybeRefCell};
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -360,7 +359,8 @@ pub enum NpmRegistryPackageInfoLoadError {
 ///
 /// An implementer may want to override the default implementation of
 /// [`mark_force_reload`] method if it has a cache mechanism.
-#[async_trait(?Send)]
+#[cfg_attr(feature = "sync", async_trait)]
+#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
 pub trait NpmRegistryApi {
   /// Gets the package information from the npm registry.
   ///
@@ -391,7 +391,7 @@ pub trait NpmRegistryApi {
 /// purposes. Construct everything on the same thread.
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
+  package_infos: MaybeArc<MaybeRefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
 impl TestNpmRegistryApi {
@@ -529,7 +529,8 @@ impl TestNpmRegistryApi {
   }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(feature = "sync", async_trait)]
+#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
 impl NpmRegistryApi for TestNpmRegistryApi {
   async fn package_info(
     &self,
