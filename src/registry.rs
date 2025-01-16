@@ -1,10 +1,10 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use crate::arc::MaybeArc;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -391,7 +391,7 @@ pub trait NpmRegistryApi {
 /// purposes. Construct everything on the same thread.
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
+  package_infos: MaybeArc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
 impl TestNpmRegistryApi {
