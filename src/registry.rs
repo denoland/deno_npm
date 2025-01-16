@@ -359,7 +359,8 @@ pub enum NpmRegistryPackageInfoLoadError {
 ///
 /// An implementer may want to override the default implementation of
 /// [`mark_force_reload`] method if it has a cache mechanism.
-#[async_trait(?Send)]
+#[cfg_attr(feature = "sync", async_trait)]
+#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
 pub trait NpmRegistryApi {
   /// Gets the package information from the npm registry.
   ///
