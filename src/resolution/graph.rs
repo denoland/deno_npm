@@ -8,7 +8,6 @@ use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
 use log::debug;
-use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -19,7 +18,7 @@ use std::hash::Hasher;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
-use crate::arc::MaybeArc;
+use crate::arc::{MaybeArc, MaybeRwLock};
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
 use crate::registry::NpmDependencyEntryKind;
@@ -186,11 +185,11 @@ impl ResolvedNodeIds {
 /// A pointer to a specific node in a graph path. The underlying node id
 /// may change as peer dependencies are created.
 #[derive(Clone, Debug)]
-struct NodeIdRef(MaybeArc<RefCell<NodeId>>);
+struct NodeIdRef(MaybeArc<MaybeRwLock<NodeId>>);
 
 impl NodeIdRef {
   pub fn new(node_id: NodeId) -> Self {
-    NodeIdRef(MaybeArc::new(RefCell::new(node_id)))
+    NodeIdRef(MaybeArc::new(MaybeRwLock::new(node_id)))
   }
 
   pub fn change(&self, node_id: NodeId) {
@@ -221,7 +220,7 @@ struct GraphPath {
   nv: MaybeArc<PackageNv>,
   /// Descendants in the path that circularly link to an ancestor in a child. These
   /// descendants should be kept up to date and always point to this node.
-  linked_circular_descendants: RefCell<Vec<MaybeArc<GraphPath>>>,
+  linked_circular_descendants: MaybeRwLock<Vec<MaybeArc<GraphPath>>>,
 }
 
 impl GraphPath {
