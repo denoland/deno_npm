@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use deno_npm::arc::{MaybeArc, MaybeRefCell};
 use deno_npm::registry::NpmPackageInfo;
 use deno_npm::registry::NpmRegistryApi;
 use deno_npm::registry::NpmRegistryPackageInfoLoadError;
@@ -110,7 +112,7 @@ mod resolution {
 }
 
 struct RealBenchRegistryApi {
-  data: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
+  data: MaybeArc<MaybeRefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
 impl Default for RealBenchRegistryApi {
@@ -122,7 +124,8 @@ impl Default for RealBenchRegistryApi {
   }
 }
 
-#[async_trait::async_trait(?Send)]
+#[cfg_attr(feature = "sync", async_trait)]
+#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
 impl NpmRegistryApi for RealBenchRegistryApi {
   async fn package_info(
     &self,
