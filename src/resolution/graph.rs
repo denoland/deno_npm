@@ -15,10 +15,12 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::sync::Mutex;
+use std::sync::RwLock;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
-use crate::arc::{MaybeArc, MaybeRwLock};
+use crate::arc::{MaybeArc, MaybeRefCell};
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
 use crate::registry::NpmDependencyEntryKind;
@@ -185,11 +187,11 @@ impl ResolvedNodeIds {
 /// A pointer to a specific node in a graph path. The underlying node id
 /// may change as peer dependencies are created.
 #[derive(Clone, Debug)]
-struct NodeIdRef(MaybeArc<MaybeRwLock<NodeId>>);
+struct NodeIdRef(MaybeArc<MaybeRefCell<NodeId>>);
 
 impl NodeIdRef {
   pub fn new(node_id: NodeId) -> Self {
-    NodeIdRef(MaybeArc::new(MaybeRwLock::new(node_id)))
+    NodeIdRef(MaybeArc::new(MaybeRefCell::new(node_id)))
   }
 
   pub fn change(&self, node_id: NodeId) {
@@ -220,7 +222,7 @@ struct GraphPath {
   nv: MaybeArc<PackageNv>,
   /// Descendants in the path that circularly link to an ancestor in a child. These
   /// descendants should be kept up to date and always point to this node.
-  linked_circular_descendants: MaybeRwLock<Vec<MaybeArc<GraphPath>>>,
+  linked_circular_descendants: MaybeRefCell<Vec<MaybeArc<GraphPath>>>,
 }
 
 impl GraphPath {
@@ -1415,7 +1417,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) {
     let ancestor_node_id = ancestor.node_id();
     let path = descendant.get_path_to_ancestor_exclusive(ancestor_node_id);
-
     let ancestor_resolved_id = self
       .graph
       .resolved_node_ids

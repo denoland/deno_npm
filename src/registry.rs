@@ -1,6 +1,6 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use crate::arc::{MaybeArc, MaybeRwLock};
+use crate::arc::{MaybeArc, MaybeRefCell};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -390,7 +390,7 @@ pub trait NpmRegistryApi {
 /// purposes. Construct everything on the same thread.
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
-  package_infos: MaybeArc<MaybeRwLock<HashMap<String, Arc<NpmPackageInfo>>>>,
+  package_infos: MaybeArc<MaybeRefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
 impl TestNpmRegistryApi {
