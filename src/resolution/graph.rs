@@ -15,8 +15,6 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::sync::Mutex;
-use std::sync::RwLock;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
