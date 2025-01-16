@@ -1,38 +1,43 @@
 #[cfg(feature = "sync")]
-pub use std::sync::Arc as MaybeArc;
-#[cfg(feature = "sync")]
-pub use std::sync::RwLock as MaybeRefCell;
+mod internal {
+  use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-#[cfg(not(feature = "sync"))]
-#[derive(Default, Debug)]
-pub struct ThreadSafeRefCell<T> {
-  inner: std::sync::Arc<std::sync::Mutex<T>>,
-}
+  #[derive(Debug, Default)]
+  pub struct MaybeRefCell<T> {
+    inner: Arc<RwLock<T>>,
+  }
 
-impl<T> ThreadSafeRefCell<T> {
-  pub fn new(value: T) -> Self {
-    ThreadSafeRefCell {
-      inner: std::sync::Arc::new(std::sync::Mutex::new(value)),
+  impl<T> MaybeRefCell<T> {
+    pub fn new(value: T) -> Self {
+      Self {
+        inner: Arc::new(RwLock::new(value)),
+      }
+    }
+
+    pub fn borrow(&self) -> RwLockReadGuard<'_, T> {
+      self.inner.read().unwrap()
+    }
+
+    pub fn borrow_mut(&self) -> RwLockWriteGuard<'_, T> {
+      self.inner.write().unwrap()
     }
   }
 
-  pub fn borrow(&self) -> std::sync::MutexGuard<'_, T> {
-    self.inner.lock().unwrap()
-  }
-
-  pub fn borrow_mut(&self) -> std::sync::MutexGuard<'_, T> {
-    self.inner.lock().unwrap()
-  }
-}
-
-impl<T> Clone for ThreadSafeRefCell<T> {
-  fn clone(&self) -> Self {
-    ThreadSafeRefCell {
-      inner: std::sync::Arc::clone(&self.inner),
+  impl<T> Clone for MaybeRefCell<T> {
+    fn clone(&self) -> Self {
+      Self {
+        inner: Arc::clone(&self.inner),
+      }
     }
   }
+
+  pub use std::sync::Arc as MaybeArc;
 }
-pub use ThreadSafeRefCell as MaybeRefCell;
 
 #[cfg(not(feature = "sync"))]
-pub use std::rc::Rc as MaybeArc;
+mod internal {
+  pub use std::cell::RefCell as MaybeRefCell;
+  pub use std::rc::Rc as MaybeArc;
+}
+
+pub use internal::{MaybeArc, MaybeRefCell};
