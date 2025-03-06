@@ -799,7 +799,7 @@ struct UnresolvedOptionalPeer {
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
-  version_resolver: &'a NpmVersionResolver,
+  version_resolver: &'a NpmVersionResolver<'a>,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   unresolved_optional_peers:
     HashMap<Rc<PackageNv>, Vec<UnresolvedOptionalPeer>>,
@@ -907,6 +907,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .or_default()
         .iter(),
     )?;
+    let info = info.as_ref();
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
         name: package_info.name.clone(),
@@ -4120,6 +4121,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patched_packages: &Default::default(),
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
@@ -4163,6 +4165,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patched_packages: &Default::default(),
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);

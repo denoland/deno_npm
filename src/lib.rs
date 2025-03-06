@@ -323,7 +323,7 @@ pub struct NpmResolutionPackage {
   pub copy_index: u8,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Option<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,

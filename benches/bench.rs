@@ -195,6 +195,7 @@ async fn run_resolver_and_get_snapshot(
       AddPkgReqsOptions {
         package_reqs: &reqs,
         types_node_version_req: None,
+        patch_packages: &Default::default(),
       },
     )
     .await;

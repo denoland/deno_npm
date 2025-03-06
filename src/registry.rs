@@ -132,7 +132,7 @@ pub enum NpmPackageVersionBinEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NpmPackageVersionInfo {
   pub version: Version,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Option<NpmPackageVersionDistInfo>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
@@ -449,10 +449,10 @@ impl TestNpmRegistryApi {
           version.clone(),
           NpmPackageVersionInfo {
             version,
-            dist: NpmPackageVersionDistInfo {
+            dist: Some(NpmPackageVersionDistInfo {
               integrity: integrity.map(|s| s.to_string()),
               ..Default::default()
-            },
+            }),
             ..Default::default()
           },
         );
@@ -896,11 +896,11 @@ mod test {
       info,
       NpmPackageVersionInfo {
         version: Version::parse_from_npm("1.0.0").unwrap(),
-        dist: NpmPackageVersionDistInfo {
+        dist: Some(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
           shasum: "test".to_string(),
           integrity: None,
-        },
+        }),
         ..Default::default()
       }
     );
@@ -919,11 +919,11 @@ mod test {
       info,
       NpmPackageVersionInfo {
         version: Version::parse_from_npm("1.0.0").unwrap(),
-        dist: NpmPackageVersionDistInfo {
+        dist: Some(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
           shasum: "test".to_string(),
           integrity: None,
-        },
+        }),
         dependencies: HashMap::new(),
         deprecated: Some("aa".to_string()),
         ..Default::default()
@@ -956,11 +956,11 @@ mod test {
         info,
         NpmPackageVersionInfo {
           version: Version::parse_from_npm("1.0.0").unwrap(),
-          dist: NpmPackageVersionDistInfo {
+          dist: Some(NpmPackageVersionDistInfo {
             tarball: "value".to_string(),
             shasum: "test".to_string(),
             integrity: None,
-          },
+          }),
           dependencies: HashMap::new(),
           deprecated: None,
           ..Default::default()

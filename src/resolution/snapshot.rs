@@ -2,6 +2,7 @@
 
 use deno_error::JsError;
 use deno_lockfile::Lockfile;
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use deno_semver::SmallStackString;
@@ -29,6 +30,7 @@ use super::NpmPackageVersionNotFound;
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
+use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
@@ -111,7 +113,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Option<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
@@ -192,6 +194,8 @@ pub struct AddPkgReqsOptions<'a> {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
+  /// Packages that are marked as "patch" in the config file.
+  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
 }
 
 #[derive(Debug)]
@@ -314,6 +318,7 @@ impl NpmResolutionSnapshot {
 
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
+      patched_packages: options.patch_packages,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
@@ -973,26 +978,30 @@ pub async fn snapshot_from_lockfile<'a>(
     match result {
       Ok(version_info) => {
         let snapshot_package = &incomplete_snapshot.packages[i];
+
         if !params.skip_integrity_check {
-          let registry_integrity = version_info.dist.integrity().for_lockfile();
-          if registry_integrity != snapshot_package.integrity {
-            return Err(
-              IntegrityCheckFailedError {
-                package_display_id: format!(
-                  "npm:{}",
-                  snapshot_package.id.as_serialized()
-                ),
-                expected: snapshot_package.integrity.clone(),
-                actual: registry_integrity,
-                filename: incomplete_snapshot
-                  .lockfile_file_name
-                  .display()
-                  .to_string(),
-              }
-              .into(),
-            );
+          if let Some(dist) = &version_info.dist {
+            let registry_integrity = dist.integrity().for_lockfile();
+            if registry_integrity != snapshot_package.integrity {
+              return Err(
+                IntegrityCheckFailedError {
+                  package_display_id: format!(
+                    "npm:{}",
+                    snapshot_package.id.as_serialized()
+                  ),
+                  expected: snapshot_package.integrity.clone(),
+                  actual: registry_integrity,
+                  filename: incomplete_snapshot
+                    .lockfile_file_name
+                    .display()
+                    .to_string(),
+                }
+                .into(),
+              );
+            }
           }
         }
+
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),

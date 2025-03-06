@@ -1,5 +1,8 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use std::collections::HashMap;
+
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::StackString;
 use deno_semver::Version;
@@ -48,26 +51,56 @@ pub enum NpmPackageVersionResolutionError {
   },
 }
 
-#[derive(Debug, Clone)]
-pub struct NpmVersionResolver {
-  pub types_node_version_req: Option<VersionReq>,
+pub enum PatchOrRealPackageInfo<'a, 'b> {
+  Patch(&'a NpmPackageVersionInfo),
+  Real(&'b NpmPackageVersionInfo),
 }
 
-impl NpmVersionResolver {
+impl PatchOrRealPackageInfo<'_, '_> {
+  pub fn as_ref(&self) -> &NpmPackageVersionInfo {
+    match self {
+      PatchOrRealPackageInfo::Patch(i) => i,
+      PatchOrRealPackageInfo::Real(i) => i,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct NpmVersionResolver<'patched> {
+  pub types_node_version_req: Option<VersionReq>,
+  pub patched_packages:
+    &'patched HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+}
+
+impl<'patch> NpmVersionResolver<'patch> {
   pub fn resolve_best_package_version_info<'info, 'version>(
     &self,
     version_req: &VersionReq,
     package_info: &'info NpmPackageInfo,
     existing_versions: impl Iterator<Item = &'version Version>,
-  ) -> Result<&'info NpmPackageVersionInfo, NpmPackageVersionResolutionError>
-  {
+  ) -> Result<
+    PatchOrRealPackageInfo<'patch, 'info>,
+    NpmPackageVersionResolutionError,
+  > {
+    // always attempt to read from the patched packages first
+    if let Some(versions) = self.patched_packages.get(&package_info.name) {
+      let mut matching_versions = versions
+        .iter()
+        .filter(|i| version_req.matches(&i.version))
+        .collect::<Vec<_>>();
+      matching_versions.sort_by_key(|i| &i.version);
+      if let Some(top_version) = matching_versions.pop() {
+        return Ok(PatchOrRealPackageInfo::Patch(top_version));
+      }
+    }
+
     if let Some(version) = self.resolve_best_from_existing_versions(
       version_req,
       package_info,
       existing_versions,
     )? {
       match package_info.versions.get(version) {
-        Some(version_info) => Ok(version_info),
+        Some(version_info) => Ok(PatchOrRealPackageInfo::Real(version_info)),
         None => Err(NpmPackageVersionResolutionError::VersionNotFound(
           NpmPackageVersionNotFound(PackageNv {
             name: package_info.name.clone(),
@@ -77,7 +110,9 @@ impl NpmVersionResolver {
       }
     } else {
       // get the information
-      self.get_resolved_package_version_and_info(version_req, package_info)
+      self
+        .get_resolved_package_version_and_info(version_req, package_info)
+        .map(PatchOrRealPackageInfo::Real)
     }
   }
 
@@ -234,6 +269,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patched_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -305,6 +341,7 @@ mod test {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
+      patched_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -341,6 +378,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patched_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -396,6 +434,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patched_packages: &Default::default(),
     };
 
     // check for when matches dist tag
