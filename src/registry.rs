@@ -32,10 +32,18 @@ pub struct NpmPackageInfo {
 }
 
 impl NpmPackageInfo {
-  pub fn version_info(
-    &self,
+  pub fn version_info<'a>(
+    &'a self,
     nv: &PackageNv,
-  ) -> Result<&NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    patched_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionNotFound> {
+    if let Some(packages) = patched_packages.get(&nv.name) {
+      for pkg in packages {
+        if pkg.version == nv.version {
+          return Ok(pkg);
+        }
+      }
+    }
     match self.versions.get(&nv.version) {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),

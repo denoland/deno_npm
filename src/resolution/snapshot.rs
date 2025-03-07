@@ -318,7 +318,7 @@ impl NpmResolutionSnapshot {
 
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
-      patched_packages: options.patch_packages,
+      patch_packages: options.patch_packages,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
@@ -359,7 +359,7 @@ impl NpmResolutionSnapshot {
       Some(err) => Err(err),
       None => match resolver.resolve_pending().await {
         Ok(()) => graph
-          .into_snapshot(api)
+          .into_snapshot(api, version_resolver.patch_packages)
           .await
           .map_err(NpmResolutionError::Registry),
         Err(err) => Err(err),
@@ -932,6 +932,7 @@ pub enum SnapshotFromLockfileError {
 
 pub struct SnapshotFromLockfileParams<'a> {
   pub api: &'a dyn NpmRegistryApi,
+  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub incomplete_snapshot: IncompleteSnapshot,
   pub skip_integrity_check: bool,
 }
@@ -972,7 +973,7 @@ pub async fn snapshot_from_lockfile<'a>(
       .map_err(|e: &SnapshotFromLockfileError| e.clone())
       .and_then(|(package_info, nv)| {
         package_info
-          .version_info(nv)
+          .version_info(nv, params.patch_packages)
           .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
       });
     match result {
@@ -1340,6 +1341,7 @@ mod tests {
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false
     })
     .await
@@ -1391,6 +1393,7 @@ mod tests {
     let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false,
     })
     .await
@@ -1411,6 +1414,7 @@ mod tests {
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: true, // will pass because ignored
     })
     .await
@@ -1460,6 +1464,7 @@ mod tests {
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false,
     })
     .await

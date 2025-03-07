@@ -597,6 +597,7 @@ impl Graph {
   pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
     self,
     api: &TNpmRegistryApi,
+    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     let packages_to_pkg_ids = self
       .nodes
@@ -639,9 +640,8 @@ impl Graph {
       // at this point the api should have this cached
       let package_info = api.package_info(&pkg_id.nv.name).await?;
       let version_info = package_info
-        .versions
-        .get(&pkg_id.nv.version)
-        .unwrap_or_else(|| panic!("missing: {:?}", pkg_id.nv));
+        .version_info(&pkg_id.nv, patch_packages)
+        .unwrap();
 
       let mut dependencies = HashMap::with_capacity(node.children.len());
       for (specifier, child_id) in &node.children {
@@ -907,7 +907,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .or_default()
         .iter(),
     )?;
-    let info = info.as_ref();
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
         name: package_info.name.clone(),
@@ -969,7 +968,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           // need to parallelize
           let package_info = self.api.package_info(&pkg_nv.name).await?;
           let version_info = package_info
-            .version_info(&pkg_nv)
+            .version_info(&pkg_nv, self.version_resolver.patch_packages)
             .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
           self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
         };
@@ -4121,7 +4120,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patched_packages: &Default::default(),
+      patch_packages: &Default::default(),
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
@@ -4134,11 +4133,17 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(&api).await.unwrap();
+    let snapshot = graph
+      .into_snapshot(&api, &Default::default())
+      .await
+      .unwrap();
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
-      let new_snapshot = graph.into_snapshot(&api).await.unwrap();
+      let new_snapshot = graph
+        .into_snapshot(&api, &Default::default())
+        .await
+        .unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -4146,7 +4151,10 @@ mod test {
       );
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
-      let new_snapshot2 = graph.into_snapshot(&api).await.unwrap();
+      let new_snapshot2 = graph
+        .into_snapshot(&api, &Default::default())
+        .await
+        .unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
@@ -4165,7 +4173,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patched_packages: &Default::default(),
+      patch_packages: &Default::default(),
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
