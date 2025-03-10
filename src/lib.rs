@@ -331,9 +331,20 @@ pub struct NpmResolutionPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
+  pub has_bin: bool,
+  pub has_scripts: bool,
+  pub is_deprecated: bool,
+
+  #[serde(flatten)]
+  pub extra: Option<NpmPackageExtraInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpmPackageExtraInfo {
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
+  pub dist: NpmPackageVersionDistInfo,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -343,7 +354,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
       .field("pkg_id", &self.id)
       .field("copy_index", &self.copy_index)
       .field("system", &self.system)
-      .field("dist", &self.dist)
+      .field("extra", &self.extra)
       .field(
         "dependencies",
         &self.dependencies.iter().collect::<BTreeMap<_, _>>(),
@@ -353,7 +364,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
         deps.sort();
         deps
       })
-      .field("deprecated", &self.deprecated)
+      .field("deprecated", &self.is_deprecated)
       .finish()
   }
 }
@@ -363,12 +374,12 @@ impl NpmResolutionPackage {
     SerializedNpmResolutionSnapshotPackage {
       id: self.id.clone(),
       system: self.system.clone(),
-      dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
-      bin: self.bin.clone(),
-      scripts: self.scripts.clone(),
-      deprecated: self.deprecated.clone(),
+      has_bin: self.has_bin,
+      has_scripts: self.has_scripts,
+      is_deprecated: self.is_deprecated,
+      extra: self.extra.clone(),
     }
   }
 

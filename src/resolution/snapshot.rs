@@ -35,6 +35,7 @@ use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
+use crate::NpmPackageExtraInfo;
 use crate::NpmPackageId;
 use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
@@ -119,9 +120,13 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
-  pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<SmallStackString, String>,
-  pub deprecated: Option<String>,
+
+  pub has_bin: bool,
+  pub has_scripts: bool,
+  pub is_deprecated: bool,
+
+  #[serde(flatten)]
+  pub extra: Option<NpmPackageExtraInfo>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -274,12 +279,12 @@ impl NpmResolutionSnapshot {
           id: package.id,
           copy_index,
           system: package.system,
-          dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
-          bin: package.bin,
-          scripts: package.scripts,
-          deprecated: package.deprecated,
+          has_bin: package.has_bin,
+          has_scripts: package.has_scripts,
+          is_deprecated: package.is_deprecated,
+          extra: package.extra,
         },
       );
     }
@@ -473,14 +478,14 @@ impl NpmResolutionSnapshot {
     while let Some(pkg) = pending.pop_front() {
       let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
         id: pkg.id.clone(),
-        dist: pkg.dist.clone(),
         dependencies: HashMap::with_capacity(pkg.dependencies.len()),
         // the fields below are stripped from the output
         system: Default::default(),
         optional_dependencies: Default::default(),
-        bin: None,
-        scripts: Default::default(),
-        deprecated: Default::default(),
+        has_bin: pkg.has_bin,
+        has_scripts: pkg.has_scripts,
+        is_deprecated: pkg.is_deprecated,
+        extra: pkg.extra.clone(),
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -849,6 +854,12 @@ struct IncompletePackageInfo {
   id: NpmPackageId,
   integrity: Option<String>,
   dependencies: HashMap<StackString, NpmPackageId>,
+  optional_dependencies: HashSet<StackString>,
+  cpu: Vec<SmallStackString>,
+  os: Vec<SmallStackString>,
+  has_bin: bool,
+  has_scripts: bool,
+  is_deprecated: bool,
 }
 
 pub struct IncompleteSnapshot {
@@ -901,6 +912,16 @@ pub fn incomplete_snapshot_from_lockfile(
       id,
       integrity: package.integrity.clone(),
       dependencies,
+      optional_dependencies: package
+        .optional_dependencies
+        .iter()
+        .cloned()
+        .collect(),
+      has_bin: package.bin,
+      cpu: package.cpu.clone(),
+      os: package.os.clone(),
+      has_scripts: package.scripts,
+      is_deprecated: package.deprecated,
     });
   }
 
@@ -964,102 +985,28 @@ pub struct SnapshotFromLockfileParams<'a> {
 /// [`IncompleteSnapshot`] instance that's passed as the first argument for this
 /// function.
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub async fn snapshot_from_lockfile<'a>(
-  params: SnapshotFromLockfileParams<'a>,
+pub async fn snapshot_from_lockfile(
+  params: SnapshotFromLockfileParams,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
-  let api = params.api;
   let incomplete_snapshot = params.incomplete_snapshot;
 
   // fetch the package version information
-  let pkg_nvs = incomplete_snapshot
-    .packages
-    .iter()
-    .map(|p| p.id.nv.clone())
-    .collect::<Vec<_>>();
-  let get_version_infos = || {
-    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
-      let package_info = api
-        .package_info(&nv.name)
-        .await
-        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      Ok((package_info, nv))
-    }))
-  };
-  let mut version_infos = get_version_infos();
-  let mut i = 0;
+
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
-  while let Some(result) = version_infos.next().await {
-    let result = result
-      .as_ref()
-      .map_err(|e: &SnapshotFromLockfileError| e.clone())
-      .and_then(|(package_info, nv)| {
-        package_info
-          .version_info(nv, params.patch_packages)
-          .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
-      });
-    match result {
-      Ok(version_info) => {
-        let snapshot_package = &incomplete_snapshot.packages[i];
-
-        if !params.skip_integrity_check {
-          if let Some(dist) = &version_info.dist {
-            let registry_integrity = dist.integrity().for_lockfile();
-            if Some(&registry_integrity) != snapshot_package.integrity.as_ref()
-            {
-              return Err(
-                IntegrityCheckFailedError {
-                  package_display_id: format!(
-                    "npm:{}",
-                    snapshot_package.id.as_serialized()
-                  ),
-                  expected: snapshot_package
-                    .integrity
-                    .clone()
-                    .unwrap_or_else(|| "<missing>".to_string()),
-                  actual: registry_integrity,
-                  filename: incomplete_snapshot
-                    .lockfile_file_name
-                    .display()
-                    .to_string(),
-                }
-                .into(),
-              );
-            }
-          }
-        }
-
-        packages.push(SerializedNpmResolutionSnapshotPackage {
-          id: snapshot_package.id.clone(),
-          dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist.clone(),
-          system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu.clone(),
-            os: version_info.os.clone(),
-          },
-          optional_dependencies: version_info
-            .optional_dependencies
-            .keys()
-            .cloned()
-            .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
-          deprecated: version_info.deprecated.clone(),
-        });
-      }
-      Err(err) => {
-        if api.mark_force_reload() {
-          // reset and try again
-          version_infos = get_version_infos();
-          i = 0;
-          packages.clear();
-          continue;
-        } else {
-          return Err(err);
-        }
-      }
-    }
-
-    i += 1;
+  for pkg in incomplete_snapshot.packages {
+    packages.push(SerializedNpmResolutionSnapshotPackage {
+      id: pkg.id,
+      dependencies: pkg.dependencies,
+      optional_dependencies: pkg.optional_dependencies,
+      system: NpmResolutionPackageSystemInfo {
+        cpu: pkg.cpu,
+        os: pkg.os,
+      },
+      has_bin: pkg.has_bin,
+      has_scripts: pkg.has_scripts,
+      is_deprecated: pkg.is_deprecated,
+      extra: None,
+    });
   }
 
   let snapshot = SerializedNpmResolutionSnapshot {
@@ -1143,21 +1090,21 @@ mod tests {
           id: NpmPackageId::from_serialized("a@1.0.0").unwrap(),
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: HashSet::from(["c".into()]),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          has_bin: false,
+          has_scripts: false,
+          is_deprecated: false,
+          extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
           dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          has_bin: false,
+          has_scripts: false,
+          is_deprecated: false,
+          extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1166,21 +1113,21 @@ mod tests {
             os: vec!["win32".into()],
             cpu: vec!["x64".into()],
           },
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          has_bin: false,
+          has_scripts: false,
+          is_deprecated: false,
+          extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
           dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          has_bin: false,
+          has_scripts: false,
+          is_deprecated: false,
+          extra: None,
         },
       ],
     }
@@ -1289,11 +1236,11 @@ mod tests {
       id: NpmPackageId::from_serialized(id).unwrap(),
       dependencies: Default::default(),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      has_bin: false,
+      has_scripts: false,
+      is_deprecated: false,
+      extra: None,
     }
   }
 
@@ -1517,11 +1464,11 @@ mod tests {
       id: NpmPackageId::from_serialized(id).unwrap(),
       dependencies: deps(dependencies),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      has_bin: false,
+      has_scripts: false,
+      is_deprecated: false,
+      extra: None,
     }
   }
 

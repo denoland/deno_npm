@@ -666,16 +666,21 @@ impl Graph {
             cpu: version_info.cpu.clone(),
             os: version_info.os.clone(),
           },
-          dist: version_info.dist.clone(),
           dependencies,
           optional_dependencies: version_info
             .optional_dependencies
             .keys()
             .cloned()
             .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
-          deprecated: version_info.deprecated.clone(),
+          has_bin: version_info.bin.is_some(),
+          extra: Some(crate::NpmPackageExtraInfo {
+            dist: version_info.dist.clone(),
+            bin: version_info.bin.clone(),
+            scripts: version_info.scripts.clone(),
+            deprecated: version_info.deprecated.clone(),
+          }),
+          has_scripts: !version_info.scripts.is_empty(),
+          is_deprecated: version_info.deprecated.is_some(),
         },
       );
     }
@@ -4291,15 +4296,15 @@ mod test {
         crate::resolution::SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           system: Default::default(),
-          dist: Default::default(),
           dependencies: HashMap::from([(
             "package-a".into(),
             NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           )]),
           optional_dependencies: HashSet::new(),
-          bin: None,
-          scripts: HashMap::new(),
-          deprecated: None,
+          extra: None,
+          has_bin: false,
+          has_scripts: false,
+          is_deprecated: false,
         },
       ]),
     };
