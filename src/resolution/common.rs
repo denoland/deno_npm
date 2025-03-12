@@ -65,13 +65,19 @@ impl NpmVersionResolver<'_> {
     existing_versions: impl Iterator<Item = &'version Version>,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
     // always attempt to resolve from the patched packages first
-    if let Some(versions) = self.patch_packages.get(&package_info.name) {
-      let mut matching_versions = versions
-        .iter()
-        .filter(|i| version_req.matches(&i.version))
-        .collect::<Vec<_>>();
-      matching_versions.sort_by_key(|i| &i.version);
-      if let Some(top_version) = matching_versions.pop() {
+    if let Some(version_infos) = self.patch_packages.get(&package_info.name) {
+      let mut best_version: Option<&'a NpmPackageVersionInfo> = None;
+      for version_info in version_infos {
+        let version = &version_info.version;
+        if version_req.matches(version) {
+          let is_greater =
+            best_version.map(|c| *version > c.version).unwrap_or(true);
+          if is_greater {
+            best_version = Some(version_info);
+          }
+        }
+      }
+      if let Some(top_version) = best_version {
         return Ok(top_version);
       }
     }
