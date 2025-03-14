@@ -4029,6 +4029,181 @@ mod test {
     let _graph = Graph::from_snapshot(snapshot);
   }
 
+  #[tokio::test]
+  async fn patch_packages() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b1", "1.0.0");
+    api.ensure_package_version("package-b2", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b1", "1"));
+    api.add_dependency(("package-b1", "1.0.0"), ("package-b2", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
+
+    let patch_packages = HashMap::from([(
+      PackageName::from_static("package-b1"),
+      vec![
+        NpmPackageVersionInfo {
+          // should not select this one because 1.0.1 is higher
+          version: Version::parse_standard("1.0.0").unwrap(),
+          ..Default::default()
+        },
+        NpmPackageVersionInfo {
+          version: Version::parse_standard("1.0.1").unwrap(),
+          dependencies: HashMap::from([(
+            StackString::from_static("package-c"),
+            StackString::from_static("1"),
+          )]),
+          ..Default::default()
+        },
+      ],
+    )]);
+
+    let (packages, package_reqs) =
+      run_resolver_with_patch_packages_and_get_output(
+        api,
+        vec!["package-a@1.0.0"],
+        &patch_packages,
+      )
+      .await;
+
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b1".to_string(),
+            "package-b1@1.0.1".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b1@1.0.1".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-c".to_string(),
+            "package-c@1.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-d".to_string(),
+            "package-d@1.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-d@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string())]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_patch_copy_index() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-peer", "1.1.0");
+    api.ensure_package_version("package-peer", "1.2.0");
+    api.add_dependency(("package-b", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-b", "1.0.0"), ("package-peer", "=1.1.0"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-a", "1"));
+
+    let patch_packages = HashMap::from([(
+      PackageName::from_static("package-a"),
+      vec![NpmPackageVersionInfo {
+        version: Version::parse_standard("1.0.0").unwrap(),
+        peer_dependencies: HashMap::from([(
+          StackString::from_static("package-peer"),
+          StackString::from_static("*"), // should select 1.2.0, then 1.1.0
+        )]),
+        ..Default::default()
+      }],
+    )]);
+
+    let (packages, package_reqs) =
+      run_resolver_with_patch_packages_and_get_output(
+        api,
+        vec!["package-a@1.0", "package-b@1.0"],
+        &patch_packages,
+      )
+      .await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
+          copy_index: 1,
+          dependencies: BTreeMap::from([(
+            "package-peer".to_string(),
+            "package-peer@1.1.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0_package-peer@1.2.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-peer".to_string(),
+            "package-peer@1.2.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            (
+              "package-c".to_string(),
+              "package-c@1.0.0_package-peer@1.1.0".to_string(),
+            ),
+            ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
+          ]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-a".to_string(),
+            "package-a@1.0.0_package-peer@1.1.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-peer@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-peer@1.2.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([]),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![
+        (
+          "package-a@1.0".to_string(),
+          "package-a@1.0.0_package-peer@1.2.0".to_string()
+        ),
+        (
+          "package-b@1.0".to_string(),
+          "package-b@1.0.0_package-peer@1.1.0".to_string()
+        )
+      ]
+    );
+  }
+
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
@@ -4040,7 +4215,25 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let snapshot = run_resolver_and_get_snapshot(api, reqs).await;
+    run_resolver_with_patch_packages_and_get_output(
+      api,
+      reqs,
+      &Default::default(),
+    )
+    .await
+  }
+
+  async fn run_resolver_with_patch_packages_and_get_output(
+    api: TestNpmRegistryApi,
+    reqs: Vec<&str>,
+    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
+    let snapshot = run_resolver_with_patch_packages_and_get_snapshot(
+      api,
+      reqs,
+      patch_packages,
+    )
+    .await;
     let mut packages = snapshot
       .all_packages_for_every_system()
       .cloned()
@@ -4108,6 +4301,19 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> NpmResolutionSnapshot {
+    run_resolver_with_patch_packages_and_get_snapshot(
+      api,
+      reqs,
+      &Default::default(),
+    )
+    .await
+  }
+
+  async fn run_resolver_with_patch_packages_and_get_snapshot(
+    api: TestNpmRegistryApi,
+    reqs: Vec<&str>,
+    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  ) -> NpmResolutionSnapshot {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
@@ -4120,7 +4326,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &Default::default(),
+      patch_packages,
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
@@ -4133,17 +4339,12 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph
-      .into_snapshot(&api, &Default::default())
-      .await
-      .unwrap();
+    let snapshot = graph.into_snapshot(&api, patch_packages).await.unwrap();
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
-      let new_snapshot = graph
-        .into_snapshot(&api, &Default::default())
-        .await
-        .unwrap();
+      let new_snapshot =
+        graph.into_snapshot(&api, patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -4151,10 +4352,8 @@ mod test {
       );
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
-      let new_snapshot2 = graph
-        .into_snapshot(&api, &Default::default())
-        .await
-        .unwrap();
+      let new_snapshot2 =
+        graph.into_snapshot(&api, patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
