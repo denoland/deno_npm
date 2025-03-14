@@ -747,8 +747,16 @@ impl NpmResolutionSnapshot {
     maybe_best_id.cloned()
   }
 
-  pub fn package_ids_for_nv<'a>(&'a self, nv: &'a PackageNv) -> impl Iterator<Item = &'a NpmPackageId> {
-    self.packages_by_name.get(&nv.name).map(|p| p.iter().filter(|p| p.nv == *nv)).into_iter().flatten()
+  pub fn package_ids_for_nv<'a>(
+    &'a self,
+    nv: &'a PackageNv,
+  ) -> impl Iterator<Item = &'a NpmPackageId> {
+    self
+      .packages_by_name
+      .get(&nv.name)
+      .map(|p| p.iter().filter(|p| p.nv == *nv))
+      .into_iter()
+      .flatten()
   }
 }
 
