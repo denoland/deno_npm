@@ -194,7 +194,7 @@ dependencies = [
 [[package]]
 name = "deno_lockfile"
 version = "0.24.0"
-source = "git+https://github.com/dsherret/deno_lockfile?rev=0406826#04068266570b814aa4080d0e640d78ff3bd5d2c4"
+source = "git+https://github.com/dsherret/deno_lockfile?rev=7dbd7de#7dbd7debfbf6d8e1d5a61104e2a43efd575d7b62"
 dependencies = [
  "deno_semver",
  "serde",

@@ -38,4 +38,4 @@ name = "bench"
 harness = false
 
 [patch.crates-io]
-deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile", rev = "0406826" }
+deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile", rev = "7dbd7de" }
