@@ -838,7 +838,7 @@ pub enum IncompleteSnapshotFromLockfileError {
 
 struct IncompletePackageInfo {
   id: NpmPackageId,
-  integrity: String,
+  integrity: Option<String>,
   dependencies: HashMap<StackString, NpmPackageId>,
 }
 
@@ -995,14 +995,18 @@ pub async fn snapshot_from_lockfile<'a>(
         if !params.skip_integrity_check {
           if let Some(dist) = &version_info.dist {
             let registry_integrity = dist.integrity().for_lockfile();
-            if registry_integrity != snapshot_package.integrity {
+            if Some(&registry_integrity) != snapshot_package.integrity.as_ref()
+            {
               return Err(
                 IntegrityCheckFailedError {
                   package_display_id: format!(
                     "npm:{}",
                     snapshot_package.id.as_serialized()
                   ),
-                  expected: snapshot_package.integrity.clone(),
+                  expected: snapshot_package
+                    .integrity
+                    .clone()
+                    .unwrap_or_else(|| "<missing>".to_string()),
                   actual: registry_integrity,
                   filename: incomplete_snapshot
                     .lockfile_file_name
