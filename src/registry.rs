@@ -126,7 +126,7 @@ impl Ord for NpmDependencyEntry {
 pub struct NpmPeerDependencyMeta {
   #[serde(default)]
   #[serde(deserialize_with = "deserializers::null_default")]
-  optional: bool,
+  pub optional: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
