@@ -1479,6 +1479,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
 #[cfg(test)]
 mod test {
+  use std::borrow::Cow;
+
   use pretty_assertions::assert_eq;
 
   use crate::registry::NpmDependencyEntryErrorSource;
@@ -4228,12 +4230,21 @@ mod test {
     reqs: Vec<&str>,
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let snapshot = run_resolver_with_patch_packages_and_get_snapshot(
+    let snapshot = run_resolver_with_options_and_get_snapshot(
       api,
-      reqs,
-      patch_packages,
+      RunResolverOptions {
+        reqs,
+        patch_packages: Some(patch_packages),
+        ..Default::default()
+      },
     )
     .await;
+    snapshot_to_packages(snapshot)
+  }
+
+  fn snapshot_to_packages(
+    snapshot: NpmResolutionSnapshot,
+  ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
     let mut packages = snapshot
       .all_packages_for_every_system()
       .cloned()
@@ -4301,18 +4312,28 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> NpmResolutionSnapshot {
-    run_resolver_with_patch_packages_and_get_snapshot(
+    run_resolver_with_options_and_get_snapshot(
       api,
-      reqs,
-      &Default::default(),
+      RunResolverOptions {
+        reqs,
+        patch_packages: None,
+        snapshot: Default::default(),
+      },
     )
     .await
   }
 
-  async fn run_resolver_with_patch_packages_and_get_snapshot(
+  #[derive(Default)]
+  struct RunResolverOptions<'a> {
+    snapshot: NpmResolutionSnapshot,
+    reqs: Vec<&'a str>,
+    patch_packages:
+      Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
+  }
+
+  async fn run_resolver_with_options_and_get_snapshot(
     api: TestNpmRegistryApi,
-    reqs: Vec<&str>,
-    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    options: RunResolverOptions<'_>,
   ) -> NpmResolutionSnapshot {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
@@ -4322,16 +4343,20 @@ mod test {
       snapshot
     }
 
-    let snapshot = NpmResolutionSnapshot::new(Default::default());
+    let snapshot = options.snapshot;
     let mut graph = Graph::from_snapshot(snapshot);
+    let patch_packages = options
+      .patch_packages
+      .map(Cow::Borrowed)
+      .unwrap_or(Cow::Owned(HashMap::default()));
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages,
+      patch_packages: &patch_packages,
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
 
-    for req in reqs {
+    for req in options.reqs {
       let req = PackageReq::from_str(req).unwrap();
       resolver
         .add_package_req(&req, &api.package_info(&req.name).await.unwrap())
@@ -4339,12 +4364,12 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(&api, patch_packages).await.unwrap();
+    let snapshot = graph.into_snapshot(&api, &patch_packages).await.unwrap();
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
       let new_snapshot =
-        graph.into_snapshot(&api, patch_packages).await.unwrap();
+        graph.into_snapshot(&api, &patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -4353,7 +4378,7 @@ mod test {
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
       let new_snapshot2 =
-        graph.into_snapshot(&api, patch_packages).await.unwrap();
+        graph.into_snapshot(&api, &patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
