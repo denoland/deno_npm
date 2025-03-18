@@ -2383,6 +2383,7 @@ mod test {
       ]
     );
   }
+
   #[tokio::test]
   async fn resolve_peer_dep_other_specifier_slot() {
     let api = TestNpmRegistryApi::default();
@@ -4204,6 +4205,97 @@ mod test {
         )
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn aws_sdk_issue() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("@aws-sdk/client-s3", "3.679.0");
+    api.ensure_package_version("@aws-sdk/client-sts", "3.679.0");
+    api.ensure_package_version("@aws-sdk/client-sso-oidc", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-node", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-ini", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-sso", "3.679.0");
+    api.ensure_package_version(
+      "@aws-sdk/credential-provider-web-identity",
+      "3.679.0",
+    );
+    api.ensure_package_version("@aws-sdk/token-providers", "3.679.0");
+
+    api.add_dependency(
+      ("@aws-sdk/client-s3", "3.679.0"),
+      ("@aws-sdk/client-sts", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/client-s3", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/client-s3", "3.679.0"),
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+    );
+
+    api.add_dependency(
+      ("@aws-sdk/client-sts", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/client-sts", "3.679.0"),
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+      ("@aws-sdk/client-sts", "^3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+      ("@aws-sdk/client-sts", "^3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+      ("@aws-sdk/credential-provider-sso", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
+    );
+
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+      ("@aws-sdk/credential-provider-sso", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/credential-provider-sso", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "^3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
+      ("@aws-sdk/client-sts", "^3.679.0"),
+    );
+
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["@aws-sdk/client-s3@3.679.0"],
+        ..Default::default()
+      },
+    )
+    .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot);
+    assert_eq!(packages, vec![]);
+    assert_eq!(package_reqs, vec![]);
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
