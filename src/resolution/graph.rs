@@ -4231,7 +4231,7 @@ mod test {
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
     let snapshot = run_resolver_with_options_and_get_snapshot(
-      api,
+      &api,
       RunResolverOptions {
         reqs,
         patch_packages: Some(patch_packages),
@@ -4313,7 +4313,7 @@ mod test {
     reqs: Vec<&str>,
   ) -> NpmResolutionSnapshot {
     run_resolver_with_options_and_get_snapshot(
-      api,
+      &api,
       RunResolverOptions {
         reqs,
         patch_packages: None,
@@ -4332,7 +4332,7 @@ mod test {
   }
 
   async fn run_resolver_with_options_and_get_snapshot(
-    api: TestNpmRegistryApi,
+    api: &TestNpmRegistryApi,
     options: RunResolverOptions<'_>,
   ) -> NpmResolutionSnapshot {
     fn snapshot_to_serialized(
@@ -4354,7 +4354,7 @@ mod test {
       patch_packages: &patch_packages,
     };
     let mut resolver =
-      GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
+      GraphDependencyResolver::new(&mut graph, api, &npm_version_resolver);
 
     for req in options.reqs {
       let req = PackageReq::from_str(req).unwrap();
@@ -4364,12 +4364,12 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
-    let snapshot = graph.into_snapshot(&api, &patch_packages).await.unwrap();
+    let snapshot = graph.into_snapshot(api, &patch_packages).await.unwrap();
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
       let new_snapshot =
-        graph.into_snapshot(&api, &patch_packages).await.unwrap();
+        graph.into_snapshot(api, &patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -4378,7 +4378,7 @@ mod test {
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
       let new_snapshot2 =
-        graph.into_snapshot(&api, &patch_packages).await.unwrap();
+        graph.into_snapshot(api, &patch_packages).await.unwrap();
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
