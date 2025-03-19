@@ -383,18 +383,12 @@ function analyzeTracesDepth() {
   for (const snapshot of traces) {
     seenNodes.clear();
     nodesMap = new Map(snapshot.nodes.map((n) => [n.id, n]));
-    for (const start of Object.values(snapshot.roots)) {
-      setDepthY(nodesMap.get(start));
-    }
+    setDepthY(Object.values(snapshot.roots).map(start => nodesMap.get(start)));
   }
 
   // certain nodes might be disconnected... add those here
   for (const snapshot of traces) {
-    for (const node of snapshot.nodes) {
-      if (!nodeDepths.has(node.id)) {
-        setDepthY(node);
-      }
-    }
+    setDepthY(snapshot.nodes.filter(n => !nodeDepths.has(n.id)));
   }
 
   return {
@@ -402,10 +396,10 @@ function analyzeTracesDepth() {
     depthYChildCount,
   };
 
-  /** @param {TraceNode} firstNode */
-  function setDepthY(firstNode) {
+  /** @param {TraceNode[]} firstNodes */
+  function setDepthY(firstNodes) {
     /** @type {[TraceNode, number][]} */
-    const nodesToAnalyze = [[firstNode, 0]];
+    const nodesToAnalyze = firstNodes.map(node => ([node, 0]));
 
     while (nodesToAnalyze.length > 0) {
       const next = nodesToAnalyze.shift();
