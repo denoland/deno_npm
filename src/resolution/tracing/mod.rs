@@ -72,5 +72,5 @@ const rawTraces = {json};
     "file://{}",
     temp_file_path.to_string_lossy().replace('\\', "/")
   );
-  panic!("\n==============\nTrace output ready! Please open your browser to: {}\n==============\n", url);
+  eprintln!("\n==============\nTrace output ready! Please open your browser to: {}\n==============\n", url);
 }

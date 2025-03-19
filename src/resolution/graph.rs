@@ -608,7 +608,7 @@ impl Graph {
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
     #[cfg(feature = "tracing")]
-    {
+    if !self.traces.is_empty() {
       super::tracing::output(&self.traces);
     }
 
@@ -4346,10 +4346,6 @@ mod test {
       ("@aws-sdk/client-s3", "3.679.0"),
       ("@aws-sdk/client-sso-oidc", "3.679.0"),
     );
-    api.add_dependency(
-      ("@aws-sdk/client-s3", "3.679.0"),
-      ("@aws-sdk/credential-provider-node", "3.679.0"),
-    );
 
     api.add_dependency(
       ("@aws-sdk/client-sts", "3.679.0"),
@@ -4373,32 +4369,14 @@ mod test {
       ("@aws-sdk/credential-provider-ini", "3.679.0"),
       ("@aws-sdk/credential-provider-sso", "3.679.0"),
     );
-    api.add_dependency(
-      ("@aws-sdk/credential-provider-ini", "3.679.0"),
-      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
-    );
 
     api.add_dependency(
       ("@aws-sdk/credential-provider-node", "3.679.0"),
       ("@aws-sdk/credential-provider-ini", "3.679.0"),
     );
-    api.add_dependency(
-      ("@aws-sdk/credential-provider-node", "3.679.0"),
-      ("@aws-sdk/credential-provider-sso", "3.679.0"),
-    );
-    api.add_dependency(
-      ("@aws-sdk/credential-provider-node", "3.679.0"),
-      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
-    );
-
     api.add_peer_dependency(
       ("@aws-sdk/credential-provider-sso", "3.679.0"),
       ("@aws-sdk/client-sso-oidc", "^3.679.0"),
-    );
-
-    api.add_peer_dependency(
-      ("@aws-sdk/credential-provider-web-identity", "3.679.0"),
-      ("@aws-sdk/client-sts", "^3.679.0"),
     );
 
     let snapshot = run_resolver_with_options_and_get_snapshot(
