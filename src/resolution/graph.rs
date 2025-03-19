@@ -7,7 +7,6 @@ use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
-use log::debug;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -35,6 +34,11 @@ use super::common::NpmVersionResolver;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
+
+#[cfg(not(test))]
+use log::debug;
+#[cfg(test)]
+use std::eprintln as debug;
 
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
@@ -332,6 +336,8 @@ pub struct Graph {
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
+  #[cfg(feature = "tracing")]
+  traces: Vec<super::tracing::TraceGraphSnapshot>,
 }
 
 impl Graph {
@@ -436,6 +442,8 @@ impl Graph {
       package_name_versions: Default::default(),
       resolved_node_ids: Default::default(),
       root_packages: Default::default(),
+      #[cfg(feature = "tracing")]
+      traces: Default::default(),
     };
     let mut created_package_ids =
       HashMap::with_capacity(snapshot.packages.len());
@@ -599,6 +607,11 @@ impl Graph {
     api: &TNpmRegistryApi,
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
+    #[cfg(feature = "tracing")]
+    {
+      super::tracing::output(&self.traces);
+    }
+
     let packages_to_pkg_ids = self
       .nodes
       .keys()
@@ -1035,6 +1048,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                 self.analyze_dependency(dep, &package_info, &parent_path)?
               }
             };
+
+            #[cfg(feature = "tracing")]
+            {
+              self
+                .graph
+                .traces
+                .push(build_trace_graph_snapshot(&self.graph, &parent_path));
+            }
 
             if !found_peer {
               found_peer = !self.graph.borrow_node_mut(child_id).no_peers;
@@ -1474,6 +1495,50 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
     Ok(None)
+  }
+}
+
+#[cfg(feature = "tracing")]
+fn build_trace_graph_snapshot(
+  graph: &Graph,
+  current_path: &GraphPath,
+) -> super::tracing::TraceGraphSnapshot {
+  use super::tracing::*;
+
+  fn build_path(graph: &Graph, current_path: &GraphPath) -> TraceGraphPath {
+    TraceGraphPath {
+      specifier: current_path.specifier.to_string(),
+      node_id: current_path.node_id().0,
+      nv: current_path.nv.to_string(),
+      previous: current_path.previous_node.as_ref().and_then(|n| match n {
+        GraphPathNodeOrRoot::Node(graph_path) => {
+          Some(Box::new(build_path(graph, graph_path)))
+        }
+        GraphPathNodeOrRoot::Root(_) => None,
+      }),
+    }
+  }
+
+  TraceGraphSnapshot {
+    nodes: graph
+      .nodes
+      .iter()
+      .map(|(id, node)| TraceNode {
+        id: id.0,
+        resolved_id: graph.get_npm_pkg_id(*id).as_serialized().to_string(),
+        children: node
+          .children
+          .iter()
+          .map(|(k, v)| (k.to_string(), v.0))
+          .collect(),
+      })
+      .collect(),
+    roots: graph
+      .root_packages
+      .iter()
+      .map(|(nv, id)| (nv.to_string(), id.0))
+      .collect(),
+    path: build_path(graph, current_path),
   }
 }
 

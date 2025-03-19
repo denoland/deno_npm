@@ -1,0 +1,24 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#main {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#slider {
+  flex: 0 0 auto;
+  padding: 10px;
+  background: #f0f0f0;
+}
+
+#graph {
+  flex: 1;
+  overflow: hidden;
+}
