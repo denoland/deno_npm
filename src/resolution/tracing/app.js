@@ -12,6 +12,7 @@
  * @property {number} id
  * @property {string} resolvedId
  * @property {Record<string, number>} children
+ * @property {TraceNodeDependency[]} dependencies
  */
 
 /**
@@ -20,6 +21,15 @@
  * @property {number} nodeId
  * @property {string} nv
  * @property {?TraceGraphPath} previous
+ */
+
+/**
+ * @typedef {Object} TraceNodeDependency
+ * @property {string} kind
+ * @property {string} bareSpecifier
+ * @property {string} name
+ * @property {string} versionReq
+ * @property {string | undefined} peerDepVersionReq
  */
 
 // @ts-types="npm:@types/d3@7.4"
@@ -37,6 +47,7 @@ const { nodeDepths, depthYChildCount } = analyzeTracesDepth();
 let transform;
 let currentIndex = 0;
 const graphDiv = document.getElementById("graph");
+const infoDiv = document.getElementById("info");
 const stepTextDiv = document.getElementById("stepText");
 /** @type {GraphNode[]} */
 let nodes = undefined;
@@ -64,11 +75,7 @@ function refresh(index) {
   stepTextDiv.textContent = `${index + 1}/${traces.length}`;
 
   graphDiv.replaceChildren(); // remove the children
-  createGraph(traces[index], onNodeSelect);
-}
-
-/** @param {number} id */
-function onNodeSelect(id) {
+  createGraph(traces[index]);
 }
 
 /**
@@ -88,9 +95,8 @@ function initSlider(max, onChange) {
 
 /**
  * @param {TraceGraphSnapshot} snapshot
- * @param {(id: number) => void} onNodeSelect
  */
-function createGraph(snapshot, onNodeSelect) {
+function createGraph(snapshot) {
   const result = getNodesAndLinks(snapshot);
   const { links, nodesMap } = result;
   nodes = result.nodes;
@@ -137,26 +143,12 @@ function createGraph(snapshot, onNodeSelect) {
       const bothOnPath = pathNodeIds.has(d.source) && pathNodeIds.has(d.target);
       return bothOnPath ? "red" : "black";
     })
-    .attr(
-      "data-originating-node-id",
-      /** @param {any} d */ (d) => d.originatingNodeId,
-    )
     .style("stroke-width", linkThickness)
-    .attr("marker-end", "url(#end)")
-    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
-      /** @type {number | undefined} */
-      const originatingNodeId = d.originatingNodeId;
-      if (originatingNodeId != null) {
-        onNodeSelect(originatingNodeId);
-      }
-    });
+    .attr("marker-end", "url(#end)");
   link.append("title")
     .text(/** @param {any} d */ (d) => {
-      if (d.originatingNodeId != null) {
-        //return getNodeHoverText(traceResult.getPrintNode(d.originatingNodeId));
-        return undefined;
-      }
-      return undefined;
+      console.log(d);
+      return d.specifier;
     });
 
   const nodeG = svg.append("g");
@@ -175,9 +167,10 @@ function createGraph(snapshot, onNodeSelect) {
       return isGraphPath ? "red" : "blue";
     })
     .attr("stroke", "#000")
-    .attr("id", /** @param {any} d */ (d) => `node${d.id}`)
-    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
-      onNodeSelect(d.id);
+    .attr("id", (d) => `node${d.id}`)
+    .on("click", (_, d) => {
+      const rawNode = d.rawNode;
+      setInfoNode(rawNode);
     });
   nodeGInner
     .append("text")
@@ -238,6 +231,27 @@ function createGraph(snapshot, onNodeSelect) {
   };
 }
 
+/** @param {TraceNode} rawNode */
+function setInfoNode(rawNode) {
+  infoDiv.replaceChildren(); // clear
+  const title = document.createElement("h3");
+  title.textContent = `${rawNode.resolvedId} (${rawNode.id})`;
+  infoDiv.appendChild(title);
+  const div = document.createElement("div");
+  const ul = document.createElement("ul");
+  for (const dep of rawNode.dependencies) {
+    const li = document.createElement("li");
+    let text = `${dep.kind} - ${dep.bareSpecifier} - ${dep.versionReq}`;
+    if (dep.peerDepVersionReq != null) {
+      text += ` - ${dep.peerDepVersionReq}`;
+    }
+    li.textContent = text;
+    ul.appendChild(li);
+  }
+  div.appendChild(ul);
+  infoDiv.appendChild(div);
+}
+
 /**
  * @typedef {Object} GraphNode
  * @property {TraceNode} rawNode
@@ -278,6 +292,7 @@ function getNodesAndLinks(snapshot) {
   /** @type {Set<number>} */
   const seen = new Set();
   const snapshotNodesMap = new Map(snapshot.nodes.map((n) => [n.id, n]));
+  setInfoNode(snapshotNodesMap.get(snapshot.path.nodeId));
   const pendingNodes = Object.values(snapshot.roots);
   while (pendingNodes.length > 0) {
     const id = pendingNodes.shift();
@@ -298,32 +313,30 @@ function getNodesAndLinks(snapshot) {
     pendingNodes.push(...Object.values(node.children));
   }
   const nodesMap = new Map(nodes.map((n) => [n.rawNode.id, n]));
-  /** @type {{ source: number; target: number; color: string | undefined; originatingNodeId: number | undefined }[]} */
+  /** @type {{ source: number; target: number; specifier: string; }[]} */
   const links = [];
 
   for (const node of nodes) {
     const rawNode = node.rawNode;
     for (const [specifier, child] of Object.entries(rawNode.children)) {
-      addLink(node, getNodeById(child));
+      addLink(specifier, node, getNodeById(child));
     }
   }
 
   return { nodes, nodesMap, links };
 
   /**
+   * @param {string} specifier
    * @param {GraphNode} source
    * @param {GraphNode} target
-   * @param {string} [color]
-   * @param {number} [originatingNodeId]
    */
-  function addLink(source, target, color, originatingNodeId) {
+  function addLink(specifier, source, target) {
     source.targets.push(target);
     target.sources.push(source);
     links.push({
+      specifier,
       source: source.id,
       target: target.id,
-      color,
-      originatingNodeId,
     });
   }
 

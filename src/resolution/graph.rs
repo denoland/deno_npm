@@ -1051,10 +1051,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
             #[cfg(feature = "tracing")]
             {
-              self
-                .graph
-                .traces
-                .push(build_trace_graph_snapshot(&self.graph, &parent_path));
+              self.graph.traces.push(build_trace_graph_snapshot(
+                &self.graph,
+                &self.dep_entry_cache,
+                &parent_path,
+              ));
             }
 
             if !found_peer {
@@ -1501,6 +1502,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 #[cfg(feature = "tracing")]
 fn build_trace_graph_snapshot(
   graph: &Graph,
+  dep_entry_cache: &DepEntryCache,
   current_path: &GraphPath,
 ) -> super::tracing::TraceGraphSnapshot {
   use super::tracing::*;
@@ -1523,14 +1525,34 @@ fn build_trace_graph_snapshot(
     nodes: graph
       .nodes
       .iter()
-      .map(|(id, node)| TraceNode {
-        id: id.0,
-        resolved_id: graph.get_npm_pkg_id(*id).as_serialized().to_string(),
-        children: node
-          .children
-          .iter()
-          .map(|(k, v)| (k.to_string(), v.0))
-          .collect(),
+      .map(|(node_id, node)| {
+        let id = graph.get_npm_pkg_id(*node_id);
+        TraceNode {
+          id: node_id.0,
+          resolved_id: id.as_serialized().to_string(),
+          children: node
+            .children
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.0))
+            .collect(),
+          dependencies: dep_entry_cache
+            .get(&id.nv)
+            .map(|d| {
+              d.iter()
+                .map(|dep| TraceNodeDependency {
+                  kind: format!("{:?}", dep.kind),
+                  bare_specifier: dep.bare_specifier.to_string(),
+                  name: dep.name.to_string(),
+                  version_req: dep.version_req.to_string(),
+                  peer_dep_version_req: dep
+                    .peer_dep_version_req
+                    .as_ref()
+                    .map(|r| r.to_string()),
+                })
+                .collect()
+            })
+            .unwrap_or_default(),
+        }
       })
       .collect(),
     roots: graph

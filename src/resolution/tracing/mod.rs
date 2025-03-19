@@ -12,10 +12,21 @@ pub struct TraceGraphSnapshot {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TraceNodeDependency {
+  pub kind: String,
+  pub bare_specifier: String,
+  pub name: String,
+  pub version_req: String,
+  pub peer_dep_version_req: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TraceNode {
   pub id: u32,
   pub resolved_id: String,
   pub children: BTreeMap<String, u32>,
+  pub dependencies: Vec<TraceNodeDependency>,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,13 +47,17 @@ pub fn output(traces: &[TraceGraphSnapshot]) {
 <style>
 {app_css}
 </style>
-<div id=\"main\">
+<div id=\"container\">
     <div id=\"slider\">
       <input type=\"range\" />
       <div id=\"stepText\">
       </div>
     </div>
-    <div id=\"graph\">
+    <div id=\"main\">
+      <div id=\"graph\">
+      </div>
+      <div id=\"info\">
+      </div>
     </div>
 </div>
 <script type=\"module\">
