@@ -331,9 +331,8 @@ pub struct NpmResolutionPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
-  pub has_bin: bool,
-  pub has_scripts: bool,
-  pub is_deprecated: bool,
+
+  pub dist: NpmPackageVersionDistInfo,
 
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
@@ -344,7 +343,6 @@ pub struct NpmPackageExtraInfo {
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
-  pub dist: NpmPackageVersionDistInfo,
 }
 
 impl std::fmt::Debug for NpmResolutionPackage {
@@ -364,7 +362,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
         deps.sort();
         deps
       })
-      .field("deprecated", &self.is_deprecated)
+      .field("dist", &self.dist)
       .finish()
   }
 }
@@ -376,9 +374,7 @@ impl NpmResolutionPackage {
       system: self.system.clone(),
       dependencies: self.dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
-      has_bin: self.has_bin,
-      has_scripts: self.has_scripts,
-      is_deprecated: self.is_deprecated,
+      dist: self.dist.clone(),
       extra: self.extra.clone(),
     }
   }

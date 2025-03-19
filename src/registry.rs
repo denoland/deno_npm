@@ -309,19 +309,24 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
   UnknownIntegrity(&'a str),
   /// The legacy sha1 hex hash (ex. "62afbee2ffab5e0db139450767a6125cbea50fa2").
   LegacySha1Hex(&'a str),
+  /// The integrity is not available.
+  None,
 }
 
 impl NpmPackageVersionDistInfoIntegrity<'_> {
-  pub fn for_lockfile(&self) -> String {
+  pub fn for_lockfile(&self) -> Option<String> {
     match self {
       NpmPackageVersionDistInfoIntegrity::Integrity {
         algorithm,
         base64_hash,
-      } => format!("{}-{}", algorithm, base64_hash),
+      } => Some(format!("{}-{}", algorithm, base64_hash)),
       NpmPackageVersionDistInfoIntegrity::UnknownIntegrity(integrity) => {
-        integrity.to_string()
+        Some(integrity.to_string())
       }
-      NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(hex) => hex.to_string(),
+      NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(hex) => {
+        Some(hex.to_string())
+      }
+      NpmPackageVersionDistInfoIntegrity::None => None,
     }
   }
 }
@@ -330,7 +335,7 @@ impl NpmPackageVersionDistInfoIntegrity<'_> {
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.
   pub tarball: String,
-  pub(crate) shasum: String,
+  pub(crate) shasum: Option<String>,
   pub(crate) integrity: Option<String>,
 }
 
@@ -348,7 +353,12 @@ impl NpmPackageVersionDistInfo {
           integrity.as_str(),
         ),
       },
-      None => NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(&self.shasum),
+      None => match &self.shasum {
+        Some(shasum) => {
+          NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(shasum.as_str())
+        }
+        None => NpmPackageVersionDistInfoIntegrity::None,
+      },
     }
   }
 }
@@ -400,6 +410,34 @@ pub trait NpmRegistryApi {
 #[derive(Clone, Default, Debug)]
 pub struct TestNpmRegistryApi {
   package_infos: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
+}
+
+impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
+  fn get_npm_package_info(
+    &self,
+    values: &[PackageNv],
+  ) -> impl std::future::Future<
+    Output = Result<
+      Vec<deno_lockfile::Lockfile5NpmInfo>,
+      Box<dyn std::error::Error>,
+    >,
+  > {
+    async move {
+      let mut infos = Vec::new();
+      for nv in values {
+        let info = self.package_info(nv.name.as_str()).await?;
+        let version_info = info.version_info(&nv).unwrap();
+        let lockfile_info = deno_lockfile::Lockfile5NpmInfo {
+          tarball_url: Some(version_info.dist.tarball.clone()),
+          optional_dependencies: Vec::new(),
+          cpu: version_info.os.iter().map(|s| s.to_string()).collect(),
+          os: version_info.cpu.iter().map(|s| s.to_string()).collect(),
+        };
+        infos.push(lockfile_info);
+      }
+      Ok(infos)
+    }
+  }
 }
 
 impl TestNpmRegistryApi {
@@ -906,7 +944,7 @@ mod test {
         version: Version::parse_from_npm("1.0.0").unwrap(),
         dist: Some(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
-          shasum: "test".to_string(),
+          shasum: Some("test".to_string()),
           integrity: None,
         }),
         ..Default::default()
@@ -929,7 +967,7 @@ mod test {
         version: Version::parse_from_npm("1.0.0").unwrap(),
         dist: Some(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
-          shasum: "test".to_string(),
+          shasum: Some("test".to_string()),
           integrity: None,
         }),
         dependencies: HashMap::new(),
@@ -966,7 +1004,7 @@ mod test {
           version: Version::parse_from_npm("1.0.0").unwrap(),
           dist: Some(NpmPackageVersionDistInfo {
             tarball: "value".to_string(),
-            shasum: "test".to_string(),
+            shasum: Some("test".to_string()),
             integrity: None,
           }),
           dependencies: HashMap::new(),

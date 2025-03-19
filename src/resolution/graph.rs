@@ -672,15 +672,12 @@ impl Graph {
             .keys()
             .cloned()
             .collect(),
-          has_bin: version_info.bin.is_some(),
           extra: Some(crate::NpmPackageExtraInfo {
-            dist: version_info.dist.clone(),
             bin: version_info.bin.clone(),
             scripts: version_info.scripts.clone(),
             deprecated: version_info.deprecated.clone(),
           }),
-          has_scripts: !version_info.scripts.is_empty(),
-          is_deprecated: version_info.deprecated.is_some(),
+          dist: version_info.dist.clone(),
         },
       );
     }
@@ -4302,9 +4299,11 @@ mod test {
           )]),
           optional_dependencies: HashSet::new(),
           extra: None,
-          has_bin: false,
-          has_scripts: false,
-          is_deprecated: false,
+          dist: crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/package-0@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          },
         },
       ]),
     };
