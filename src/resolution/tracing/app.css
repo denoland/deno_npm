@@ -18,6 +18,10 @@ html, body {
   background: #f0f0f0;
 }
 
+#slider input {
+  width: 100%;
+}
+
 #graph {
   flex: 1;
   overflow: hidden;
