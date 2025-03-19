@@ -30,22 +30,42 @@ import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
  */
 // @ts-ignore rawTraces is defined in the generated html file.
 const traces = rawTraces;
+/** @type {Map<number, {x: number, y: number}>} */
+const nodePositions = new Map();
+const { nodeDepths, depthYChildCount } = analyzeTracesDepth();
 /** @type {any} */
 let transform;
 let currentIndex = 0;
 const graphDiv = document.getElementById("graph");
-let graph = createGraph(traces[0], onNodeSelect);
-initSlider(traces.length, (index) => {
+const stepTextDiv = document.getElementById("stepText");
+/** @type {GraphNode[]} */
+let nodes = undefined;
+initSlider(traces.length - 1, (index) => {
+  refresh(index);
+});
+
+refresh(0);
+
+/** @param {number} index */
+function refresh(index) {
   currentIndex = index;
-  const svg = d3.select("#graph");
+  const svg = d3.select("#graph svg");
   if (!svg.empty()) {
     // capture current zoom
     transform = d3.zoomTransform(svg.node());
   }
+  if (nodes) {
+    // Save current node positions
+    nodes.forEach((node) => {
+      nodePositions.set(node.id, { x: node.x, y: node.y });
+    });
+  }
+
+  stepTextDiv.textContent = `${index + 1}/${traces.length}`;
 
   graphDiv.replaceChildren(); // remove the children
-  graph = createGraph(traces[index], onNodeSelect);
-});
+  createGraph(traces[index], onNodeSelect);
+}
 
 /** @param {number} id */
 function onNodeSelect(id) {
@@ -71,99 +91,143 @@ function initSlider(max, onChange) {
  * @param {(id: number) => void} onNodeSelect
  */
 function createGraph(snapshot, onNodeSelect) {
-  /** @param {d3.Selection<SVGSVGElement, any, HTMLElement, any>} svg  */
-  function zoom(svg) {
-    svg.call(
-      d3
-        .zoom()
-        .scaleExtent([0.5, 5]) // Min and max zoom levels
-        .on("zoom", (event) => g.attr("transform", event.transform)) // Apply zoom
-    );
-  }
+  const result = getNodesAndLinks(snapshot);
+  const { links, nodesMap } = result;
+  nodes = result.nodes;
+  const pathNodeIds = getPathNodeIds(snapshot);
 
-  const { links, nodes } = getNodesAndLinks(snapshot);
-
-  let wasMouseActivity = false;
   const width = graphDiv.clientWidth;
   const height = graphDiv.clientHeight;
+  let wasMouseActivity = false;
   const svg = d3
     .select("#graph")
     .append("svg")
+    .attr("viewBox", [0, 0, width, height])
     .style("font", "40px sans-serif")
     .attr("width", width)
     .attr("height", height)
     .on("wheel", () => wasMouseActivity = true)
-    .on("click", () => wasMouseActivity = true)
-    .call(zoom);
-  const simulation = d3.forceSimulation(nodes)
-    .force(
-      "link",
-      d3.forceLink(links).id(/** @param {any} d */ (d) => d.id).distance(50),
-    )
-    .force("charge", d3.forceManyBody().strength(-300))
-    .force("y", d3.forceCenter(width / 2, height / 2))
-    .force("collide", d3.forceCollide(30));
+    .on("click", () => wasMouseActivity = true);
 
-  const g = svg.append("g");
-  if (transform != null) {
-    g.attr("transform", transform);
-  }
-  const link = g
-    .selectAll(".link")
+  const arrow = svg.append("svg:defs").selectAll("marker")
+    .data(["end"])
+    .enter().append("svg:marker")
+    .attr("id", String)
+    .attr("orient", "auto");
+  const arrowInnerPath = arrow.append("svg:path").attr("fill", "#000");
+
+  const drag = d3
+    .drag()
+    .on("drag", /** @param {any} event @param {any} d */ function (event, d) {
+      d.x = event.x;
+      d.y = event.y;
+      d3.select(this).raise().attr("transform", `translate(${d.x}, ${d.y})`);
+      refreshLinks();
+    });
+
+  const nodeRadius = 15;
+  const linkThickness = 5;
+  const linkG = svg.append("g");
+  const link = linkG
+    .selectAll("line")
     .data(links)
-    .enter()
-    .append("line")
-    .attr("stroke", "black")
-    .attr("stroke-width", 1.5);
+    .join("line")
+    .attr("stroke-opacity", 0.6)
+    .attr("stroke", /** @param {any} d */ (d) => {
+      const bothOnPath = pathNodeIds.has(d.source) && pathNodeIds.has(d.target);
+      return bothOnPath ? "red" : "black";
+    })
+    .attr(
+      "data-originating-node-id",
+      /** @param {any} d */ (d) => d.originatingNodeId,
+    )
+    .style("stroke-width", linkThickness)
+    .attr("marker-end", "url(#end)")
+    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
+      /** @type {number | undefined} */
+      const originatingNodeId = d.originatingNodeId;
+      if (originatingNodeId != null) {
+        onNodeSelect(originatingNodeId);
+      }
+    });
+  link.append("title")
+    .text(/** @param {any} d */ (d) => {
+      if (d.originatingNodeId != null) {
+        //return getNodeHoverText(traceResult.getPrintNode(d.originatingNodeId));
+        return undefined;
+      }
+      return undefined;
+    });
 
-  const node = g
-    .selectAll(".node")
+  const nodeG = svg.append("g");
+  const nodeGInner = nodeG.append("g")
+    .selectAll("g")
     .data(nodes)
-    .enter()
+    .join("g")
+    .attr("transform", (d) => {
+      return `translate(${d.x}, ${d.y})`;
+    }).call(drag);
+  const nodeCircle = nodeGInner
     .append("circle")
-    .attr("r", 8)
-    .attr("fill", "blue")
-    .call(drag(simulation));
-
-  const label = g
-    .selectAll(".label")
-    .data(nodes)
-    .enter()
+    .attr("r", nodeRadius)
+    .attr("fill", /** @param {any} d */ (d) => {
+      const isGraphPath = pathNodeIds.has(d.id);
+      return isGraphPath ? "red" : "blue";
+    })
+    .attr("stroke", "#000")
+    .attr("id", /** @param {any} d */ (d) => `node${d.id}`)
+    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
+      onNodeSelect(d.id);
+    });
+  nodeGInner
     .append("text")
-    .text((d) => d.rawNode.resolvedId)
-    .attr("font-size", "12px")
-    .attr("dx", 10)
-    .attr("dy", 4);
+    .attr("x", 50)
+    .attr("y", "0.31em")
+    .text(/** @param {any} d */ (d) => {
+      return d.rawNode.resolvedId;
+    })
+    .clone(true).lower()
+    .attr("fill", "none")
+    .attr("stroke", "white")
+    .attr("stroke-width", 3);
 
-  simulation.on("tick", () => {
-    link
-      .attr("x1", (d) => d.source.x)
-      .attr("y1", (d) => d.source.y)
-      .attr("x2", (d) => d.target.x)
-      .attr("y2", (d) => d.target.y);
-
-    node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
-
-    label.attr("x", (d) => d.x).attr("y", (d) => d.y);
+  /** @type {number} */
+  let sqrtK;
+  const zoom = d3.zoom().on("zoom", /** @param {any} e */ (e) => {
+    applyTransform(e.transform);
   });
 
-  function drag(simulation) {
-    return d3
-      .drag()
-      .on("start", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      })
-      .on("drag", (event, d) => {
-        d.fx = event.x;
-        d.fy = event.y;
-      })
-      .on("end", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
-      });
+  /** @param {any} transform  */
+  function applyTransform(transform) {
+    nodeG.attr("transform", transform);
+    sqrtK = Math.sqrt(transform.k);
+    nodeCircle.attr("r", nodeRadius / sqrtK)
+      .attr("stroke-width", 1 / sqrtK);
+
+    linkG.attr("transform", transform);
+    link.style("stroke-width", linkThickness / sqrtK);
+
+    arrow.attr("markerWidth", 5)
+      .attr("markerHeight", 5)
+      .attr("viewBox", `0 0 ${5 / sqrtK} ${5 / sqrtK}`)
+      .attr("refX", 8 / sqrtK)
+      .attr("refY", 2.5 / sqrtK);
+    arrowInnerPath.attr(
+      "d",
+      `M 0 0 L ${5 / sqrtK} ${2.5 / sqrtK} L 0 ${5 / sqrtK} z`,
+    );
+  }
+
+  svg.call(zoom).call(zoom.transform, transform ?? d3.zoomIdentity);
+
+  refreshLinks();
+
+  function refreshLinks() {
+    link
+      .attr("x1", /** @param {any} d */ (d) => nodesMap.get(d.source).x)
+      .attr("y1", /** @param {any} d */ (d) => nodesMap.get(d.source).y)
+      .attr("x2", /** @param {any} d */ (d) => nodesMap.get(d.target).x)
+      .attr("y2", /** @param {any} d */ (d) => nodesMap.get(d.target).y);
   }
 
   let lastId = 0;
@@ -180,19 +244,59 @@ function createGraph(snapshot, onNodeSelect) {
  * @property {number} id
  * @property {GraphNode[]} sources
  * @property {GraphNode[]} targets
- * @property {number} depthY
+ * @property {number} x
+ * @property {number} y
  */
 
 /** @param {TraceGraphSnapshot} snapshot */
 function getNodesAndLinks(snapshot) {
+  /** @param {number} id */
+  function getNodeY(id) {
+    const nodeDepth = nodeDepths.get(id);
+    let depthY = 0;
+    for (let i = 0; i < nodeDepth.y; i++) {
+      const childCount = depthYChildCount.get(i) ?? 1;
+      depthY += childCount * 50;
+    }
+    const jitter = (Math.random() - 0.5) * 70;
+    return depthY + nodeDepth.x * 200 + jitter;
+  }
+
+  /** @param {number} id */
+  function getNodeX(id) {
+    const nodeDepth = nodeDepths.get(id);
+    const center = width / 2;
+    const childCount = depthYChildCount.get(nodeDepth.y) ?? 0;
+    const jitter = (Math.random() - 0.5) * 70;
+    return center + (nodeDepth.x - (childCount / 2)) * 255 + jitter;
+  }
+
+  const width = graphDiv.clientWidth;
+  const height = graphDiv.clientHeight;
   /** @type {GraphNode[]} */
-  const nodes = snapshot.nodes.map((node) => ({
-    id: node.id,
-    rawNode: node,
-    sources: /** @type {GraphNode[]} */ ([]),
-    targets: /** @type {GraphNode[]} */ ([]),
-    depthY: 0,
-  }));
+  const nodes = [];
+  /** @type {Set<number>} */
+  const seen = new Set();
+  const snapshotNodesMap = new Map(snapshot.nodes.map((n) => [n.id, n]));
+  const pendingNodes = Object.values(snapshot.roots);
+  while (pendingNodes.length > 0) {
+    const id = pendingNodes.shift();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const savedPosition = nodePositions.get(id);
+    const node = snapshotNodesMap.get(id);
+    nodes.push({
+      id: node.id,
+      rawNode: node,
+      sources: /** @type {GraphNode[]} */ ([]),
+      targets: /** @type {GraphNode[]} */ ([]),
+      x: savedPosition?.x ?? getNodeX(node.id),
+      y: savedPosition?.y ?? getNodeY(node.id),
+    });
+    pendingNodes.push(...Object.values(node.children));
+  }
   const nodesMap = new Map(nodes.map((n) => [n.rawNode.id, n]));
   /** @type {{ source: number; target: number; color: string | undefined; originatingNodeId: number | undefined }[]} */
   const links = [];
@@ -204,32 +308,7 @@ function getNodesAndLinks(snapshot) {
     }
   }
 
-  /** @type {Set<number>} */
-  const analyzedNodes = new Set();
-  for (const start of Object.values(snapshot.roots)) {
-    setDepthY(getNodeById(start));
-  }
-
-  return { nodes, links };
-
-  /** @param {GraphNode} firstNode */
-  function setDepthY(firstNode) {
-    const nodesToAnalyze = [firstNode];
-
-    while (nodesToAnalyze.length > 0) {
-      const node = nodesToAnalyze.pop();
-      if (node == null) {
-        continue;
-      }
-      node.depthY = node.sources.length === 0
-        ? 0
-        : Math.max(...node.sources.map((s) => s.depthY)) + 1;
-      if (!analyzedNodes.has(node.rawNode.id)) {
-        analyzedNodes.add(node.rawNode.id);
-        nodesToAnalyze.push(...node.targets);
-      }
-    }
-  }
+  return { nodes, nodesMap, links };
 
   /**
    * @param {GraphNode} source
@@ -255,5 +334,76 @@ function getNodesAndLinks(snapshot) {
       throw new Error(`Could not find node: ${id}`);
     }
     return node;
+  }
+}
+
+/** @param {TraceGraphSnapshot} snapshot */
+function getPathNodeIds(snapshot) {
+  let currentPath = snapshot.path;
+  /** @type {Set<number>} */
+  const nodes = new Set();
+  while (currentPath != null) {
+    nodes.add(currentPath.nodeId);
+    currentPath = currentPath.previous;
+  }
+  return nodes;
+}
+
+function analyzeTracesDepth() {
+  /** @type {Map<number, { x: number, y: number }>} */
+  const nodeDepths = new Map();
+  /** @type {Map<number, number>} */
+  const depthYChildCount = new Map();
+  /** @type {Map<number, TraceNode>} */
+  let nodesMap = new Map();
+  /** @type {Set<number>} */
+  const seenNodes = new Set();
+
+  for (const snapshot of traces) {
+    seenNodes.clear();
+    nodesMap = new Map(snapshot.nodes.map((n) => [n.id, n]));
+    for (const start of Object.values(snapshot.roots)) {
+      setDepthY(nodesMap.get(start));
+    }
+  }
+
+  // certain nodes might be disconnected... add those here
+  for (const snapshot of traces) {
+    for (const node of snapshot.nodes) {
+      if (!nodeDepths.has(node.id)) {
+        setDepthY(node);
+      }
+    }
+  }
+
+  return {
+    nodeDepths,
+    depthYChildCount,
+  };
+
+  /** @param {TraceNode} firstNode */
+  function setDepthY(firstNode) {
+    /** @type {[TraceNode, number][]} */
+    const nodesToAnalyze = [[firstNode, 0]];
+
+    while (nodesToAnalyze.length > 0) {
+      const next = nodesToAnalyze.shift();
+      const [node, depth] = next;
+      if (seenNodes.has(node.id)) {
+        continue;
+      }
+      seenNodes.add(node.id);
+      if (!nodeDepths.has(node.id)) {
+        const childIndex = depthYChildCount.get(depth) ?? 0;
+        nodeDepths.set(node.id, {
+          y: depth,
+          x: childIndex,
+        });
+        depthYChildCount.set(depth, childIndex + 1);
+      }
+      for (const child of Object.values(node.children)) {
+        nodesToAnalyze.push([nodesMap.get(child), depth + 1]);
+      }
+    }
   }
 }

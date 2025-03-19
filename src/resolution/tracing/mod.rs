@@ -39,6 +39,8 @@ pub fn output(traces: &[TraceGraphSnapshot]) {
 <div id=\"main\">
     <div id=\"slider\">
       <input type=\"range\" />
+      <div id=\"stepText\">
+      </div>
     </div>
     <div id=\"graph\">
     </div>
