@@ -139,8 +139,8 @@ function createGraph(snapshot) {
     .data(links)
     .join("line")
     .attr("stroke-opacity", 0.6)
-    .attr("stroke", /** @param {any} d */ (d) => {
-      const bothOnPath = pathNodeIds.has(d.source) && pathNodeIds.has(d.target);
+    .attr("stroke", (d) => {
+      const bothOnPath = pathNodeIds.get(d.target) === d.source;
       return bothOnPath ? "red" : "black";
     })
     .style("stroke-width", linkThickness)
@@ -170,7 +170,7 @@ function createGraph(snapshot) {
     .attr("id", (d) => `node${d.id}`)
     .on("click", (_, d) => {
       const rawNode = d.rawNode;
-      setInfoNode(rawNode);
+      //setInfoNode(rawNode);
     });
   nodeGInner
     .append("text")
@@ -231,13 +231,21 @@ function createGraph(snapshot) {
   };
 }
 
-/** @param {TraceNode} rawNode */
-function setInfoNode(rawNode) {
+/**
+ * @param {TraceNode} parent
+ * @param {TraceNode} rawNode */
+function setInfoNode(parent, rawNode) {
   infoDiv.replaceChildren(); // clear
+  infoDiv.appendChild(getRawNodeDiv(parent));
+  infoDiv.appendChild(getRawNodeDiv(rawNode));
+}
+
+/** @param {TraceNode} rawNode */
+function getRawNodeDiv(rawNode) {
+  const div = document.createElement("div");
   const title = document.createElement("h3");
   title.textContent = `${rawNode.resolvedId} (${rawNode.id})`;
-  infoDiv.appendChild(title);
-  const div = document.createElement("div");
+  div.appendChild(title);
   const ul = document.createElement("ul");
   for (const dep of rawNode.dependencies) {
     const li = document.createElement("li");
@@ -249,7 +257,7 @@ function setInfoNode(rawNode) {
     ul.appendChild(li);
   }
   div.appendChild(ul);
-  infoDiv.appendChild(div);
+  return div;
 }
 
 /**
@@ -292,7 +300,7 @@ function getNodesAndLinks(snapshot) {
   /** @type {Set<number>} */
   const seen = new Set();
   const snapshotNodesMap = new Map(snapshot.nodes.map((n) => [n.id, n]));
-  setInfoNode(snapshotNodesMap.get(snapshot.path.nodeId));
+  setInfoNode(snapshotNodesMap.get(snapshot.path.previous.nodeId), snapshotNodesMap.get(snapshot.path.nodeId));
   const pendingNodes = Object.values(snapshot.roots);
   while (pendingNodes.length > 0) {
     const id = pendingNodes.shift();
@@ -353,10 +361,10 @@ function getNodesAndLinks(snapshot) {
 /** @param {TraceGraphSnapshot} snapshot */
 function getPathNodeIds(snapshot) {
   let currentPath = snapshot.path;
-  /** @type {Set<number>} */
-  const nodes = new Set();
+  /** @type {Map<number, number | undefined>} */
+  const nodes = new Map();
   while (currentPath != null) {
-    nodes.add(currentPath.nodeId);
+    nodes.set(currentPath.nodeId, currentPath.previous?.nodeId);
     currentPath = currentPath.previous;
   }
   return nodes;

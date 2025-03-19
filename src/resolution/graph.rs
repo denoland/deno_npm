@@ -1054,7 +1054,17 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               self.graph.traces.push(build_trace_graph_snapshot(
                 &self.graph,
                 &self.dep_entry_cache,
-                &parent_path,
+                &parent_path.with_id(
+                  child_id,
+                  dep.bare_specifier.clone(),
+                  self
+                    .graph
+                    .resolved_node_ids
+                    .get(child_id)
+                    .unwrap()
+                    .nv
+                    .clone(),
+                ),
               ));
             }
 
@@ -1074,6 +1084,25 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               &package_info,
               &parent_path,
             )?;
+
+            #[cfg(feature = "tracing")]
+            if let Some(child_id) = maybe_new_id {
+              self.graph.traces.push(build_trace_graph_snapshot(
+                &self.graph,
+                &self.dep_entry_cache,
+                &parent_path.with_id(
+                  child_id,
+                  dep.bare_specifier.clone(),
+                  self
+                    .graph
+                    .resolved_node_ids
+                    .get(child_id)
+                    .unwrap()
+                    .nv
+                    .clone(),
+                ),
+              ));
+            }
 
             // For optional peer dependencies, we want to resolve them if any future
             // same parent version resolves them. So when not resolved, store them to be

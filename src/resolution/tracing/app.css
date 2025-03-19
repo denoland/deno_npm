@@ -43,8 +43,13 @@ html, body {
   overflow: hidden;
 }
 
+#info h3 {
+  padding-top: 0;
+  margin-top: 0;
+}
+
 #info {
-  padding: 10px;
+  padding: 20px;
   background: #f0f0f0;
   flex: 0 0 400px;
 }
