@@ -424,11 +424,15 @@ impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
   > {
     async move {
       let mut infos = Vec::new();
+      let patched_packages = HashMap::new();
       for nv in values {
         let info = self.package_info(nv.name.as_str()).await?;
-        let version_info = info.version_info(&nv).unwrap();
+        let version_info = info.version_info(&nv, &patched_packages).unwrap();
         let lockfile_info = deno_lockfile::Lockfile5NpmInfo {
-          tarball_url: Some(version_info.dist.tarball.clone()),
+          tarball_url: version_info
+            .dist
+            .as_ref()
+            .map(|dist| dist.tarball.clone()),
           optional_dependencies: Vec::new(),
           cpu: version_info.os.iter().map(|s| s.to_string()).collect(),
           os: version_info.cpu.iter().map(|s| s.to_string()).collect(),

@@ -119,8 +119,6 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
   #[serde(flatten)]
-  pub dist: NpmPackageVersionDistInfo,
-  #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
 }
 
@@ -845,7 +843,7 @@ struct IncompletePackageInfo {
   id: NpmPackageId,
   integrity: Option<String>,
   dependencies: HashMap<StackString, NpmPackageId>,
-  optional_dependencies: HashSet<StackString>,
+  optional_dependencies: HashMap<StackString, NpmPackageId>,
   cpu: Vec<SmallStackString>,
   os: Vec<SmallStackString>,
   tarball: Option<String>,
@@ -896,15 +894,18 @@ pub fn incomplete_snapshot_from_lockfile(
       dependencies.insert(name.clone(), dep_id);
     }
 
+    let mut optional_dependencies =
+      HashMap::with_capacity(package.optional_dependencies.len());
+    for (name, specifier) in &package.optional_dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      optional_dependencies.insert(name.clone(), dep_id);
+    }
+
     packages.push(IncompletePackageInfo {
       id,
-      integrity: Some(package.integrity.clone()),
+      integrity: package.integrity.clone(),
       dependencies,
-      optional_dependencies: package
-        .optional_dependencies
-        .iter()
-        .cloned()
-        .collect(),
+      optional_dependencies,
 
       cpu: package.cpu.clone(),
       os: package.os.clone(),
@@ -976,7 +977,6 @@ pub enum SnapshotFromLockfileError {
 }
 
 pub struct SnapshotFromLockfileParams<'a> {
-  pub api: &'a dyn NpmRegistryApi,
   pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub incomplete_snapshot: IncompleteSnapshot,
   pub skip_integrity_check: bool,
@@ -993,7 +993,7 @@ pub trait DefaultTarballUrlProvider {
 /// function.
 #[allow(clippy::needless_lifetimes)] // clippy bug
 pub async fn snapshot_from_lockfile(
-  params: SnapshotFromLockfileParams,
+  params: SnapshotFromLockfileParams<'_>,
   default_tarball_url: &impl DefaultTarballUrlProvider,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
   let incomplete_snapshot = params.incomplete_snapshot;
@@ -1003,10 +1003,14 @@ pub async fn snapshot_from_lockfile(
   let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
   for pkg in incomplete_snapshot.packages {
     packages.push(SerializedNpmResolutionSnapshotPackage {
-      dist: dist_from_incomplete_package_info(&pkg, default_tarball_url),
+      dist: Some(dist_from_incomplete_package_info(&pkg, default_tarball_url)),
       id: pkg.id,
-      dependencies: pkg.dependencies,
-      optional_dependencies: pkg.optional_dependencies,
+      dependencies: pkg
+        .dependencies
+        .into_iter()
+        .chain(pkg.optional_dependencies.clone().into_iter())
+        .collect(),
+      optional_dependencies: pkg.optional_dependencies.into_keys().collect(),
       system: NpmResolutionPackageSystemInfo {
         cpu: pkg.cpu,
         os: pkg.os,
@@ -1120,11 +1124,11 @@ mod tests {
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
           system: Default::default(),
           optional_dependencies: HashSet::from(["c".into()]),
-          dist: crate::registry::NpmPackageVersionDistInfo {
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/a@1.0.0.tgz".to_string(),
             shasum: None,
             integrity: None,
-          },
+          }),
           extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
@@ -1132,11 +1136,11 @@ mod tests {
           dependencies: Default::default(),
           system: Default::default(),
           optional_dependencies: Default::default(),
-          dist: crate::registry::NpmPackageVersionDistInfo {
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/b@1.0.0.tgz".to_string(),
             shasum: None,
             integrity: None,
-          },
+          }),
           extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
@@ -1147,11 +1151,11 @@ mod tests {
             cpu: vec!["x64".into()],
           },
           optional_dependencies: Default::default(),
-          dist: crate::registry::NpmPackageVersionDistInfo {
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/c@1.0.0.tgz".to_string(),
             shasum: None,
             integrity: None,
-          },
+          }),
           extra: None,
         },
         SerializedNpmResolutionSnapshotPackage {
@@ -1159,11 +1163,11 @@ mod tests {
           dependencies: Default::default(),
           system: Default::default(),
           optional_dependencies: Default::default(),
-          dist: crate::registry::NpmPackageVersionDistInfo {
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/d@1.0.0.tgz".to_string(),
             shasum: None,
             integrity: None,
-          },
+          }),
           extra: None,
         },
       ],
@@ -1274,11 +1278,11 @@ mod tests {
       dependencies: Default::default(),
       system: Default::default(),
       optional_dependencies: Default::default(),
-      dist: crate::registry::NpmPackageVersionDistInfo {
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
         tarball: format!("https://example.com/{id}.tar.gz", id = id),
         shasum: None,
         integrity: None,
-      },
+      }),
       extra: None,
     }
   }
@@ -1329,9 +1333,10 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
         "version": "2",
         "remote": {},
         "npm": {
@@ -1351,18 +1356,10 @@ mod tests {
           }
         }
       }"#,
-      overwrite: false,
-    })
-    .unwrap();
-
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
-      patch_packages: &Default::default(),
-      skip_integrity_check: false,
-    })
+        overwrite: false,
+      },
+      &api,
+    )
     .await
     .unwrap();
 
@@ -1371,12 +1368,12 @@ mod tests {
     assert!(snapshot_from_lockfile(
       SnapshotFromLockfileParams {
         incomplete_snapshot,
-        api: &api,
         patch_packages: &Default::default(),
         skip_integrity_check: true, // will pass because ignored
       },
       &TestDefaultTarballUrlProvider
     )
+    .await
     .is_ok());
   }
 
@@ -1432,6 +1429,7 @@ mod tests {
       },
       &TestDefaultTarballUrlProvider,
     )
+    .await
     .unwrap();
     assert_eq!(
       snapshot.as_serialized().root_packages,
@@ -1457,11 +1455,11 @@ mod tests {
       dependencies: deps(dependencies),
       system: Default::default(),
       optional_dependencies: Default::default(),
-      dist: crate::registry::NpmPackageVersionDistInfo {
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
         tarball: format!("https://example.com/{id}.tar.gz",),
         shasum: None,
         integrity: None,
-      },
+      }),
       extra: None,
     }
   }

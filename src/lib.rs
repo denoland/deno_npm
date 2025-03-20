@@ -332,8 +332,6 @@ pub struct NpmResolutionPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
 
-  pub dist: NpmPackageVersionDistInfo,
-
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
 }

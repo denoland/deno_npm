@@ -4299,11 +4299,11 @@ mod test {
           )]),
           optional_dependencies: HashSet::new(),
           extra: None,
-          dist: crate::registry::NpmPackageVersionDistInfo {
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/package-0@1.0.0.tgz".to_string(),
             shasum: None,
             integrity: None,
-          },
+          }),
         },
       ]),
     };
