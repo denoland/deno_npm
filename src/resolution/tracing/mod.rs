@@ -72,5 +72,8 @@ const rawTraces = {json};
     "file://{}",
     temp_file_path.to_string_lossy().replace('\\', "/")
   );
-  eprintln!("\n==============\nTrace output ready! Please open your browser to: {}\n==============\n", url);
+  #[allow(clippy::print_stderr)]
+  {
+    eprintln!("\n==============\nTrace output ready! Please open your browser to: {}\n==============\n", url);
+  }
 }

@@ -1835,8 +1835,3 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[patch.unused]]
-name = "deno_lockfile"
-version = "0.24.0"
-source = "git+https://github.com/dsherret/deno_lockfile?rev=7dbd7de#7dbd7debfbf6d8e1d5a61104e2a43efd575d7b62"

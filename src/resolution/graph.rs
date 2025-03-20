@@ -7,6 +7,7 @@ use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
+use log::debug;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -34,11 +35,6 @@ use super::common::NpmVersionResolver;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
-
-#[cfg(not(test))]
-use log::debug;
-#[cfg(test)]
-use std::eprintln as debug;
 
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
@@ -1052,7 +1048,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             #[cfg(feature = "tracing")]
             {
               self.graph.traces.push(build_trace_graph_snapshot(
-                &self.graph,
+                self.graph,
                 &self.dep_entry_cache,
                 &parent_path.with_id(
                   child_id,
@@ -1088,7 +1084,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             #[cfg(feature = "tracing")]
             if let Some(child_id) = maybe_new_id {
               self.graph.traces.push(build_trace_graph_snapshot(
-                &self.graph,
+                self.graph,
                 &self.dep_entry_cache,
                 &parent_path.with_id(
                   child_id,
@@ -1536,14 +1532,14 @@ fn build_trace_graph_snapshot(
 ) -> super::tracing::TraceGraphSnapshot {
   use super::tracing::*;
 
-  fn build_path(graph: &Graph, current_path: &GraphPath) -> TraceGraphPath {
+  fn build_path(current_path: &GraphPath) -> TraceGraphPath {
     TraceGraphPath {
       specifier: current_path.specifier.to_string(),
       node_id: current_path.node_id().0,
       nv: current_path.nv.to_string(),
       previous: current_path.previous_node.as_ref().and_then(|n| match n {
         GraphPathNodeOrRoot::Node(graph_path) => {
-          Some(Box::new(build_path(graph, graph_path)))
+          Some(Box::new(build_path(graph_path)))
         }
         GraphPathNodeOrRoot::Root(_) => None,
       }),
@@ -1589,7 +1585,7 @@ fn build_trace_graph_snapshot(
       .iter()
       .map(|(nv, id)| (nv.to_string(), id.0))
       .collect(),
-    path: build_path(graph, current_path),
+    path: build_path(current_path),
   }
 }
 
