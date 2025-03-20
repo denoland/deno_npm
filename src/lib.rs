@@ -323,7 +323,10 @@ pub struct NpmResolutionPackage {
   pub copy_index: u8,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  /// The information used for installing the package. When `None`,
+  /// it means the package was a workspace patched package and
+  /// the local copy should be used instead.
+  pub dist: Option<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,

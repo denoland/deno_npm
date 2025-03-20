@@ -1,5 +1,8 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use std::collections::HashMap;
+
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::StackString;
 use deno_semver::Version;
@@ -49,18 +52,36 @@ pub enum NpmPackageVersionResolutionError {
 }
 
 #[derive(Debug, Clone)]
-pub struct NpmVersionResolver {
+pub struct NpmVersionResolver<'patch> {
   pub types_node_version_req: Option<VersionReq>,
+  pub patch_packages: &'patch HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
 }
 
-impl NpmVersionResolver {
-  pub fn resolve_best_package_version_info<'info, 'version>(
-    &self,
+impl NpmVersionResolver<'_> {
+  pub fn resolve_best_package_version_info<'a, 'version>(
+    &'a self,
     version_req: &VersionReq,
-    package_info: &'info NpmPackageInfo,
+    package_info: &'a NpmPackageInfo,
     existing_versions: impl Iterator<Item = &'version Version>,
-  ) -> Result<&'info NpmPackageVersionInfo, NpmPackageVersionResolutionError>
-  {
+  ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
+    // always attempt to resolve from the patched packages first
+    if let Some(version_infos) = self.patch_packages.get(&package_info.name) {
+      let mut best_version: Option<&'a NpmPackageVersionInfo> = None;
+      for version_info in version_infos {
+        let version = &version_info.version;
+        if version_req.matches(version) {
+          let is_greater =
+            best_version.map(|c| *version > c.version).unwrap_or(true);
+          if is_greater {
+            best_version = Some(version_info);
+          }
+        }
+      }
+      if let Some(top_version) = best_version {
+        return Ok(top_version);
+      }
+    }
+
     if let Some(version) = self.resolve_best_from_existing_versions(
       version_req,
       package_info,
@@ -234,6 +255,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patch_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -305,6 +327,7 @@ mod test {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
+      patch_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -341,6 +364,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patch_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -396,6 +420,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
+      patch_packages: &Default::default(),
     };
 
     // check for when matches dist tag

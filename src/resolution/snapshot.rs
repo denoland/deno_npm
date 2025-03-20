@@ -2,6 +2,7 @@
 
 use deno_error::JsError;
 use deno_lockfile::Lockfile;
+use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use deno_semver::SmallStackString;
@@ -29,6 +30,7 @@ use super::NpmPackageVersionNotFound;
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
+use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
@@ -111,7 +113,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub id: NpmPackageId,
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
-  pub dist: NpmPackageVersionDistInfo,
+  pub dist: Option<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
@@ -192,6 +194,8 @@ pub struct AddPkgReqsOptions<'a> {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
+  /// Packages that are marked as "patch" in the config file.
+  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
 }
 
 #[derive(Debug)]
@@ -314,6 +318,7 @@ impl NpmResolutionSnapshot {
 
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
+      patch_packages: options.patch_packages,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
@@ -354,7 +359,7 @@ impl NpmResolutionSnapshot {
       Some(err) => Err(err),
       None => match resolver.resolve_pending().await {
         Ok(()) => graph
-          .into_snapshot(api)
+          .into_snapshot(api, version_resolver.patch_packages)
           .await
           .map_err(NpmResolutionError::Registry),
         Err(err) => Err(err),
@@ -741,6 +746,18 @@ impl NpmResolutionSnapshot {
     }
     maybe_best_id.cloned()
   }
+
+  pub fn package_ids_for_nv<'a>(
+    &'a self,
+    nv: &'a PackageNv,
+  ) -> impl Iterator<Item = &'a NpmPackageId> {
+    self
+      .packages_by_name
+      .get(&nv.name)
+      .map(|p| p.iter().filter(|p| p.nv == *nv))
+      .into_iter()
+      .flatten()
+  }
 }
 
 pub struct SnapshotPackageCopyIndexResolver {
@@ -821,7 +838,7 @@ pub enum IncompleteSnapshotFromLockfileError {
 
 struct IncompletePackageInfo {
   id: NpmPackageId,
-  integrity: String,
+  integrity: Option<String>,
   dependencies: HashMap<StackString, NpmPackageId>,
 }
 
@@ -927,6 +944,7 @@ pub enum SnapshotFromLockfileError {
 
 pub struct SnapshotFromLockfileParams<'a> {
   pub api: &'a dyn NpmRegistryApi,
+  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub incomplete_snapshot: IncompleteSnapshot,
   pub skip_integrity_check: bool,
 }
@@ -967,32 +985,40 @@ pub async fn snapshot_from_lockfile<'a>(
       .map_err(|e: &SnapshotFromLockfileError| e.clone())
       .and_then(|(package_info, nv)| {
         package_info
-          .version_info(nv)
+          .version_info(nv, params.patch_packages)
           .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
       });
     match result {
       Ok(version_info) => {
         let snapshot_package = &incomplete_snapshot.packages[i];
+
         if !params.skip_integrity_check {
-          let registry_integrity = version_info.dist.integrity().for_lockfile();
-          if registry_integrity != snapshot_package.integrity {
-            return Err(
-              IntegrityCheckFailedError {
-                package_display_id: format!(
-                  "npm:{}",
-                  snapshot_package.id.as_serialized()
-                ),
-                expected: snapshot_package.integrity.clone(),
-                actual: registry_integrity,
-                filename: incomplete_snapshot
-                  .lockfile_file_name
-                  .display()
-                  .to_string(),
-              }
-              .into(),
-            );
+          if let Some(dist) = &version_info.dist {
+            let registry_integrity = dist.integrity().for_lockfile();
+            if Some(&registry_integrity) != snapshot_package.integrity.as_ref()
+            {
+              return Err(
+                IntegrityCheckFailedError {
+                  package_display_id: format!(
+                    "npm:{}",
+                    snapshot_package.id.as_serialized()
+                  ),
+                  expected: snapshot_package
+                    .integrity
+                    .clone()
+                    .unwrap_or_else(|| "<missing>".to_string()),
+                  actual: registry_integrity,
+                  filename: incomplete_snapshot
+                    .lockfile_file_name
+                    .display()
+                    .to_string(),
+                }
+                .into(),
+              );
+            }
           }
         }
+
         packages.push(SerializedNpmResolutionSnapshotPackage {
           id: snapshot_package.id.clone(),
           dependencies: snapshot_package.dependencies.clone(),
@@ -1331,6 +1357,7 @@ mod tests {
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false
     })
     .await
@@ -1382,6 +1409,7 @@ mod tests {
     let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false,
     })
     .await
@@ -1402,6 +1430,7 @@ mod tests {
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: true, // will pass because ignored
     })
     .await
@@ -1451,6 +1480,7 @@ mod tests {
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
       incomplete_snapshot,
       api: &api,
+      patch_packages: &Default::default(),
       skip_integrity_check: false,
     })
     .await
