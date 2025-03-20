@@ -466,13 +466,16 @@ impl Graph {
 
   fn get_npm_pkg_id(&self, node_id: NodeId) -> NpmPackageId {
     let resolved_id = self.resolved_node_ids.get(node_id).unwrap();
-    self.get_npm_pkg_id_from_resolved_id(resolved_id, HashSet::from([node_id]))
+    self.get_npm_pkg_id_from_resolved_id(
+      resolved_id,
+      HashSet::from([resolved_id.nv.clone()]),
+    )
   }
 
   fn get_npm_pkg_id_from_resolved_id(
     &self,
     resolved_id: &ResolvedId,
-    seen: HashSet<NodeId>,
+    seen: HashSet<Rc<PackageNv>>,
   ) -> NpmPackageId {
     if resolved_id.peer_dependencies.is_empty() {
       NpmPackageId {
@@ -496,7 +499,7 @@ impl Graph {
         if let Some((child_id, child_resolved_id)) = maybe_node_and_resolved_id
         {
           let mut new_seen = seen.clone();
-          if new_seen.insert(child_id) {
+          if new_seen.insert(child_resolved_id.nv.clone()) {
             let child_peer = self.get_npm_pkg_id_from_resolved_id(
               child_resolved_id,
               new_seen.clone(),
