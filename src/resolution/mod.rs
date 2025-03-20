@@ -4,6 +4,8 @@ mod collections;
 mod common;
 mod graph;
 mod snapshot;
+#[cfg(feature = "tracing")]
+mod tracing;
 
 pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;

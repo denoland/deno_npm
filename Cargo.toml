@@ -9,6 +9,9 @@ documentation = "https://docs.rs/deno_npm"
 authors = ["the Deno authors"]
 license = "MIT"
 
+[features]
+tracing = []
+
 [dependencies]
 async-trait = "0.1.68"
 deno_semver = "0.7.0"

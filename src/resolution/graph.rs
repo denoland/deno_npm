@@ -332,6 +332,8 @@ pub struct Graph {
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
+  #[cfg(feature = "tracing")]
+  traces: Vec<super::tracing::TraceGraphSnapshot>,
 }
 
 impl Graph {
@@ -436,6 +438,8 @@ impl Graph {
       package_name_versions: Default::default(),
       resolved_node_ids: Default::default(),
       root_packages: Default::default(),
+      #[cfg(feature = "tracing")]
+      traces: Default::default(),
     };
     let mut created_package_ids =
       HashMap::with_capacity(snapshot.packages.len());
@@ -599,6 +603,11 @@ impl Graph {
     api: &TNpmRegistryApi,
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
+    #[cfg(feature = "tracing")]
+    if !self.traces.is_empty() {
+      super::tracing::output(&self.traces);
+    }
+
     let packages_to_pkg_ids = self
       .nodes
       .keys()
@@ -1036,6 +1045,25 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               }
             };
 
+            #[cfg(feature = "tracing")]
+            {
+              self.graph.traces.push(build_trace_graph_snapshot(
+                self.graph,
+                &self.dep_entry_cache,
+                &parent_path.with_id(
+                  child_id,
+                  dep.bare_specifier.clone(),
+                  self
+                    .graph
+                    .resolved_node_ids
+                    .get(child_id)
+                    .unwrap()
+                    .nv
+                    .clone(),
+                ),
+              ));
+            }
+
             if !found_peer {
               found_peer = !self.graph.borrow_node_mut(child_id).no_peers;
             }
@@ -1052,6 +1080,25 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               &package_info,
               &parent_path,
             )?;
+
+            #[cfg(feature = "tracing")]
+            if let Some(child_id) = maybe_new_id {
+              self.graph.traces.push(build_trace_graph_snapshot(
+                self.graph,
+                &self.dep_entry_cache,
+                &parent_path.with_id(
+                  child_id,
+                  dep.bare_specifier.clone(),
+                  self
+                    .graph
+                    .resolved_node_ids
+                    .get(child_id)
+                    .unwrap()
+                    .nv
+                    .clone(),
+                ),
+              ));
+            }
 
             // For optional peer dependencies, we want to resolve them if any future
             // same parent version resolves them. So when not resolved, store them to be
@@ -1474,6 +1521,71 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
     Ok(None)
+  }
+}
+
+#[cfg(feature = "tracing")]
+fn build_trace_graph_snapshot(
+  graph: &Graph,
+  dep_entry_cache: &DepEntryCache,
+  current_path: &GraphPath,
+) -> super::tracing::TraceGraphSnapshot {
+  use super::tracing::*;
+
+  fn build_path(current_path: &GraphPath) -> TraceGraphPath {
+    TraceGraphPath {
+      specifier: current_path.specifier.to_string(),
+      node_id: current_path.node_id().0,
+      nv: current_path.nv.to_string(),
+      previous: current_path.previous_node.as_ref().and_then(|n| match n {
+        GraphPathNodeOrRoot::Node(graph_path) => {
+          Some(Box::new(build_path(graph_path)))
+        }
+        GraphPathNodeOrRoot::Root(_) => None,
+      }),
+    }
+  }
+
+  TraceGraphSnapshot {
+    nodes: graph
+      .nodes
+      .iter()
+      .map(|(node_id, node)| {
+        let id = graph.get_npm_pkg_id(*node_id);
+        TraceNode {
+          id: node_id.0,
+          resolved_id: id.as_serialized().to_string(),
+          children: node
+            .children
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.0))
+            .collect(),
+          dependencies: dep_entry_cache
+            .get(&id.nv)
+            .map(|d| {
+              d.iter()
+                .map(|dep| TraceNodeDependency {
+                  kind: format!("{:?}", dep.kind),
+                  bare_specifier: dep.bare_specifier.to_string(),
+                  name: dep.name.to_string(),
+                  version_req: dep.version_req.to_string(),
+                  peer_dep_version_req: dep
+                    .peer_dep_version_req
+                    .as_ref()
+                    .map(|r| r.to_string()),
+                })
+                .collect()
+            })
+            .unwrap_or_default(),
+        }
+      })
+      .collect(),
+    roots: graph
+      .root_packages
+      .iter()
+      .map(|(nv, id)| (nv.to_string(), id.0))
+      .collect(),
+    path: build_path(current_path),
   }
 }
 
@@ -2383,6 +2495,7 @@ mod test {
       ]
     );
   }
+
   #[tokio::test]
   async fn resolve_peer_dep_other_specifier_slot() {
     let api = TestNpmRegistryApi::default();
