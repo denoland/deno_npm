@@ -1321,8 +1321,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       let mut new_resolved_id = old_resolved_id;
       let mut has_changed = false;
+      let peer_nvs = new_resolved_id
+        .peer_dependencies
+        .iter()
+        .filter_map(|p| {
+          self
+            .graph
+            .peer_dep_to_maybe_node_id_and_resolved_id(p)
+            .map(|(_, resolved_id)| resolved_id.nv.clone())
+        })
+        .collect::<HashSet<_>>();
       for (peer_dep, nv) in peer_deps {
         if *nv == new_resolved_id.nv {
+          continue;
+        }
+        if peer_nvs.contains(nv) {
           continue;
         }
         if new_resolved_id.push_peer_dep((*peer_dep).clone()) {
