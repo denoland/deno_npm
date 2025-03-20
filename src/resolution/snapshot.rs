@@ -877,7 +877,6 @@ pub enum SnapshotFromLockfileError {
 pub struct SnapshotFromLockfileParams<'a> {
   pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub lockfile: &'a Lockfile,
-  pub skip_integrity_check: bool,
   pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
 }
 
@@ -1316,7 +1315,6 @@ mod tests {
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
       patch_packages: &Default::default(),
-      skip_integrity_check: true, // will pass because ignored
       default_tarball_url: &TestDefaultTarballUrlProvider,
     })
     .is_ok());
@@ -1367,7 +1365,6 @@ mod tests {
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
       patch_packages: &Default::default(),
-      skip_integrity_check: false,
       default_tarball_url: &TestDefaultTarballUrlProvider,
     })
     .unwrap();
