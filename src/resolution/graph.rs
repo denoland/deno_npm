@@ -462,13 +462,16 @@ impl Graph {
 
   fn get_npm_pkg_id(&self, node_id: NodeId) -> NpmPackageId {
     let resolved_id = self.resolved_node_ids.get(node_id).unwrap();
-    self.get_npm_pkg_id_from_resolved_id(resolved_id, HashSet::from([node_id]))
+    self.get_npm_pkg_id_from_resolved_id(
+      resolved_id,
+      HashSet::from([resolved_id.nv.clone()]),
+    )
   }
 
   fn get_npm_pkg_id_from_resolved_id(
     &self,
     resolved_id: &ResolvedId,
-    seen: HashSet<NodeId>,
+    seen: HashSet<Rc<PackageNv>>,
   ) -> NpmPackageId {
     if resolved_id.peer_dependencies.is_empty() {
       NpmPackageId {
@@ -492,7 +495,7 @@ impl Graph {
         if let Some((child_id, child_resolved_id)) = maybe_node_and_resolved_id
         {
           let mut new_seen = seen.clone();
-          if new_seen.insert(child_id) {
+          if new_seen.insert(child_resolved_id.nv.clone()) {
             let child_peer = self.get_npm_pkg_id_from_resolved_id(
               child_resolved_id,
               new_seen.clone(),
@@ -1317,8 +1320,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       let mut new_resolved_id = old_resolved_id;
       let mut has_changed = false;
+      let peer_nvs = new_resolved_id
+        .peer_dependencies
+        .iter()
+        .filter_map(|p| {
+          self
+            .graph
+            .peer_dep_to_maybe_node_id_and_resolved_id(p)
+            .map(|(_, resolved_id)| resolved_id.nv.clone())
+        })
+        .collect::<HashSet<_>>();
       for (peer_dep, nv) in peer_deps {
         if *nv == new_resolved_id.nv {
+          continue;
+        }
+        if peer_nvs.contains(nv) {
           continue;
         }
         if new_resolved_id.push_peer_dep((*peer_dep).clone()) {
@@ -4317,6 +4333,75 @@ mod test {
         )
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn aws_sdk_issue() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("@aws-sdk/client-s3", "3.679.0");
+    api.ensure_package_version("@aws-sdk/client-sts", "3.679.0");
+    api.ensure_package_version("@aws-sdk/client-sso-oidc", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-node", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-ini", "3.679.0");
+    api.ensure_package_version("@aws-sdk/credential-provider-sso", "3.679.0");
+    api.ensure_package_version(
+      "@aws-sdk/credential-provider-web-identity",
+      "3.679.0",
+    );
+    api.ensure_package_version("@aws-sdk/token-providers", "3.679.0");
+
+    api.add_dependency(
+      ("@aws-sdk/client-s3", "3.679.0"),
+      ("@aws-sdk/client-sts", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/client-s3", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+    );
+
+    api.add_dependency(
+      ("@aws-sdk/client-sts", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/client-sts", "3.679.0"),
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/client-sso-oidc", "3.679.0"),
+      ("@aws-sdk/client-sts", "^3.679.0"),
+    );
+
+    api.add_peer_dependency(
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+      ("@aws-sdk/client-sts", "^3.679.0"),
+    );
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+      ("@aws-sdk/credential-provider-sso", "3.679.0"),
+    );
+
+    api.add_dependency(
+      ("@aws-sdk/credential-provider-node", "3.679.0"),
+      ("@aws-sdk/credential-provider-ini", "3.679.0"),
+    );
+    api.add_peer_dependency(
+      ("@aws-sdk/credential-provider-sso", "3.679.0"),
+      ("@aws-sdk/client-sso-oidc", "^3.679.0"),
+    );
+
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["@aws-sdk/client-s3@3.679.0"],
+        ..Default::default()
+      },
+    )
+    .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot);
+    assert_eq!(packages, vec![]);
+    assert_eq!(package_reqs, vec![]);
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
