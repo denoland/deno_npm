@@ -13,7 +13,7 @@ license = "MIT"
 async-trait = "0.1.68"
 deno_semver = "0.7.0"
 deno_error = "0.5.2"
-deno_lockfile = "0.24.0"
+deno_lockfile = "0.25.0"
 monch = "0.5.0"
 log = "0.4"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
@@ -36,6 +36,3 @@ debug = true
 [[bench]]
 name = "bench"
 harness = false
-
-[patch.crates-io]
-deno_lockfile = { git = "https://github.com/dsherret/deno_lockfile", rev = "7dbd7de" }
