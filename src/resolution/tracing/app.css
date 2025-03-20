@@ -52,4 +52,5 @@ html, body {
   padding: 20px;
   background: #f0f0f0;
   flex: 0 0 400px;
+  overflow-y: scroll;
 }

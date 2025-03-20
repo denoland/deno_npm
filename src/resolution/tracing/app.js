@@ -88,11 +88,7 @@ function refresh(index) {
   graphDiv.replaceChildren(); // remove the children
 
   stepTextDiv.textContent = `${index + 1}/${traces.length}`;
-  setInfoNode(
-    snapshotNodesMap.get(snapshot.path.previous.nodeId),
-    snapshotNodesMap.get(snapshot.path.nodeId),
-  );
-
+  setInfoNode();
   createGraph();
 
   function createGraph() {
@@ -315,6 +311,16 @@ function refresh(index) {
     }
     return nodes;
   }
+
+  function setInfoNode() {
+    let currentPath = snapshot.path;
+    infoDiv.replaceChildren(); // clear
+    while (currentPath != null) {
+      const currentNode = snapshotNodesMap.get(currentPath.nodeId);
+      infoDiv.appendChild(getRawNodeDiv(currentNode));
+      currentPath = currentPath.previous;
+    }
+  }
 }
 
 /**
@@ -329,15 +335,6 @@ function initSlider(max, onChange) {
     onChange(input.valueAsNumber);
   });
   input.value = "0";
-}
-
-/**
- * @param {TraceNode} parent
- * @param {TraceNode} rawNode */
-function setInfoNode(parent, rawNode) {
-  infoDiv.replaceChildren(); // clear
-  infoDiv.appendChild(getRawNodeDiv(parent));
-  infoDiv.appendChild(getRawNodeDiv(rawNode));
 }
 
 /** @param {TraceNode} rawNode */
