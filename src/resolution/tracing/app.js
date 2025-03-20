@@ -357,7 +357,6 @@ function getRawNodeDiv(rawNode) {
   return div;
 }
 
-
 function analyzeTracesDepth() {
   /** @type {Map<number, { x: number, y: number }>} */
   const nodeDepths = new Map();
