@@ -205,7 +205,10 @@ function refresh(index) {
       );
     }
 
-    svg.call(/** @type {any} */(zoom)).call(/** @type {any} */(zoom.transform), transform ?? d3.zoomIdentity);
+    svg.call(/** @type {any} */ (zoom)).call(
+      /** @type {any} */ (zoom.transform),
+      transform ?? d3.zoomIdentity,
+    );
 
     refreshLinks();
 
