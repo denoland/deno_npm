@@ -14,6 +14,7 @@ pub use graph::UnmetPeerDepDiagnostic;
 pub use snapshot::snapshot_from_lockfile;
 pub use snapshot::AddPkgReqsOptions;
 pub use snapshot::AddPkgReqsResult;
+pub use snapshot::DefaultTarballUrlProvider;
 pub use snapshot::IntegrityCheckFailedError;
 pub use snapshot::NpmPackagesPartitioned;
 pub use snapshot::NpmResolutionSnapshot;
