@@ -12,6 +12,22 @@ use self::ini::Value;
 
 mod ini;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveError {
+  #[error("failed parsing npm registry url for scope '{scope}'")]
+  UrlScope {
+    scope: String,
+    #[source]
+    source: url::ParseError,
+  },
+  #[error("failed resolving .npmrc config for scope '{0}'")]
+  NpmrcScope(String),
+  #[error("failed parsing npm registry url")]
+  Url(#[source] url::ParseError),
+}
+
+pub type NpmRcParseError = monch::ParseErrorFailureError;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RegistryConfig {
   pub auth: Option<String>,
@@ -30,25 +46,11 @@ pub struct NpmRc {
   pub registry_configs: HashMap<String, Arc<RegistryConfig>>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ResolveError {
-  #[error("failed parsing npm registry url for scope '{scope}'")]
-  UrlScope {
-    scope: String,
-    #[source]
-    source: url::ParseError,
-  },
-  #[error("failed resolving .npmrc config for scope '{0}'")]
-  NpmrcScope(String),
-  #[error("failed parsing npm registry url")]
-  Url(#[source] url::ParseError),
-}
-
 impl NpmRc {
   pub fn parse(
     input: &str,
     get_env_var: &impl Fn(&str) -> Option<String>,
-  ) -> Result<Self, monch::ParseErrorFailureError> {
+  ) -> Result<Self, NpmRcParseError> {
     let kv_or_sections = ini::parse_ini(input)?;
     let mut registry = None;
     let mut scope_registries: HashMap<String, String> = HashMap::new();
