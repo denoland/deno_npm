@@ -428,13 +428,13 @@ impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
         .package_info(nv.name.as_str())
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-      let version_info = info.version_info(&nv, &patched_packages).unwrap();
+      let version_info = info.version_info(nv, &patched_packages).unwrap();
       let lockfile_info = deno_lockfile::Lockfile5NpmInfo {
         tarball_url: version_info
           .dist
           .as_ref()
           .map(|dist| dist.tarball.clone()),
-        optional_dependencies: Vec::new(),
+        optional_dependencies: Default::default(),
         cpu: version_info.os.iter().map(|s| s.to_string()).collect(),
         os: version_info.cpu.iter().map(|s| s.to_string()).collect(),
       };
