@@ -88,12 +88,6 @@ enum ResolvedIdPeerDep {
 }
 
 impl ResolvedIdPeerDep {
-  pub fn current_state_hash(&self) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    self.current_state_hash_with_hasher(&mut hasher);
-    hasher.finish()
-  }
-
   pub fn current_state_hash_with_hasher(&self, hasher: &mut DefaultHasher) {
     match self {
       ResolvedIdPeerDep::ParentReference {
@@ -133,17 +127,6 @@ impl ResolvedId {
       dep.current_state_hash_with_hasher(&mut hasher);
     }
     hasher.finish()
-  }
-
-  pub fn push_peer_dep(&mut self, peer_dep: ResolvedIdPeerDep) -> bool {
-    let new_hash = peer_dep.current_state_hash();
-    for dep in &self.peer_dependencies {
-      if new_hash == dep.current_state_hash() {
-        return false; // peer dep already set
-      }
-    }
-    self.peer_dependencies.push(peer_dep);
-    true
   }
 }
 
@@ -492,7 +475,7 @@ impl Graph {
           self.peer_dep_to_maybe_node_id_and_resolved_id(peer_dep);
         // this should always be set
         debug_assert!(maybe_node_and_resolved_id.is_some());
-        if let Some((child_id, child_resolved_id)) = maybe_node_and_resolved_id
+        if let Some((_child_id, child_resolved_id)) = maybe_node_and_resolved_id
         {
           let mut new_seen = seen.clone();
           if new_seen.insert(child_resolved_id.nv.clone()) {
@@ -1337,9 +1320,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         if peer_nvs.contains(nv) {
           continue;
         }
-        if new_resolved_id.push_peer_dep((*peer_dep).clone()) {
-          has_changed = true;
-        }
+        new_resolved_id.peer_dependencies.push((*peer_dep).clone());
+        has_changed = true;
       }
 
       if !has_changed {
@@ -4399,9 +4381,80 @@ mod test {
       },
     )
     .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
+    // not sure if this is exactly correct, but there are no duplicate packages
+    let expected_packages = Vec::from([
+      TestNpmResolutionPackage {
+        pkg_id: "@aws-sdk/client-s3@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([
+            ("@aws-sdk/client-sso-oidc".to_string(), "@aws-sdk/client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0".to_string()),
+            ("@aws-sdk/client-sts".to_string(), "@aws-sdk/client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0".to_string())
+        ]),
+      },
+      TestNpmResolutionPackage {
+          pkg_id: "@aws-sdk/client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+              ("@aws-sdk/client-sts".to_string(), "@aws-sdk/client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0".to_string()),
+          ]),
+      },
+      TestNpmResolutionPackage {
+          pkg_id: "@aws-sdk/client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+              ("@aws-sdk/client-sso-oidc".to_string(), "@aws-sdk/client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0".to_string()),
+              ("@aws-sdk/credential-provider-node".to_string(), "@aws-sdk/credential-provider-node@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0".to_string()),
+          ]),
+      },
+      TestNpmResolutionPackage {
+          pkg_id: "@aws-sdk/credential-provider-ini@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+              ("@aws-sdk/client-sts".to_string(), "@aws-sdk/client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0".to_string()),
+              ("@aws-sdk/credential-provider-sso".to_string(), "@aws-sdk/credential-provider-sso@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string()),
+          ]),
+      },
+      TestNpmResolutionPackage {
+          pkg_id: "@aws-sdk/credential-provider-node@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+              ("@aws-sdk/credential-provider-ini".to_string(), "@aws-sdk/credential-provider-ini@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0".to_string()),
+          ]),
+      },
+      TestNpmResolutionPackage {
+          pkg_id: "@aws-sdk/credential-provider-sso@3.679.0_@aws-sdk+client-sso-oidc@3.679.0__@aws-sdk+client-sts@3.679.0___@aws-sdk+client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+              ("@aws-sdk/client-sso-oidc".to_string(), "@aws-sdk/client-sso-oidc@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0".to_string()),
+          ]),
+      }]
+    );
+    assert_eq!(packages, expected_packages);
+    assert_eq!(package_reqs, vec![(
+      "@aws-sdk/client-s3@3.679.0".to_string(),
+      "@aws-sdk/client-s3@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string(),
+    )]);
+
+    // now run again with a broad specifier
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["@aws-sdk/client-s3@*"],
+        snapshot,
+        ..Default::default()
+      },
+    )
+    .await;
     let (packages, package_reqs) = snapshot_to_packages(snapshot);
-    assert_eq!(packages, vec![]);
-    assert_eq!(package_reqs, vec![]);
+    assert_eq!(packages, expected_packages);
+    assert_eq!(package_reqs, vec![(
+      "@aws-sdk/client-s3".to_string(),
+      "@aws-sdk/client-s3@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string(),
+    ), (
+      "@aws-sdk/client-s3@3.679.0".to_string(),
+      "@aws-sdk/client-s3@3.679.0_@aws-sdk+client-sts@3.679.0__@aws-sdk+client-sso-oidc@3.679.0___@aws-sdk+client-sts@3.679.0".to_string(),
+    )]);
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
