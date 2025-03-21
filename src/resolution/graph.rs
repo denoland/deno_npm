@@ -838,7 +838,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           && package_req.version_req.matches(&nv.version)
       })
       .map(|(nv, id)| (nv.clone(), *id));
-
     let (pkg_nv, node_id) = match existing_root {
       Some(existing) => existing,
       None => {
@@ -851,7 +850,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         self
           .pending_unresolved_nodes
           .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
-
         (pkg_nv, node_id)
       }
     };
