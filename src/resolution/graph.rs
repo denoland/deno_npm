@@ -828,20 +828,38 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       return Ok(nv.clone()); // already added
     }
 
-    let (pkg_nv, node_id) = self.resolve_node_from_info(
-      &package_req.name,
-      &package_req.version_req,
-      package_info,
-      None,
-    )?;
+    // attempt to find an existing root package that matches this package req
+    let existing_root = self
+      .graph
+      .root_packages
+      .iter()
+      .find(|(nv, _id)| {
+        package_req.name == nv.name
+          && package_req.version_req.matches(&nv.version)
+      })
+      .map(|(nv, id)| (nv.clone(), *id));
+
+    let (pkg_nv, node_id) = match existing_root {
+      Some(existing) => existing,
+      None => {
+        let (pkg_nv, node_id) = self.resolve_node_from_info(
+          &package_req.name,
+          &package_req.version_req,
+          package_info,
+          None,
+        )?;
+        self
+          .pending_unresolved_nodes
+          .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
+
+        (pkg_nv, node_id)
+      }
+    };
     self
       .graph
       .package_reqs
       .insert(package_req.clone(), pkg_nv.clone());
     self.graph.root_packages.insert(pkg_nv.clone(), node_id);
-    self
-      .pending_unresolved_nodes
-      .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
     Ok(pkg_nv)
   }
 
