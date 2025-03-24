@@ -334,9 +334,13 @@ pub struct NpmResolutionPackage {
 
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
+
+  #[serde(skip)]
+  pub is_deprecated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct NpmPackageExtraInfo {
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
@@ -374,6 +378,7 @@ impl NpmResolutionPackage {
       optional_dependencies: self.optional_dependencies.clone(),
       dist: self.dist.clone(),
       extra: self.extra.clone(),
+      is_deprecated: self.is_deprecated,
     }
   }
 

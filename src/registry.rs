@@ -437,6 +437,7 @@ impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
         optional_dependencies: Default::default(),
         cpu: version_info.os.iter().map(|s| s.to_string()).collect(),
         os: version_info.cpu.iter().map(|s| s.to_string()).collect(),
+        deprecated: version_info.deprecated.is_some(),
       };
       infos.push(lockfile_info);
     }

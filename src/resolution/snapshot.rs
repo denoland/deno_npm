@@ -119,6 +119,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub optional_dependencies: HashSet<StackString>,
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
+  pub is_deprecated: bool,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -275,6 +276,7 @@ impl NpmResolutionSnapshot {
           optional_dependencies: package.optional_dependencies,
           dist: package.dist,
           extra: package.extra,
+          is_deprecated: package.is_deprecated,
         },
       );
     }
@@ -474,6 +476,7 @@ impl NpmResolutionSnapshot {
         optional_dependencies: Default::default(),
         extra: pkg.extra.clone(),
         dist: pkg.dist.clone(),
+        is_deprecated: pkg.is_deprecated,
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -982,6 +985,7 @@ pub fn snapshot_from_lockfile(
         cpu: package.cpu.clone(),
         os: package.os.clone(),
       },
+      is_deprecated: package.deprecated,
       extra: None,
     });
   }
@@ -1079,6 +1083,7 @@ mod tests {
             integrity: None,
           }),
           extra: None,
+          is_deprecated: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
@@ -1091,6 +1096,7 @@ mod tests {
             integrity: None,
           }),
           extra: None,
+          is_deprecated: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1106,6 +1112,7 @@ mod tests {
             integrity: None,
           }),
           extra: None,
+          is_deprecated: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
@@ -1118,6 +1125,7 @@ mod tests {
             integrity: None,
           }),
           extra: None,
+          is_deprecated: false,
         },
       ],
     }
@@ -1233,6 +1241,7 @@ mod tests {
         integrity: None,
       }),
       extra: None,
+      is_deprecated: false,
     }
   }
 
@@ -1398,6 +1407,7 @@ mod tests {
         integrity: None,
       }),
       extra: None,
+      is_deprecated: false,
     }
   }
 

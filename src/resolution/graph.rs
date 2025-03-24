@@ -678,6 +678,7 @@ impl Graph {
             deprecated: version_info.deprecated.clone(),
           }),
           dist: version_info.dist.clone(),
+          is_deprecated: version_info.deprecated.is_some(),
         },
       );
     }
@@ -4299,6 +4300,7 @@ mod test {
           )]),
           optional_dependencies: HashSet::new(),
           extra: None,
+          is_deprecated: false,
           dist: Some(crate::registry::NpmPackageVersionDistInfo {
             tarball: "https://example.com/package-0@1.0.0.tgz".to_string(),
             shasum: None,
