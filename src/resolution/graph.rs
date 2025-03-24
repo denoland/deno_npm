@@ -2148,8 +2148,8 @@ mod test {
         RunResolverOptions {
           reqs: vec!["package-0@1.1.1"],
           expected_diagnostics: vec![
-            "package-0@1.1.1 -> package-a@1.0.0 -> package-b@2.0.0: package-peer@1 4.0.0",
-            "package-0@1.1.1 -> package-a@1.0.0 -> package-c@3.0.0: package-peer@1 4.0.0"
+            "package-0@1.1.1 -> package-a@1.0.0 -> package-b@2.0.0: package-peer@1 -> 4.0.0",
+            "package-0@1.1.1 -> package-a@1.0.0 -> package-c@3.0.0: package-peer@1 -> 4.0.0"
           ],
           ..Default::default()
         },
@@ -4789,7 +4789,7 @@ mod test {
         .iter()
         .map(|d| {
           format!(
-            "{}: {} {}",
+            "{}: {} -> {}",
             d.ancestors
               .iter()
               .rev()
