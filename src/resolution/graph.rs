@@ -39,6 +39,18 @@ use crate::NpmResolutionPackage;
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
 
+#[derive(Debug, Clone)]
+pub enum NpmResolutionDiagnostic {
+  UnmetPeerDep(UnmetPeerDepDiagnostic),
+}
+
+#[derive(Debug, Clone)]
+pub struct UnmetPeerDepDiagnostic {
+  pub ancestors: Vec<PackageNv>,
+  pub dependency: PackageReq,
+  pub resolved: Version,
+}
+
 #[derive(Debug, Clone, Error, deno_error::JsError)]
 pub enum NpmResolutionError {
   #[class(inherit)]
@@ -792,6 +804,7 @@ struct UnresolvedOptionalPeer {
 }
 
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
+  diagnostics: RefCell<Vec<NpmResolutionDiagnostic>>,
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
   version_resolver: &'a NpmVersionResolver<'a>,
@@ -810,6 +823,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     version_resolver: &'a NpmVersionResolver,
   ) -> Self {
     Self {
+      diagnostics: Default::default(),
       graph,
       api,
       version_resolver,
@@ -1216,7 +1230,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         }
         GraphPathNodeOrRoot::Root(root_pkg_nv) => {
           // in this case, the parent is the root so the children are all the package requirements
-          if let Some(child_id) = self.find_matching_child(
+          if let Some(child_id) = self.find_matching_child_for_peer_dep(
+            None,
             peer_dep,
             peer_package_info,
             self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
@@ -1261,13 +1276,18 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let resolved_node_id = self.graph.resolved_node_ids.get(node_id).unwrap();
     // check if this node itself is a match for
     // the peer dependency and if so use that
-    if resolved_node_id.nv.name == peer_dep.name
-      && self.version_resolver.version_req_satisfies(
+    if resolved_node_id.nv.name == peer_dep.name {
+      if !self.version_resolver.version_req_satisfies(
         &peer_dep.version_req,
         &resolved_node_id.nv.version,
         peer_package_info,
-      )?
-    {
+      )? {
+        self.add_unmet_peer_dep_diagnostic(
+          Some(path),
+          peer_dep,
+          resolved_node_id.nv.version.clone(),
+        );
+      }
       let parent = path.previous_node.as_ref().unwrap().clone();
       Ok(Some((parent, node_id)))
     } else {
@@ -1275,14 +1295,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       let children = node
         .children
         .iter()
-        .filter_map(|(key, value)| {
-          if Some(key.as_str()) == exclude_key {
-            None
-          } else {
-            Some(value)
-          }
-        })
-        .map(|child_node_id| {
+        .filter(|(key, _value)| Some(key.as_str()) != exclude_key)
+        .map(|(_specifier, child_node_id)| {
           let child_node_id = *child_node_id;
           (
             child_node_id,
@@ -1290,7 +1304,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           )
         });
       self
-        .find_matching_child(peer_dep, peer_package_info, children)
+        .find_matching_child_for_peer_dep(
+          Some(path),
+          peer_dep,
+          peer_package_info,
+          children,
+        )
         .map(|maybe_child_id| {
           maybe_child_id.map(|child_id| {
             let parent = GraphPathNodeOrRoot::Node(path.clone());
@@ -1298,6 +1317,46 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           })
         })
     }
+  }
+
+  fn add_unmet_peer_dep_diagnostic(
+    &self,
+    maybe_path: Option<&Rc<GraphPath>>,
+    peer_dep: &NpmDependencyEntry,
+    resolved_version: Version,
+  ) {
+    self
+      .diagnostics
+      .borrow_mut()
+      .push(NpmResolutionDiagnostic::UnmetPeerDep(
+        UnmetPeerDepDiagnostic {
+          ancestors: maybe_path
+            .map(|p| {
+              p.ancestors()
+                .filter_map(|n| {
+                  Some(match n {
+                    GraphPathNodeOrRoot::Node(node) => self
+                      .graph
+                      .resolved_node_ids
+                      .get(node.node_id())?
+                      .nv
+                      .as_ref()
+                      .clone(),
+                    GraphPathNodeOrRoot::Root(package_nv) => {
+                      package_nv.as_ref().clone()
+                    }
+                  })
+                })
+                .collect()
+            })
+            .unwrap_or_default(),
+          dependency: PackageReq {
+            name: peer_dep.name.clone(),
+            version_req: peer_dep.version_req.clone(),
+          },
+          resolved: resolved_version,
+        },
+      ))
   }
 
   fn add_peer_deps_to_path(
@@ -1517,24 +1576,34 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .push(descendant);
   }
 
-  fn find_matching_child<'nv>(
+  fn find_matching_child_for_peer_dep<'nv>(
     &self,
+    maybe_path: Option<&Rc<GraphPath>>,
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
     children: impl Iterator<Item = (NodeId, &'nv Rc<PackageNv>)>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
     for (child_id, pkg_id) in children {
-      if pkg_id.name == peer_dep.name
-        && self.version_resolver.version_req_satisfies(
+      if pkg_id.name == peer_dep.name {
+        if !self.version_resolver.version_req_satisfies(
           &peer_dep.version_req,
           &pkg_id.version,
           peer_package_info,
-        )?
-      {
+        )? {
+          self.add_unmet_peer_dep_diagnostic(
+            maybe_path,
+            peer_dep,
+            pkg_id.version.clone(),
+          );
+        }
         return Ok(Some(child_id));
       }
     }
     Ok(None)
+  }
+
+  pub fn take_diagnostics(&self) -> Vec<NpmResolutionDiagnostic> {
+    std::mem::take(&mut self.diagnostics.borrow_mut())
   }
 }
 
