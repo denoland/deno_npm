@@ -42,6 +42,7 @@ use crate::NpmResolutionPackage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnmetPeerDepDiagnostic {
+  /// Ancestor nodes going up the graph to the root.
   pub ancestors: Vec<PackageNv>,
   pub dependency: PackageReq,
   pub resolved: Version,
@@ -1328,21 +1329,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .unmet_peer_diagnostics
       .borrow_mut()
       .insert(UnmetPeerDepDiagnostic {
-        ancestors: original_resolving_path
-          .ancestors()
-          .filter_map(|n| {
-            Some(match n {
-              GraphPathNodeOrRoot::Node(node) => self
+        ancestors: std::iter::once(original_resolving_path)
+          .chain(original_resolving_path.ancestors().filter_map(|n| match n {
+            GraphPathNodeOrRoot::Node(path) => Some(path),
+            GraphPathNodeOrRoot::Root(_) => None,
+          }))
+          .filter_map(|node| {
+            Some(
+              self
                 .graph
                 .resolved_node_ids
                 .get(node.node_id())?
                 .nv
                 .as_ref()
                 .clone(),
-              GraphPathNodeOrRoot::Root(package_nv) => {
-                package_nv.as_ref().clone()
-              }
-            })
+            )
           })
           .collect(),
         dependency: PackageReq {
@@ -2068,6 +2069,92 @@ mod test {
 
     let (packages, package_reqs) =
       run_resolver_and_get_output(api, vec!["package-0@1.1.1"]).await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-0@1.1.1".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-a".to_string(),
+            "package-a@1.0.0_package-peer@4.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0_package-peer@4.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            (
+              "package-b".to_string(),
+              "package-b@2.0.0_package-peer@4.0.0".to_string(),
+            ),
+            (
+              "package-c".to_string(),
+              "package-c@3.0.0_package-peer@4.0.0".to_string(),
+            ),
+            ("package-peer".to_string(), "package-peer@4.0.0".to_string(),),
+          ]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@2.0.0_package-peer@4.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-peer".to_string(),
+            "package-peer@4.0.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@3.0.0_package-peer@4.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-peer".to_string(),
+            "package-peer@4.0.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-peer@4.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![("package-0@1.1.1".to_string(), "package-0@1.1.1".to_string())]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_with_peer_deps_non_matching_version() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-0", "1.1.1");
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "2.0.0");
+    api.ensure_package_version("package-c", "3.0.0");
+    api.ensure_package_version("package-peer", "4.0.0");
+    api.ensure_package_version("package-peer", "4.1.0");
+    api.add_dependency(("package-0", "1.1.1"), ("package-a", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "^2"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "^3"));
+    // the peer dependency is specified here as a sibling of "a" and "b"
+    // so it should resolve to 4.0.0 instead of 4.1.0
+    api.add_dependency(("package-a", "1.0.0"), ("package-peer", "4.0.0"));
+    api.add_peer_dependency(("package-b", "2.0.0"), ("package-peer", "1"));
+    api.add_peer_dependency(("package-c", "3.0.0"), ("package-peer", "1"));
+
+    let (packages, package_reqs) =
+      run_resolver_with_patch_packages_and_get_output(
+        api,
+        RunResolverOptions {
+          reqs: vec!["package-0@1.1.1"],
+          expected_diagnostics: vec![
+            "package-0@1.1.1 -> package-a@1.0.0 -> package-b@2.0.0: package-peer@1 4.0.0",
+            "package-0@1.1.1 -> package-a@1.0.0 -> package-c@3.0.0: package-peer@1 4.0.0"
+          ],
+          ..Default::default()
+        },
+      )
+      .await;
     assert_eq!(
       packages,
       vec![
@@ -4255,8 +4342,11 @@ mod test {
     let (packages, package_reqs) =
       run_resolver_with_patch_packages_and_get_output(
         api,
-        vec!["package-a@1.0.0"],
-        &patch_packages,
+        RunResolverOptions {
+          reqs: vec!["package-a@1.0.0"],
+          patch_packages: Some(&patch_packages),
+          ..Default::default()
+        },
       )
       .await;
 
@@ -4327,8 +4417,11 @@ mod test {
     let (packages, package_reqs) =
       run_resolver_with_patch_packages_and_get_output(
         api,
-        vec!["package-a@1.0", "package-b@1.0"],
-        &patch_packages,
+        RunResolverOptions {
+          reqs: vec!["package-a@1.0", "package-b@1.0"],
+          patch_packages: Some(&patch_packages),
+          ..Default::default()
+        },
       )
       .await;
     assert_eq!(
@@ -4549,26 +4642,20 @@ mod test {
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
     run_resolver_with_patch_packages_and_get_output(
       api,
-      reqs,
-      &Default::default(),
+      RunResolverOptions {
+        reqs,
+        ..Default::default()
+      },
     )
     .await
   }
 
   async fn run_resolver_with_patch_packages_and_get_output(
     api: TestNpmRegistryApi,
-    reqs: Vec<&str>,
-    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    options: RunResolverOptions<'_>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let snapshot = run_resolver_with_options_and_get_snapshot(
-      &api,
-      RunResolverOptions {
-        reqs,
-        patch_packages: Some(patch_packages),
-        ..Default::default()
-      },
-    )
-    .await;
+    let snapshot =
+      run_resolver_with_options_and_get_snapshot(&api, options).await;
     snapshot_to_packages(snapshot)
   }
 
@@ -4648,6 +4735,7 @@ mod test {
         reqs,
         patch_packages: None,
         snapshot: Default::default(),
+        expected_diagnostics: Default::default(),
       },
     )
     .await
@@ -4659,6 +4747,7 @@ mod test {
     reqs: Vec<&'a str>,
     patch_packages:
       Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
+    expected_diagnostics: Vec<&'a str>,
   }
 
   async fn run_resolver_with_options_and_get_snapshot(
@@ -4694,6 +4783,26 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap();
+    {
+      let diagnostics = resolver.take_unmet_peer_diagnostics();
+      let diagnostics = diagnostics
+        .iter()
+        .map(|d| {
+          format!(
+            "{}: {} {}",
+            d.ancestors
+              .iter()
+              .rev()
+              .map(|v| v.to_string())
+              .collect::<Vec<_>>()
+              .join(" -> "),
+            d.dependency,
+            d.resolved
+          )
+        })
+        .collect::<Vec<_>>();
+      assert_eq!(diagnostics, options.expected_diagnostics);
+    }
     let snapshot = graph.into_snapshot(api, &patch_packages).await.unwrap();
 
     {
