@@ -324,6 +324,7 @@ pub struct Graph {
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
+  unresolved_optional_peers: UnresolvedOptionalPeers,
   #[cfg(feature = "tracing")]
   traces: Vec<super::tracing::TraceGraphSnapshot>,
 }
@@ -362,7 +363,6 @@ impl Graph {
         nv: Rc::new(pkg_id.nv.clone()),
         peer_dependencies: peer_dep_ids,
       };
-      graph.resolved_node_ids.set(node_id, graph_resolved_id);
       let resolution = match packages.get(pkg_id) {
         Some(package) => package,
         None => {
@@ -410,6 +410,14 @@ impl Graph {
           graph.set_child_of_parent_node(node_id, name, child_node_id);
         }
       }
+      for key in &resolution.optional_dependencies {
+        if !resolution.dependencies.contains_key(key) {
+          graph
+            .unresolved_optional_peers
+            .add_unresolved(graph_resolved_id.nv.clone(), key.clone());
+        }
+      }
+      graph.resolved_node_ids.set(node_id, graph_resolved_id);
       node_id
     }
 
@@ -430,6 +438,7 @@ impl Graph {
       package_name_versions: Default::default(),
       resolved_node_ids: Default::default(),
       root_packages: Default::default(),
+      unresolved_optional_peers: Default::default(),
       #[cfg(feature = "tracing")]
       traces: Default::default(),
     };
@@ -795,9 +804,46 @@ impl DepEntryCache {
   }
 }
 
-struct UnresolvedOptionalPeer {
-  specifier: StackString,
-  graph_path: Rc<GraphPath>,
+#[derive(Default)]
+struct UnresolvedOptionalPeers {
+  unresolved: HashMap<(Rc<PackageNv>, StackString), Vec<Rc<GraphPath>>>,
+}
+
+impl UnresolvedOptionalPeers {
+  pub fn add_unresolved(
+    &mut self,
+    parent_nv: Rc<PackageNv>,
+    specifier: StackString,
+  ) {
+    self.unresolved.entry((parent_nv, specifier)).or_default();
+  }
+
+  pub fn add_seen_unresolved(
+    &mut self,
+    parent_nv: Rc<PackageNv>,
+    specifier: StackString,
+    path: Rc<GraphPath>,
+  ) {
+    self
+      .unresolved
+      .entry((parent_nv, specifier))
+      .or_default()
+      .push(path);
+  }
+
+  pub fn take_seen_unresolved(
+    &mut self,
+    parent_nv: Rc<PackageNv>,
+    specifier: StackString,
+  ) -> Vec<Rc<GraphPath>> {
+    let key = (parent_nv, specifier);
+    self.unresolved.remove(&key).unwrap_or_default()
+  }
+
+  pub fn has(&self, parent_nv: Rc<PackageNv>, specifier: StackString) -> bool {
+    let key = (parent_nv, specifier);
+    self.unresolved.contains_key(&key)
+  }
 }
 
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
@@ -806,8 +852,6 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   api: &'a TNpmRegistryApi,
   version_resolver: &'a NpmVersionResolver<'a>,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
-  unresolved_optional_peers:
-    HashMap<Rc<PackageNv>, Vec<UnresolvedOptionalPeer>>,
   dep_entry_cache: DepEntryCache,
 }
 
@@ -825,7 +869,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       api,
       version_resolver,
       pending_unresolved_nodes: Default::default(),
-      unresolved_optional_peers: Default::default(),
       dep_entry_cache: Default::default(),
     }
   }
@@ -1113,53 +1156,35 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               ));
             }
 
-            // For optional peer dependencies, we want to resolve them if any future
-            // same parent version resolves them. So when not resolved, store them to be
-            // potentially resolved later.
-            //
-            // Note: This is not a good solution, but will probably work ok in most
-            // scenarios. We can work on improving this in the future. We probably
-            // want to resolve future optional peers to the same dependency for example.
             if dep.kind == NpmDependencyEntryKind::OptionalPeer {
               match maybe_new_id {
                 Some(new_id) => {
-                  if let Some(unresolved_optional_peers) =
-                    self.unresolved_optional_peers.get_mut(&parent_nv)
-                  {
-                    // todo(dsherret): use drain_retain once it's not in nightly rust
-                    let mut peers =
-                      VecDeque::with_capacity(unresolved_optional_peers.len());
-                    for i in (0..unresolved_optional_peers.len()).rev() {
-                      if unresolved_optional_peers[i].specifier
-                        == dep.bare_specifier
-                      {
-                        peers.push_front(unresolved_optional_peers.remove(i));
-                      }
-                    }
+                  // resolve this optional peer specifier for nodes with the same
+                  // nv that were previously unresolved
+                  let peers =
+                    self.graph.unresolved_optional_peers.take_seen_unresolved(
+                      parent_nv.clone(),
+                      dep.bare_specifier.clone(),
+                    );
 
-                    for optional_peer in peers {
-                      let peer_parent = GraphPathNodeOrRoot::Node(
-                        optional_peer.graph_path.clone(),
-                      );
-                      self.set_new_peer_dep(
-                        &[&optional_peer.graph_path],
-                        peer_parent,
-                        &optional_peer.specifier,
-                        new_id,
-                      );
-                    }
+                  for path in peers {
+                    let peer_parent = GraphPathNodeOrRoot::Node(path.clone());
+                    self.set_new_peer_dep(
+                      &[&path],
+                      peer_parent,
+                      &dep.bare_specifier,
+                      new_id,
+                    );
                   }
                 }
                 None => {
-                  // store this for later if it's resolved for this version
-                  self
-                    .unresolved_optional_peers
-                    .entry(parent_nv.clone())
-                    .or_default()
-                    .push(UnresolvedOptionalPeer {
-                      specifier: dep.bare_specifier.clone(),
-                      graph_path: parent_path.clone(),
-                    });
+                  // store this so it potentially gets resolved in the future if any other
+                  // same nv node resolves the optional peer
+                  self.graph.unresolved_optional_peers.add_seen_unresolved(
+                    parent_nv.clone(),
+                    dep.bare_specifier.clone(),
+                    parent_path.clone(),
+                  );
                 }
               }
             }
@@ -1243,9 +1268,53 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
 
-    // We didn't find anything by searching the ancestor siblings, so we need
-    // to resolve based on the package info
-    if !peer_dep.kind.is_optional() {
+    if peer_dep.kind.is_optional() {
+      if !self
+        .graph
+        .unresolved_optional_peers
+        .has(ancestor_path.nv.clone(), specifier.clone())
+      {
+        // for optional peer deps that haven't been found, traverse the entire
+        // graph searching for the first same nv that uses this
+        let mut seen_ids = HashSet::with_capacity(self.graph.nodes.len());
+        let mut pending_ids = VecDeque::new();
+        for id in self.graph.root_packages.values().copied() {
+          if seen_ids.insert(id) {
+            pending_ids.push_back(id);
+          }
+        }
+        while let Some(id) = pending_ids.pop_front() {
+          let Some(node) = self.graph.nodes.get(&id) else {
+            continue;
+          };
+
+          if let Some(id) = self.graph.resolved_node_ids.get(id) {
+            if id.nv == ancestor_path.nv {
+              if let Some(node_id) = node.children.get(specifier).copied() {
+                let peer_parent =
+                  GraphPathNodeOrRoot::Node(ancestor_path.clone());
+                self.set_new_peer_dep(
+                  &[ancestor_path],
+                  peer_parent,
+                  specifier,
+                  node_id,
+                );
+                return Ok(Some(node_id));
+              }
+            }
+          }
+
+          for child_id in node.children.values().copied() {
+            if seen_ids.insert(child_id) {
+              pending_ids.push_back(child_id);
+            }
+          }
+        }
+      }
+      Ok(None)
+    } else {
+      // We didn't find anything by searching the ancestor siblings, so we need
+      // to resolve based on the package info
       let parent_id = ancestor_path.node_id();
       let (_, node_id) = self.resolve_node_from_info(
         &peer_dep.name,
@@ -1259,8 +1328,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
       self.set_new_peer_dep(&[ancestor_path], peer_parent, specifier, node_id);
       Ok(Some(node_id))
-    } else {
-      Ok(None)
     }
   }
 
