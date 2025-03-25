@@ -26,6 +26,7 @@ use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
 use super::NpmPackageVersionNotFound;
+use super::UnmetPeerDepDiagnostic;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionBinEntry;
@@ -210,6 +211,9 @@ pub struct AddPkgReqsResult {
   ///
   /// If a resolution error occurs, this will contain the first error.
   pub dep_graph_result: Result<NpmResolutionSnapshot, NpmResolutionError>,
+  /// Diagnostics that were found during resolution. These should be
+  /// displayed as warnings.
+  pub unmet_peer_diagnostics: Vec<UnmetPeerDepDiagnostic>,
 }
 
 impl AddPkgReqsResult {
@@ -354,14 +358,18 @@ impl NpmResolutionSnapshot {
       }
     }
     drop(top_level_packages); // stop borrow of api
+    let mut unmet_peer_diagnostics = Vec::new();
 
     let dep_graph_result = match first_resolution_error {
       Some(err) => Err(err),
       None => match resolver.resolve_pending().await {
-        Ok(()) => graph
-          .into_snapshot(api, version_resolver.patch_packages)
-          .await
-          .map_err(NpmResolutionError::Registry),
+        Ok(()) => {
+          unmet_peer_diagnostics = resolver.take_unmet_peer_diagnostics();
+          graph
+            .into_snapshot(api, version_resolver.patch_packages)
+            .await
+            .map_err(NpmResolutionError::Registry)
+        }
         Err(err) => Err(err),
       },
     };
@@ -369,6 +377,7 @@ impl NpmResolutionSnapshot {
     AddPkgReqsResult {
       results,
       dep_graph_result,
+      unmet_peer_diagnostics,
     }
   }
 
