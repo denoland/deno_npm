@@ -695,7 +695,8 @@ impl Graph {
     }
 
     // after traversing, see if there are any copy indexes that
-    // need to be updated to their new location
+    // need to be updated to a new location based on an id
+    // being replaced with a new id
     for (from_id, to_id) in self.moved_package_ids.values() {
       let from_id = self.get_npm_pkg_id_from_resolved_id(from_id);
       let to_id = self.get_npm_pkg_id_from_resolved_id(to_id);
@@ -870,8 +871,8 @@ impl UnresolvedOptionalPeers {
     self.unresolved.contains(&key)
   }
 
-  pub fn take_seen(&mut self) -> HashSet<(Rc<PackageNv>, StackString)> {
-    std::mem::take(&mut self.seen)
+  pub fn seen_count(&self) -> usize {
+    self.seen.len()
   }
 }
 
@@ -1040,12 +1041,17 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
     // go down through the dependencies by tree depth
+    let mut previous_seen_optional_peers_count = 0;
     while !self.pending_unresolved_nodes.is_empty() {
       while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
         self.resolve_next_pending(parent_path).await?;
       }
 
-      if !self.graph.unresolved_optional_peers.take_seen().is_empty() {
+      let seen_optional_peers_count =
+        self.graph.unresolved_optional_peers.seen_count();
+      if seen_optional_peers_count > previous_seen_optional_peers_count {
+        previous_seen_optional_peers_count = seen_optional_peers_count;
+        // go through the graph again resolving any optional peers
         for (nv, node_id) in &self.graph.root_packages {
           self
             .pending_unresolved_nodes
