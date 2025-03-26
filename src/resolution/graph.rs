@@ -7,6 +7,7 @@ use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use futures::StreamExt;
+use indexmap::IndexMap;
 use indexmap::IndexSet;
 use log::debug;
 use std::borrow::Cow;
@@ -326,6 +327,7 @@ pub struct Graph {
   // This will be set when creating from a snapshot, then
   // inform the final snapshot creation.
   packages_to_copy_index: HashMap<NpmPackageId, u8>,
+  moved_package_ids: IndexMap<NodeId, (ResolvedId, ResolvedId)>,
   unresolved_optional_peers: UnresolvedOptionalPeers,
   #[cfg(feature = "tracing")]
   traces: Vec<super::tracing::TraceGraphSnapshot>,
@@ -412,7 +414,7 @@ impl Graph {
           graph.set_child_of_parent_node(node_id, name, child_node_id);
         }
       }
-      for key in &resolution.optional_dependencies {
+      for key in &resolution.optional_peer_dependencies {
         if !resolution.dependencies.contains_key(key) {
           graph
             .unresolved_optional_peers
@@ -441,6 +443,7 @@ impl Graph {
       resolved_node_ids: Default::default(),
       root_packages: Default::default(),
       unresolved_optional_peers: Default::default(),
+      moved_package_ids: Default::default(),
       #[cfg(feature = "tracing")]
       traces: Default::default(),
     };
@@ -465,13 +468,21 @@ impl Graph {
 
   fn get_npm_pkg_id(&self, node_id: NodeId) -> NpmPackageId {
     let resolved_id = self.resolved_node_ids.get(node_id).unwrap();
-    self.get_npm_pkg_id_from_resolved_id(
+    self.get_npm_pkg_id_from_resolved_id(resolved_id)
+  }
+
+  #[inline(always)]
+  fn get_npm_pkg_id_from_resolved_id(
+    &self,
+    resolved_id: &ResolvedId,
+  ) -> NpmPackageId {
+    self.get_npm_pkg_id_from_resolved_id_with_seen(
       resolved_id,
       HashSet::from([resolved_id.nv.clone()]),
     )
   }
 
-  fn get_npm_pkg_id_from_resolved_id(
+  fn get_npm_pkg_id_from_resolved_id_with_seen(
     &self,
     resolved_id: &ResolvedId,
     seen: HashSet<Rc<PackageNv>>,
@@ -499,7 +510,7 @@ impl Graph {
         {
           let mut new_seen = seen.clone();
           if new_seen.insert(child_resolved_id.nv.clone()) {
-            let child_peer = self.get_npm_pkg_id_from_resolved_id(
+            let child_peer = self.get_npm_pkg_id_from_resolved_id_with_seen(
               child_resolved_id,
               new_seen.clone(),
             );
@@ -605,7 +616,7 @@ impl Graph {
   }
 
   pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
-    self,
+    mut self,
     api: &TNpmRegistryApi,
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
@@ -619,27 +630,16 @@ impl Graph {
       .keys()
       .map(|node_id| (*node_id, self.get_npm_pkg_id(*node_id)))
       .collect::<HashMap<_, _>>();
-    let mut copy_index_resolver =
-      SnapshotPackageCopyIndexResolver::from_map_with_capacity(
-        self.packages_to_copy_index,
-        self.nodes.len(),
-      );
-    let mut packages: HashMap<NpmPackageId, NpmResolutionPackage> =
-      HashMap::with_capacity(self.nodes.len());
+    let mut packages: Vec<NpmResolutionPackage> =
+      Vec::with_capacity(self.nodes.len());
     let mut packages_by_name: HashMap<PackageName, Vec<_>> =
       HashMap::with_capacity(self.nodes.len());
-
-    // todo(dsherret): there is a lurking bug within the peer dependencies code.
-    // You can see it by using `NodeIds` instead of `NpmPackageIds` on this travered_ids
-    // hashset, which will cause the bottom of the "tree" nodes to be populated in
-    // the result instead of the top of the "tree". I think there's maybe one small
-    // thing that's not being updated properly.
     let mut traversed_ids = HashSet::with_capacity(self.nodes.len());
     let mut pending = VecDeque::new();
 
     for root_id in self.root_packages.values().copied() {
       let pkg_id = packages_to_pkg_ids.get(&root_id).unwrap();
-      if traversed_ids.insert(pkg_id.clone()) {
+      if traversed_ids.insert(pkg_id) {
         pending.push_back((root_id, pkg_id));
       }
     }
@@ -662,35 +662,58 @@ impl Graph {
       for (specifier, child_id) in &node.children {
         let child_id = *child_id;
         let child_pkg_id = packages_to_pkg_ids.get(&child_id).unwrap();
-        if traversed_ids.insert(child_pkg_id.clone()) {
+        if traversed_ids.insert(child_pkg_id) {
           pending.push_back((child_id, child_pkg_id));
         }
-        dependencies.insert(specifier.clone(), (*child_pkg_id).clone());
+        dependencies.insert(specifier.clone(), child_pkg_id.clone());
       }
 
-      packages.insert(
-        (*pkg_id).clone(),
-        NpmResolutionPackage {
-          copy_index: copy_index_resolver.resolve(pkg_id),
-          id: (*pkg_id).clone(),
-          system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu.clone(),
-            os: version_info.os.clone(),
-          },
-          dist: version_info.dist.clone(),
-          dependencies,
-          optional_dependencies: version_info
-            .optional_dependencies
-            .keys()
-            .cloned()
-            .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
-          deprecated: version_info.deprecated.clone(),
+      packages.push(NpmResolutionPackage {
+        copy_index: 0, // this is set below at the end
+        id: pkg_id.clone(),
+        system: NpmResolutionPackageSystemInfo {
+          cpu: version_info.cpu.clone(),
+          os: version_info.os.clone(),
         },
-      );
+        dist: version_info.dist.clone(),
+        optional_peer_dependencies: version_info
+          .peer_dependencies_meta
+          .iter()
+          .filter(|(k, meta)| meta.optional && !dependencies.contains_key(*k))
+          .map(|(k, _)| k.clone())
+          .collect(),
+        dependencies,
+        optional_dependencies: version_info
+          .optional_dependencies
+          .keys()
+          .cloned()
+          .collect(),
+        bin: version_info.bin.clone(),
+        scripts: version_info.scripts.clone(),
+        deprecated: version_info.deprecated.clone(),
+      });
     }
 
+    // after traversing, see if there are any copy indexes that
+    // need to be updated to their new location
+    for (from_id, to_id) in self.moved_package_ids.values() {
+      let from_id = self.get_npm_pkg_id_from_resolved_id(from_id);
+      let to_id = self.get_npm_pkg_id_from_resolved_id(to_id);
+      if !traversed_ids.contains(&from_id)
+        && !self.packages_to_copy_index.contains_key(&to_id)
+      {
+        // move the copy index to the new package
+        if let Some(index) = self.packages_to_copy_index.remove(&from_id) {
+          self.packages_to_copy_index.insert(to_id, index);
+        }
+      }
+    }
+
+    let mut copy_index_resolver =
+      SnapshotPackageCopyIndexResolver::from_map_with_capacity(
+        self.packages_to_copy_index,
+        self.nodes.len(),
+      );
     Ok(NpmResolutionSnapshot {
       root_packages: self
         .root_packages
@@ -710,7 +733,13 @@ impl Graph {
           (name, ids)
         })
         .collect(),
-      packages,
+      packages: packages
+        .into_iter()
+        .map(|mut pkg| {
+          pkg.copy_index = copy_index_resolver.resolve(&pkg.id);
+          (pkg.id.clone(), pkg)
+        })
+        .collect(),
       package_reqs: self
         .package_reqs
         .into_iter()
@@ -1441,6 +1470,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         continue; // nothing to change
       };
 
+      let old_resolved_id = old_resolved_id.clone();
       let (created, new_node_id) =
         self.graph.get_or_create_for_id(&new_resolved_id);
 
@@ -1454,6 +1484,24 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             specifier,
             *child_id,
           );
+        }
+
+        // the moved_package_ids is only used to update copy indexes
+        // at the end, so only bother inserting if it's not empty
+        if !self.graph.packages_to_copy_index.is_empty() {
+          // Store how package ids were moved. The order is important
+          // here because one id might be moved around a few times
+          let new_value = (old_resolved_id.clone(), new_resolved_id.clone());
+          match self.graph.moved_package_ids.entry(old_node_id) {
+            indexmap::map::Entry::Occupied(occupied_entry) => {
+              // move it the the back of the index map
+              occupied_entry.shift_remove();
+              self.graph.moved_package_ids.insert(old_node_id, new_value);
+            }
+            indexmap::map::Entry::Vacant(vacant_entry) => {
+              vacant_entry.insert(new_value);
+            }
+          }
         }
       }
 
@@ -4386,6 +4434,7 @@ mod test {
     api.ensure_package_version("package-c-grandchild", "1.0.0");
     api.ensure_package_version("package-peer-parent", "1.0.0");
     api.ensure_package_version("package-peer", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
 
     api.add_optional_peer_dependency(
       ("package-peer-parent", "1.0.0"),
@@ -4413,6 +4462,9 @@ mod test {
       ("package-c-grandchild", "1.0.0"),
       ("package-peer-parent", "1"),
     );
+
+    // d
+    api.add_dependency(("package-d", "1.0.0"), ("package-peer-parent", "1"));
 
     // first run for just package-a
     let snapshot = run_resolver_with_options_and_get_snapshot(
@@ -4549,7 +4601,19 @@ mod test {
     )
     .await;
     let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
-    assert_eq!(packages, b_c_packages);
+    let mut d_packages = b_c_packages;
+    d_packages.insert(
+      6,
+      TestNpmResolutionPackage {
+        pkg_id: "package-d@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer-parent".to_string(),
+          "package-peer-parent@1.0.0_package-peer@1.0.0".to_string(),
+        )]),
+      },
+    );
+    assert_eq!(packages, d_packages);
     assert_eq!(
       package_reqs,
       vec![
@@ -4582,9 +4646,10 @@ mod test {
             "package-a".into(),
             NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           )]),
-          optional_dependencies: HashSet::new(),
+          optional_peer_dependencies: Default::default(),
+          optional_dependencies: Default::default(),
           bin: None,
-          scripts: HashMap::new(),
+          scripts: Default::default(),
           deprecated: None,
         },
       ]),

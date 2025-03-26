@@ -331,6 +331,7 @@ pub struct NpmResolutionPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
+  pub optional_peer_dependencies: HashSet<StackString>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
@@ -365,6 +366,7 @@ impl NpmResolutionPackage {
       system: self.system.clone(),
       dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
+      optional_peer_dependencies: self.optional_peer_dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
       bin: self.bin.clone(),
       scripts: self.scripts.clone(),
