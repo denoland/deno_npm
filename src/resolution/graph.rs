@@ -9,6 +9,7 @@ use deno_semver::VersionReq;
 use futures::StreamExt;
 use indexmap::IndexSet;
 use log::debug;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -177,20 +178,20 @@ impl ResolvedNodeIds {
 
 /// A pointer to a specific node in a graph path. The underlying node id
 /// may change as peer dependencies are created.
-#[derive(Clone, Debug)]
-struct NodeIdRef(Rc<RefCell<NodeId>>);
+#[derive(Debug)]
+struct NodeIdRef(Cell<NodeId>);
 
 impl NodeIdRef {
   pub fn new(node_id: NodeId) -> Self {
-    NodeIdRef(Rc::new(RefCell::new(node_id)))
+    NodeIdRef(Cell::new(node_id))
   }
 
   pub fn change(&self, node_id: NodeId) {
-    *self.0.borrow_mut() = node_id;
+    self.0.set(node_id);
   }
 
   pub fn get(&self) -> NodeId {
-    *self.0.borrow()
+    self.0.get()
   }
 }
 
@@ -4342,6 +4343,209 @@ mod test {
     assert_eq!(
       packages,
       vec!["package-a@1.0.0".to_string(), "package-b@1.0.0".to_string(),]
+    );
+  }
+
+  #[tokio::test]
+  async fn resolve_optional_peer_dep_first_then_after() {
+    // This tests when a package is resolved later but doesn't have the
+    // optional peer dep in its ancestor siblings.
+    //
+    // a -> package-peer-parent
+    //
+    // Then resolve b, which will have package-peer in its siblings:
+    //
+    //  b -> b-child -> package-peer-parent -> package-peer
+    //    -> package-peer
+    //  c -> c-child -> c-grand-child -> package-peer-parent -> package-peer
+    //
+    // Then later resolve package-d, which should resolve to package:
+    //
+    //  d -> package-peer-parent -> package-peer
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b-child", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-c-child", "1.0.0");
+    api.ensure_package_version("package-c-grandchild", "1.0.0");
+    api.ensure_package_version("package-peer-parent", "1.0.0");
+    api.ensure_package_version("package-peer", "1.0.0");
+
+    api.add_optional_peer_dependency(
+      ("package-peer-parent", "1.0.0"),
+      ("package-peer", "1"),
+    );
+
+    // a
+    api.add_dependency(("package-a", "1.0.0"), ("package-peer-parent", "1"));
+
+    // b
+    api.add_dependency(("package-b", "1.0.0"), ("package-b-child", "1"));
+    api.add_dependency(("package-b", "1.0.0"), ("package-peer", "1"));
+    api.add_dependency(
+      ("package-b-child", "1.0.0"),
+      ("package-peer-parent", "1"),
+    );
+
+    // c
+    api.add_dependency(("package-c", "1.0.0"), ("package-c-child", "1"));
+    api.add_dependency(
+      ("package-c-child", "1.0.0"),
+      ("package-c-grandchild", "1"),
+    );
+    api.add_dependency(
+      ("package-c-grandchild", "1.0.0"),
+      ("package-peer-parent", "1"),
+    );
+
+    // first run for just package-a
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1"],
+        ..Default::default()
+      },
+    )
+    .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
+    assert_eq!(
+      packages,
+      Vec::from([
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-peer-parent".to_string(),
+            "package-peer-parent@1.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-peer-parent@1.0.0".to_string(),
+          copy_index: 0,
+          // no optional peer
+          dependencies: Default::default(),
+        },
+      ])
+    );
+    assert_eq!(
+      package_reqs,
+      vec![("package-a@1".to_string(), "package-a@1.0.0".to_string())]
+    );
+
+    let b_c_packages = Vec::from([
+      TestNpmResolutionPackage {
+        pkg_id: "package-a@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer-parent".to_string(),
+          // this should update to now have the peer
+          "package-peer-parent@1.0.0_package-peer@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-b@1.0.0_package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([
+          (
+            "package-b-child".to_string(),
+            "package-b-child@1.0.0_package-peer@1.0.0".to_string(),
+          ),
+          ("package-peer".to_string(), "package-peer@1.0.0".to_string()),
+        ]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-b-child@1.0.0_package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer-parent".to_string(),
+          "package-peer-parent@1.0.0_package-peer@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-c@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-c-child".to_string(),
+          "package-c-child@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-c-child@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-c-grandchild".to_string(),
+          "package-c-grandchild@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-c-grandchild@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer-parent".to_string(),
+          "package-peer-parent@1.0.0_package-peer@1.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: Default::default(),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-peer-parent@1.0.0_package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer".to_string(),
+          "package-peer@1.0.0".to_string(),
+        )]),
+      },
+    ]);
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["package-b@1", "package-c@1"],
+        snapshot,
+        ..Default::default()
+      },
+    )
+    .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
+    assert_eq!(packages, b_c_packages);
+    assert_eq!(
+      package_reqs,
+      vec![
+        ("package-a@1".to_string(), "package-a@1.0.0".to_string()),
+        (
+          "package-b@1".to_string(),
+          "package-b@1.0.0_package-peer@1.0.0".to_string(),
+        ),
+        ("package-c@1".to_string(), "package-c@1.0.0".to_string(),)
+      ]
+    );
+
+    // now try resolving package-d and ensure it resolves to package-peer-parent w/ package-peer
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["package-d@1"],
+        snapshot,
+        ..Default::default()
+      },
+    )
+    .await;
+    let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
+    assert_eq!(packages, b_c_packages);
+    assert_eq!(
+      package_reqs,
+      vec![
+        ("package-a@1".to_string(), "package-a@1.0.0".to_string()),
+        (
+          "package-b@1".to_string(),
+          "package-b@1.0.0_package-peer@1.0.0".to_string(),
+        ),
+        ("package-c@1".to_string(), "package-c@1.0.0".to_string()),
+        ("package-d@1".to_string(), "package-d@1.0.0".to_string()),
+      ]
     );
   }
 
