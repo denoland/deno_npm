@@ -9,6 +9,7 @@ use deno_semver::VersionReq;
 use futures::StreamExt;
 use indexmap::IndexSet;
 use log::debug;
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -415,7 +416,7 @@ impl Graph {
         if !resolution.dependencies.contains_key(key) {
           graph
             .unresolved_optional_peers
-            .add_unresolved(graph_resolved_id.nv.clone(), key.clone());
+            .mark_unresolved(graph_resolved_id.nv.clone(), key.clone());
         }
       }
       graph.resolved_node_ids.set(node_id, graph_resolved_id);
@@ -807,43 +808,41 @@ impl DepEntryCache {
 
 #[derive(Default)]
 struct UnresolvedOptionalPeers {
-  unresolved: HashMap<(Rc<PackageNv>, StackString), Vec<Rc<GraphPath>>>,
+  unresolved: HashSet<(Rc<PackageNv>, StackString)>,
+  seen: HashSet<(Rc<PackageNv>, StackString)>,
 }
 
 impl UnresolvedOptionalPeers {
-  pub fn add_unresolved(
+  pub fn mark_unresolved(
     &mut self,
     parent_nv: Rc<PackageNv>,
     specifier: StackString,
   ) {
-    self.unresolved.entry((parent_nv, specifier)).or_default();
+    self.unresolved.insert((parent_nv, specifier));
   }
 
-  pub fn add_seen_unresolved(
+  pub fn mark_seen(
     &mut self,
     parent_nv: Rc<PackageNv>,
     specifier: StackString,
-    path: Rc<GraphPath>,
   ) {
-    self
-      .unresolved
-      .entry((parent_nv, specifier))
-      .or_default()
-      .push(path);
+    let key = (parent_nv, specifier);
+    if self.unresolved.remove(&key) {
+      self.seen.insert(key);
+    }
   }
 
-  pub fn take_seen_unresolved(
-    &mut self,
+  pub fn has_unresolved(
+    &self,
     parent_nv: Rc<PackageNv>,
     specifier: StackString,
-  ) -> Vec<Rc<GraphPath>> {
+  ) -> bool {
     let key = (parent_nv, specifier);
-    self.unresolved.remove(&key).unwrap_or_default()
+    self.unresolved.contains(&key)
   }
 
-  pub fn has(&self, parent_nv: Rc<PackageNv>, specifier: StackString) -> bool {
-    let key = (parent_nv, specifier);
-    self.unresolved.contains_key(&key)
+  pub fn take_seen(&mut self) -> HashSet<(Rc<PackageNv>, StackString)> {
+    std::mem::take(&mut self.seen)
   }
 }
 
@@ -1012,190 +1011,191 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
     // go down through the dependencies by tree depth
-    while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
-      let (parent_nv, child_deps) = {
-        let node_id = parent_path.node_id();
-        if self.graph.nodes.get(&node_id).unwrap().no_peers {
-          // We can skip as there's no reason to analyze this graph segment further.
-          continue;
+    while !self.pending_unresolved_nodes.is_empty() {
+      while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
+        self.resolve_next_pending(parent_path).await?;
+      }
+
+      if !self.graph.unresolved_optional_peers.take_seen().is_empty() {
+        for (nv, node_id) in &self.graph.root_packages {
+          self
+            .pending_unresolved_nodes
+            .push_back(GraphPath::for_root(*node_id, nv.clone()));
         }
+      }
+    }
+    Ok(())
+  }
 
-        let pkg_nv = self
-          .graph
-          .resolved_node_ids
-          .get(node_id)
-          .unwrap()
-          .nv
-          .clone();
-        let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
-          deps.clone()
-        } else {
-          // the api is expected to have cached this at this point, so no
-          // need to parallelize
-          let package_info = self.api.package_info(&pkg_nv.name).await?;
-          let version_info = package_info
-            .version_info(&pkg_nv, self.version_resolver.patch_packages)
-            .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
-          self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
-        };
+  async fn resolve_next_pending(
+    &mut self,
+    parent_path: Rc<GraphPath>,
+  ) -> Result<(), NpmResolutionError> {
+    let (parent_nv, child_deps) = {
+      let node_id = parent_path.node_id();
+      if self.graph.nodes.get(&node_id).unwrap().no_peers {
+        // We can skip as there's no reason to analyze this graph segment further.
+        return Ok(());
+      }
 
-        (pkg_nv, deps)
+      let pkg_nv = self
+        .graph
+        .resolved_node_ids
+        .get(node_id)
+        .unwrap()
+        .nv
+        .clone();
+      let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
+        deps.clone()
+      } else {
+        // the api is expected to have cached this at this point, so no
+        // need to parallelize
+        let package_info = self.api.package_info(&pkg_nv.name).await?;
+        let version_info = package_info
+          .version_info(&pkg_nv, self.version_resolver.patch_packages)
+          .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
+        self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
       };
 
-      // resolve the dependencies
-      let mut found_peer = false;
+      (pkg_nv, deps)
+    };
 
-      let mut infos = futures::stream::FuturesOrdered::from_iter(
-        child_deps
-          .iter()
-          .map(|dep| self.api.package_info(&dep.name)),
-      );
+    // resolve the dependencies
+    let mut found_peer = false;
 
-      let mut child_deps_iter = child_deps.iter();
-      while let Some(package_info) = infos.next().await {
-        let dep = child_deps_iter.next().unwrap();
-        let package_info = match package_info {
-          Ok(info) => info,
-          // npm doesn't fail on non-existent optional peer dependencies
-          Err(NpmRegistryPackageInfoLoadError::PackageNotExists { .. })
-            if matches!(dep.kind, NpmDependencyEntryKind::OptionalPeer) =>
+    let mut infos = futures::stream::FuturesOrdered::from_iter(
+      child_deps
+        .iter()
+        .map(|dep| self.api.package_info(&dep.name)),
+    );
+
+    let mut child_deps_iter = child_deps.iter();
+    while let Some(package_info) = infos.next().await {
+      let dep = child_deps_iter.next().unwrap();
+      let package_info = match package_info {
+        Ok(info) => info,
+        // npm doesn't fail on non-existent optional peer dependencies
+        Err(NpmRegistryPackageInfoLoadError::PackageNotExists { .. })
+          if matches!(dep.kind, NpmDependencyEntryKind::OptionalPeer) =>
+        {
+          continue
+        }
+        Err(e) => return Err(e.into()),
+      };
+
+      match dep.kind {
+        NpmDependencyEntryKind::Dep => {
+          let parent_id = parent_path.node_id();
+          let node = self.graph.nodes.get(&parent_id).unwrap();
+          let child_id = match node.children.get(&dep.bare_specifier) {
+            Some(child_id) => {
+              // this dependency was previously analyzed by another path
+              // so we don't attempt to resolve the version again
+              let child_id = *child_id;
+              let child_nv = self
+                .graph
+                .resolved_node_ids
+                .get(child_id)
+                .unwrap()
+                .nv
+                .clone();
+              let maybe_ancestor = parent_path.find_ancestor(&child_nv);
+              let child_path = parent_path.with_id(
+                child_id,
+                dep.bare_specifier.clone(),
+                child_nv,
+              );
+              if let Some(ancestor) = maybe_ancestor {
+                // when the nv appears as an ancestor, use that node
+                // and mark this as circular
+                self.add_linked_circular_descendant(&ancestor, child_path);
+              } else {
+                // mark the child as pending
+                self.pending_unresolved_nodes.push_back(child_path);
+              }
+              child_id
+            }
+            None => {
+              self.analyze_dependency(dep, &package_info, &parent_path)?
+            }
+          };
+
+          #[cfg(feature = "tracing")]
           {
-            continue
-          }
-          Err(e) => return Err(e.into()),
-        };
-
-        match dep.kind {
-          NpmDependencyEntryKind::Dep => {
-            let parent_id = parent_path.node_id();
-            let node = self.graph.nodes.get(&parent_id).unwrap();
-            let child_id = match node.children.get(&dep.bare_specifier) {
-              Some(child_id) => {
-                // this dependency was previously analyzed by another path
-                // so we don't attempt to resolve the version again
-                let child_id = *child_id;
-                let child_nv = self
+            self.graph.traces.push(build_trace_graph_snapshot(
+              self.graph,
+              &self.dep_entry_cache,
+              &parent_path.with_id(
+                child_id,
+                dep.bare_specifier.clone(),
+                self
                   .graph
                   .resolved_node_ids
                   .get(child_id)
                   .unwrap()
                   .nv
-                  .clone();
-                let maybe_ancestor = parent_path.find_ancestor(&child_nv);
-                let child_path = parent_path.with_id(
-                  child_id,
-                  dep.bare_specifier.clone(),
-                  child_nv,
-                );
-                if let Some(ancestor) = maybe_ancestor {
-                  // when the nv appears as an ancestor, use that node
-                  // and mark this as circular
-                  self.add_linked_circular_descendant(&ancestor, child_path);
-                } else {
-                  // mark the child as pending
-                  self.pending_unresolved_nodes.push_back(child_path);
-                }
-                child_id
-              }
-              None => {
-                self.analyze_dependency(dep, &package_info, &parent_path)?
-              }
-            };
-
-            #[cfg(feature = "tracing")]
-            {
-              self.graph.traces.push(build_trace_graph_snapshot(
-                self.graph,
-                &self.dep_entry_cache,
-                &parent_path.with_id(
-                  child_id,
-                  dep.bare_specifier.clone(),
-                  self
-                    .graph
-                    .resolved_node_ids
-                    .get(child_id)
-                    .unwrap()
-                    .nv
-                    .clone(),
-                ),
-              ));
-            }
-
-            if !found_peer {
-              found_peer = !self.graph.borrow_node_mut(child_id).no_peers;
-            }
+                  .clone(),
+              ),
+            ));
           }
-          NpmDependencyEntryKind::Peer
-          | NpmDependencyEntryKind::OptionalPeer => {
-            found_peer = true;
-            // we need to re-evaluate peer dependencies every time and can't
-            // skip over them because they might be evaluated differently based
-            // on the current path
-            let maybe_new_id = self.resolve_peer_dep(
-              &dep.bare_specifier,
-              dep,
-              &package_info,
-              &parent_path,
-            )?;
 
-            #[cfg(feature = "tracing")]
-            if let Some(child_id) = maybe_new_id {
-              self.graph.traces.push(build_trace_graph_snapshot(
-                self.graph,
-                &self.dep_entry_cache,
-                &parent_path.with_id(
-                  child_id,
-                  dep.bare_specifier.clone(),
-                  self
-                    .graph
-                    .resolved_node_ids
-                    .get(child_id)
-                    .unwrap()
-                    .nv
-                    .clone(),
-                ),
-              ));
-            }
+          if !found_peer {
+            found_peer = !self.graph.borrow_node_mut(child_id).no_peers;
+          }
+        }
+        NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer => {
+          found_peer = true;
+          // we need to re-evaluate peer dependencies every time and can't
+          // skip over them because they might be evaluated differently based
+          // on the current path
+          let maybe_new_id = self.resolve_peer_dep(
+            &dep.bare_specifier,
+            dep,
+            &package_info,
+            &parent_path,
+          )?;
 
-            if dep.kind == NpmDependencyEntryKind::OptionalPeer {
-              match maybe_new_id {
-                Some(new_id) => {
-                  // resolve this optional peer specifier for nodes with the same
-                  // nv that were previously unresolved
-                  let peers =
-                    self.graph.unresolved_optional_peers.take_seen_unresolved(
-                      parent_nv.clone(),
-                      dep.bare_specifier.clone(),
-                    );
+          #[cfg(feature = "tracing")]
+          if let Some(child_id) = maybe_new_id {
+            self.graph.traces.push(build_trace_graph_snapshot(
+              self.graph,
+              &self.dep_entry_cache,
+              &parent_path.with_id(
+                child_id,
+                dep.bare_specifier.clone(),
+                self
+                  .graph
+                  .resolved_node_ids
+                  .get(child_id)
+                  .unwrap()
+                  .nv
+                  .clone(),
+              ),
+            ));
+          }
 
-                  for path in peers {
-                    let peer_parent = GraphPathNodeOrRoot::Node(path.clone());
-                    self.set_new_peer_dep(
-                      &[&path],
-                      peer_parent,
-                      &dep.bare_specifier,
-                      new_id,
-                    );
-                  }
-                }
-                None => {
-                  // store this so it potentially gets resolved in the future if any other
-                  // same nv node resolves the optional peer
-                  self.graph.unresolved_optional_peers.add_seen_unresolved(
-                    parent_nv.clone(),
-                    dep.bare_specifier.clone(),
-                    parent_path.clone(),
-                  );
-                }
-              }
+          if dep.kind == NpmDependencyEntryKind::OptionalPeer {
+            if maybe_new_id.is_some() {
+              // mark that we've seen it
+              self
+                .graph
+                .unresolved_optional_peers
+                .mark_seen(parent_nv.clone(), dep.bare_specifier.clone());
+            } else {
+              // store this so it potentially gets resolved in the future if any other
+              // same nv node resolves the optional peer
+              self
+                .graph
+                .unresolved_optional_peers
+                .mark_unresolved(parent_nv.clone(), dep.bare_specifier.clone());
             }
           }
         }
       }
+    }
 
-      if !found_peer {
-        self.graph.borrow_node_mut(parent_path.node_id()).no_peers = true;
-      }
+    if !found_peer {
+      self.graph.borrow_node_mut(parent_path.node_id()).no_peers = true;
     }
     Ok(())
   }
@@ -1273,7 +1273,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       if !self
         .graph
         .unresolved_optional_peers
-        .has(ancestor_path.nv.clone(), specifier.clone())
+        .has_unresolved(ancestor_path.nv.clone(), specifier.clone())
       {
         // for optional peer deps that haven't been found, traverse the entire
         // graph searching for the first same nv that uses this
@@ -1432,39 +1432,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     for graph_path_node in path.iter().rev() {
       let old_node_id = graph_path_node.node_id();
-      let old_resolved_id = self
-        .graph
-        .resolved_node_ids
-        .get(old_node_id)
-        .unwrap()
-        .clone();
+      let old_resolved_id =
+        self.graph.resolved_node_ids.get(old_node_id).unwrap();
 
-      let mut new_resolved_id = old_resolved_id;
-      let mut has_changed = false;
-      let peer_nvs = new_resolved_id
-        .peer_dependencies
-        .iter()
-        .filter_map(|p| {
-          self
-            .graph
-            .peer_dep_to_maybe_node_id_and_resolved_id(p)
-            .map(|(_, resolved_id)| resolved_id.nv.clone())
-        })
-        .collect::<HashSet<_>>();
-      for (peer_dep, nv) in peer_deps {
-        if *nv == new_resolved_id.nv {
-          continue;
-        }
-        if peer_nvs.contains(nv) {
-          continue;
-        }
-        new_resolved_id.peer_dependencies.push((*peer_dep).clone());
-        has_changed = true;
-      }
-
-      if !has_changed {
+      let Some(new_resolved_id) =
+        self.add_peer_deps_to_id(old_resolved_id, peer_deps)
+      else {
         continue; // nothing to change
-      }
+      };
 
       let (created, new_node_id) =
         self.graph.get_or_create_for_id(&new_resolved_id);
@@ -1513,6 +1488,46 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             .insert(graph_path_node.specifier().clone(), new_node_id);
         }
       }
+    }
+  }
+
+  fn add_peer_deps_to_id(
+    &self,
+    id: &ResolvedId,
+    peer_deps: &[(&ResolvedIdPeerDep, Rc<PackageNv>)],
+  ) -> Option<ResolvedId> {
+    let mut new_resolved_id = Cow::Borrowed(id);
+    let peer_nvs = new_resolved_id
+      .peer_dependencies
+      .iter()
+      .filter_map(|p| {
+        self
+          .graph
+          .peer_dep_to_maybe_node_id_and_resolved_id(p)
+          .map(|(_, resolved_id)| resolved_id.nv.clone())
+      })
+      .collect::<HashSet<_>>();
+    for (peer_dep, nv) in peer_deps {
+      if *nv == new_resolved_id.nv {
+        continue;
+      }
+      if peer_nvs.contains(nv) {
+        continue;
+      }
+      match &mut new_resolved_id {
+        Cow::Borrowed(id) => {
+          let mut new_id = (*id).clone();
+          new_id.peer_dependencies.push((*peer_dep).clone());
+          new_resolved_id = Cow::Owned(new_id);
+        }
+        Cow::Owned(new_id) => {
+          new_id.peer_dependencies.push((*peer_dep).clone());
+        }
+      }
+    }
+    match new_resolved_id {
+      Cow::Borrowed(_) => None,
+      Cow::Owned(id) => Some(id),
     }
   }
 
