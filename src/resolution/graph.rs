@@ -679,6 +679,10 @@ impl Graph {
           }),
           dist: version_info.dist.clone(),
           is_deprecated: version_info.deprecated.is_some(),
+          has_bin: version_info.bin.is_some(),
+          has_scripts: version_info.scripts.contains_key("preinstall")
+            || version_info.scripts.contains_key("install")
+            || version_info.scripts.contains_key("postinstall"),
         },
       );
     }
@@ -4306,6 +4310,8 @@ mod test {
             shasum: None,
             integrity: None,
           }),
+          has_bin: false,
+          has_scripts: false,
         },
       ]),
     };

@@ -337,6 +337,12 @@ pub struct NpmResolutionPackage {
 
   #[serde(skip)]
   pub is_deprecated: bool,
+
+  #[serde(skip)]
+  pub has_bin: bool,
+
+  #[serde(skip)]
+  pub has_scripts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -355,6 +361,9 @@ impl std::fmt::Debug for NpmResolutionPackage {
       .field("copy_index", &self.copy_index)
       .field("system", &self.system)
       .field("extra", &self.extra)
+      .field("is_deprecated", &self.is_deprecated)
+      .field("has_bin", &self.has_bin)
+      .field("has_scripts", &self.has_scripts)
       .field(
         "dependencies",
         &self.dependencies.iter().collect::<BTreeMap<_, _>>(),
@@ -379,6 +388,8 @@ impl NpmResolutionPackage {
       dist: self.dist.clone(),
       extra: self.extra.clone(),
       is_deprecated: self.is_deprecated,
+      has_bin: self.has_bin,
+      has_scripts: self.has_scripts,
     }
   }
 

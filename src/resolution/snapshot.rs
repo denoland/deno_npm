@@ -120,6 +120,8 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
   pub is_deprecated: bool,
+  pub has_bin: bool,
+  pub has_scripts: bool,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,6 +279,8 @@ impl NpmResolutionSnapshot {
           dist: package.dist,
           extra: package.extra,
           is_deprecated: package.is_deprecated,
+          has_bin: package.has_bin,
+          has_scripts: package.has_scripts,
         },
       );
     }
@@ -477,6 +481,8 @@ impl NpmResolutionSnapshot {
         extra: pkg.extra.clone(),
         dist: pkg.dist.clone(),
         is_deprecated: pkg.is_deprecated,
+        has_bin: pkg.has_bin,
+        has_scripts: pkg.has_scripts,
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -986,6 +992,8 @@ pub fn snapshot_from_lockfile(
         os: package.os.clone(),
       },
       is_deprecated: package.deprecated,
+      has_bin: package.bin,
+      has_scripts: package.scripts,
       extra: None,
     });
   }
@@ -1084,6 +1092,8 @@ mod tests {
           }),
           extra: None,
           is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
@@ -1097,6 +1107,8 @@ mod tests {
           }),
           extra: None,
           is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1113,6 +1125,8 @@ mod tests {
           }),
           extra: None,
           is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
@@ -1126,6 +1140,8 @@ mod tests {
           }),
           extra: None,
           is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
       ],
     }
@@ -1242,6 +1258,8 @@ mod tests {
       }),
       extra: None,
       is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 
@@ -1408,6 +1426,8 @@ mod tests {
       }),
       extra: None,
       is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 
