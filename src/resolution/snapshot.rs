@@ -119,6 +119,7 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
+  pub optional_peer_dependencies: HashSet<StackString>,
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
@@ -277,6 +278,7 @@ impl NpmResolutionSnapshot {
           dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
+          optional_peer_dependencies: package.optional_peer_dependencies,
           bin: package.bin,
           scripts: package.scripts,
           deprecated: package.deprecated,
@@ -475,6 +477,7 @@ impl NpmResolutionSnapshot {
         id: pkg.id.clone(),
         dist: pkg.dist.clone(),
         dependencies: HashMap::with_capacity(pkg.dependencies.len()),
+        optional_peer_dependencies: pkg.optional_peer_dependencies.clone(),
         // the fields below are stripped from the output
         system: Default::default(),
         optional_dependencies: Default::default(),
@@ -1036,6 +1039,12 @@ pub async fn snapshot_from_lockfile<'a>(
             cpu: version_info.cpu.clone(),
             os: version_info.os.clone(),
           },
+          optional_peer_dependencies: version_info
+            .peer_dependencies_meta
+            .iter()
+            .filter(|(_, meta)| meta.optional)
+            .map(|(k, _)| k.clone())
+            .collect(),
           optional_dependencies: version_info
             .optional_dependencies
             .keys()
@@ -1142,6 +1151,7 @@ mod tests {
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("a@1.0.0").unwrap(),
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
+          optional_peer_dependencies: HashSet::from(["b".into()]),
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: HashSet::from(["c".into()]),
@@ -1152,6 +1162,7 @@ mod tests {
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
           dependencies: Default::default(),
+          optional_peer_dependencies: Default::default(),
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: Default::default(),
@@ -1162,6 +1173,7 @@ mod tests {
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
           dependencies: deps(&[("b", "b@1.0.0"), ("d", "d@1.0.0")]),
+          optional_peer_dependencies: Default::default(),
           system: NpmResolutionPackageSystemInfo {
             os: vec!["win32".into()],
             cpu: vec!["x64".into()],
@@ -1175,6 +1187,7 @@ mod tests {
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
           dependencies: Default::default(),
+          optional_peer_dependencies: Default::default(),
           system: Default::default(),
           dist: Default::default(),
           optional_dependencies: Default::default(),
@@ -1288,6 +1301,7 @@ mod tests {
     SerializedNpmResolutionSnapshotPackage {
       id: NpmPackageId::from_serialized(id).unwrap(),
       dependencies: Default::default(),
+      optional_peer_dependencies: Default::default(),
       system: Default::default(),
       dist: Default::default(),
       optional_dependencies: Default::default(),
@@ -1516,6 +1530,7 @@ mod tests {
     SerializedNpmResolutionSnapshotPackage {
       id: NpmPackageId::from_serialized(id).unwrap(),
       dependencies: deps(dependencies),
+      optional_peer_dependencies: Default::default(),
       system: Default::default(),
       dist: Default::default(),
       optional_dependencies: Default::default(),
