@@ -1180,6 +1180,13 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         }
         NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer => {
           found_peer = true;
+          let parent_id = parent_path.node_id();
+          let node = self.graph.nodes.get(&parent_id).unwrap();
+          let previous_nv = node
+            .children
+            .get(&dep.bare_specifier)
+            .and_then(|child_id| self.graph.resolved_node_ids.get(*child_id))
+            .map(|child| child.nv.clone());
           // we need to re-evaluate peer dependencies every time and can't
           // skip over them because they might be evaluated differently based
           // on the current path
@@ -1188,6 +1195,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             dep,
             &package_info,
             &parent_path,
+            previous_nv.as_deref(),
           )?;
 
           #[cfg(feature = "tracing")]
@@ -1241,13 +1249,27 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
     ancestor_path: &Rc<GraphPath>,
+    previous_nv: Option<&PackageNv>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
+    fn get_path(
+      index: usize,
+      ancestor_path: &Rc<GraphPath>,
+    ) -> Vec<&Rc<GraphPath>> {
+      let mut path = Vec::with_capacity(index + 1);
+      path.push(ancestor_path);
+      path.extend(ancestor_path.ancestors().take(index + 1).filter_map(|a| {
+        match a {
+          GraphPathNodeOrRoot::Node(graph_path) => Some(graph_path),
+          GraphPathNodeOrRoot::Root(_) => None,
+        }
+      }));
+      path
+    }
+
     debug_assert!(matches!(
       peer_dep.kind,
       NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer
     ));
-
-    let mut path = vec![ancestor_path];
 
     // the current dependency might have had the peer dependency
     // in another bare specifier slot... if so resolve it to that
@@ -1264,44 +1286,87 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
       if let Some((peer_parent, peer_dep_id)) = maybe_peer_dep {
         // this will always have an ancestor because we're not at the root
-        self.set_new_peer_dep(&path, peer_parent, specifier, peer_dep_id);
+        self.set_new_peer_dep(
+          &[ancestor_path],
+          peer_parent,
+          specifier,
+          peer_dep_id,
+        );
         return Ok(Some(peer_dep_id));
       }
     }
 
     // Peer dependencies are resolved based on its ancestors' siblings.
     // If not found, then it resolves based on the version requirement if non-optional.
-    for ancestor_node in ancestor_path.ancestors() {
-      match ancestor_node {
-        GraphPathNodeOrRoot::Node(ancestor_graph_path_node) => {
-          path.push(ancestor_graph_path_node);
-          let maybe_peer_dep = self.find_peer_dep_in_node(
-            ancestor_graph_path_node,
-            peer_dep,
-            peer_package_info,
-            None,
-            ancestor_path,
-          )?;
-          if let Some((parent, peer_dep_id)) = maybe_peer_dep {
-            // this will always have an ancestor because we're not at the root
-            self.set_new_peer_dep(&path, parent, specifier, peer_dep_id);
-            return Ok(Some(peer_dep_id));
+    let mut matching_peers_going_up = ancestor_path
+      .ancestors()
+      .enumerate()
+      .filter_map(|(i, ancestor_node)| {
+        match ancestor_node {
+          GraphPathNodeOrRoot::Node(ancestor_graph_path_node) => {
+            let maybe_peer_dep_result = self.find_peer_dep_in_node(
+              ancestor_graph_path_node,
+              peer_dep,
+              peer_package_info,
+              None,
+              ancestor_path,
+            );
+            match maybe_peer_dep_result {
+              Ok(maybe_peer_dep) => {
+                maybe_peer_dep.map(|(peer_parent, peer_dep_id)| {
+                  let path = get_path(i, &ancestor_path);
+                  Ok((path, peer_parent, peer_dep_id))
+                })
+              }
+              Err(err) => Some(Err(err)),
+            }
+          }
+          GraphPathNodeOrRoot::Root(root_pkg_nv) => {
+            // in this case, the parent is the root so the children are all the package requirements
+            let maybe_peer_dep_result = self.find_matching_child_for_peer_dep(
+              peer_dep,
+              peer_package_info,
+              self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
+              ancestor_path,
+            );
+            match maybe_peer_dep_result {
+              Ok(maybe_peer_dep) => maybe_peer_dep.map(|peer_dep_id| {
+                let path = get_path(i, &ancestor_path);
+                let peer_parent =
+                  GraphPathNodeOrRoot::Root(root_pkg_nv.clone());
+                Ok((path, peer_parent, peer_dep_id))
+              }),
+              Err(err) => Some(Err(err)),
+            }
           }
         }
-        GraphPathNodeOrRoot::Root(root_pkg_nv) => {
-          // in this case, the parent is the root so the children are all the package requirements
-          if let Some(child_id) = self.find_matching_child_for_peer_dep(
-            peer_dep,
-            peer_package_info,
-            self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
-            ancestor_path,
-          )? {
-            let peer_parent = GraphPathNodeOrRoot::Root(root_pkg_nv.clone());
-            self.set_new_peer_dep(&path, peer_parent, specifier, child_id);
-            return Ok(Some(child_id));
-          }
+      });
+    let mut found_result = None;
+    if let Some(previous_nv) = previous_nv {
+      // when this child previously matched to an nv, we want to
+      // see if that nv is anywhere in the ancestor peers... if so
+      // match to that instead of the closest peer as it reduces
+      // duplicate packages
+      for item in matching_peers_going_up {
+        let item = item?;
+        let id = self.graph.resolved_node_ids.get(item.2).unwrap();
+        if id.nv.as_ref() == previous_nv {
+          found_result = Some(item);
+          break;
+        } else if found_result.is_none() {
+          found_result = Some(item);
         }
       }
+    } else {
+      if let Some(found_peer) = matching_peers_going_up.next() {
+        found_result = Some(found_peer?);
+      }
+      drop(matching_peers_going_up);
+    }
+
+    if let Some((path, peer_parent, peer_dep_id)) = found_result {
+      self.set_new_peer_dep(&path, peer_parent, specifier, peer_dep_id);
+      return Ok(Some(peer_dep_id));
     }
 
     if peer_dep.kind.is_optional() {
