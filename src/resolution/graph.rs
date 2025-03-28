@@ -5048,6 +5048,12 @@ mod test {
     )]);
   }
 
+  // This was an attempt at reducing duplicate dependencies. Essentially, if we previously
+  // resolved a package (in this case package-b) with a certain peer dep (package-peer@1.0.2)
+  // then when re-resolving it in a different position, we check for the existence of
+  // package-peer@1.0.2 in all the ancestor peers and use that rather than using package-peer@1.0.1
+  // which is the first found resolved ancestor peer dep. The reason we don't use it is because
+  // it would create a duplicate copy of package-b.
   #[tokio::test]
   async fn prefer_previously_resolved_peer_in_ancestors() {
     let api = TestNpmRegistryApi::default();
