@@ -331,6 +331,7 @@ pub struct NpmResolutionPackage {
   /// which could be different from the package name.
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
+  pub optional_peer_dependencies: HashSet<StackString>,
 
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
@@ -384,6 +385,7 @@ impl NpmResolutionPackage {
       id: self.id.clone(),
       system: self.system.clone(),
       dependencies: self.dependencies.clone(),
+      optional_peer_dependencies: self.optional_peer_dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
       dist: self.dist.clone(),
       extra: self.extra.clone(),
