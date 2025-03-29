@@ -5,7 +5,6 @@ use deno_lockfile::Lockfile;
 use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
-use deno_semver::SmallStackString;
 use deno_semver::StackString;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
@@ -17,7 +16,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -29,12 +27,12 @@ use super::NpmPackageVersionNotFound;
 use super::UnmetPeerDepDiagnostic;
 
 use crate::registry::NpmPackageInfo;
-use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
+use crate::NpmPackageExtraInfo;
 use crate::NpmPackageId;
 use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
@@ -120,9 +118,11 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
   pub optional_peer_dependencies: HashSet<StackString>,
-  pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<SmallStackString, String>,
-  pub deprecated: Option<String>,
+  #[serde(flatten)]
+  pub extra: Option<NpmPackageExtraInfo>,
+  pub is_deprecated: bool,
+  pub has_bin: bool,
+  pub has_scripts: bool,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -275,13 +275,14 @@ impl NpmResolutionSnapshot {
           id: package.id,
           copy_index,
           system: package.system,
-          dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
           optional_peer_dependencies: package.optional_peer_dependencies,
-          bin: package.bin,
-          scripts: package.scripts,
-          deprecated: package.deprecated,
+          dist: package.dist,
+          extra: package.extra,
+          is_deprecated: package.is_deprecated,
+          has_bin: package.has_bin,
+          has_scripts: package.has_scripts,
         },
       );
     }
@@ -475,15 +476,16 @@ impl NpmResolutionSnapshot {
     while let Some(pkg) = pending.pop_front() {
       let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
         id: pkg.id.clone(),
-        dist: pkg.dist.clone(),
         dependencies: HashMap::with_capacity(pkg.dependencies.len()),
         optional_peer_dependencies: pkg.optional_peer_dependencies.clone(),
         // the fields below are stripped from the output
         system: Default::default(),
         optional_dependencies: Default::default(),
-        bin: None,
-        scripts: Default::default(),
-        deprecated: Default::default(),
+        extra: pkg.extra.clone(),
+        dist: pkg.dist.clone(),
+        is_deprecated: pkg.is_deprecated,
+        has_bin: pkg.has_bin,
+        has_scripts: pkg.has_scripts,
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -717,9 +719,9 @@ impl NpmResolutionSnapshot {
       // partition out any packages that are "copy" packages
       for i in (0..packages.len()).rev() {
         if packages[i].copy_index > 0
-          // the system might not have resolved the package with a
-          // copy_index of 0, so we also need to check that
-          && copy_index_zero_nvs.contains(&packages[i].id.nv)
+        // the system might not have resolved the package with a
+        // copy_index of 0, so we also need to check that
+        && copy_index_zero_nvs.contains(&packages[i].id.nv)
         {
           copy_packages.push(packages.swap_remove(i));
         }
@@ -841,79 +843,6 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
-#[derive(Debug, Error, Clone, JsError)]
-pub enum IncompleteSnapshotFromLockfileError {
-  #[error(transparent)]
-  #[class(inherit)]
-  PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
-}
-
-struct IncompletePackageInfo {
-  id: NpmPackageId,
-  integrity: Option<String>,
-  dependencies: HashMap<StackString, NpmPackageId>,
-}
-
-pub struct IncompleteSnapshot {
-  lockfile_file_name: PathBuf,
-  root_packages: HashMap<PackageReq, NpmPackageId>,
-  packages: Vec<IncompletePackageInfo>,
-}
-
-/// Constructs [`IncompleteSnapshot`] from the given [`Lockfile`]. The returned
-/// snapshot will then be passed to [`snapshot_from_lockfile`] to get a completely
-/// resolved snapshot.
-///
-/// The reason why this function is not combined with [`snapshot_from_lockfile`]
-/// is because we want `lockfile` to not live across the `.await` points. This
-/// becomes problematic if `lockfile` is wrapped in [`std::sync::Mutex`] or
-/// similar, which doesn't implement [`Send`].
-pub fn incomplete_snapshot_from_lockfile(
-  lockfile: &Lockfile,
-) -> Result<IncompleteSnapshot, IncompleteSnapshotFromLockfileError> {
-  let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
-    lockfile.content.packages.specifiers.len(),
-  );
-  // collect the specifiers to version mappings
-  for (key, value) in &lockfile.content.packages.specifiers {
-    match key.kind {
-      deno_semver::package::PackageKind::Npm => {
-        let package_id = NpmPackageId::from_serialized(&format!(
-          "{}@{}",
-          key.req.name, value
-        ))?;
-        root_packages.insert(key.req.clone(), package_id);
-      }
-      deno_semver::package::PackageKind::Jsr => {}
-    }
-  }
-
-  // now fill the packages except for the dist information
-  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
-  for (key, package) in &lockfile.content.packages.npm {
-    let id = NpmPackageId::from_serialized(key)?;
-
-    // collect the dependencies
-    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
-    for (name, specifier) in &package.dependencies {
-      let dep_id = NpmPackageId::from_serialized(specifier)?;
-      dependencies.insert(name.clone(), dep_id);
-    }
-
-    packages.push(IncompletePackageInfo {
-      id,
-      integrity: package.integrity.clone(),
-      dependencies,
-    });
-  }
-
-  Ok(IncompleteSnapshot {
-    lockfile_file_name: lockfile.filename.clone(),
-    root_packages,
-    packages,
-  })
-}
-
 #[derive(Debug, Clone, Error, JsError)]
 #[class(type)]
 #[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
@@ -952,13 +881,43 @@ pub enum SnapshotFromLockfileError {
   #[error(transparent)]
   #[class(inherit)]
   IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
+  #[error(transparent)]
+  #[class(inherit)]
+  PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
 pub struct SnapshotFromLockfileParams<'a> {
-  pub api: &'a dyn NpmRegistryApi,
   pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-  pub incomplete_snapshot: IncompleteSnapshot,
-  pub skip_integrity_check: bool,
+  pub lockfile: &'a Lockfile,
+  pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
+}
+
+pub trait DefaultTarballUrlProvider {
+  fn default_tarball_url(&self, id: &NpmPackageId) -> String;
+}
+
+fn dist_from_incomplete_package_info(
+  id: &NpmPackageId,
+  integrity: Option<&str>,
+  tarball: Option<&str>,
+  default_tarball_url: &dyn DefaultTarballUrlProvider,
+) -> NpmPackageVersionDistInfo {
+  let (shasum, integrity) = if let Some(integrity) = integrity {
+    if integrity.contains('-') {
+      (None, Some(integrity.to_string()))
+    } else {
+      (Some(integrity.to_string()), None)
+    }
+  } else {
+    (None, None)
+  };
+  NpmPackageVersionDistInfo {
+    tarball: tarball
+      .map(|t| t.to_string())
+      .unwrap_or_else(|| default_tarball_url.default_tarball_url(id)),
+    shasum,
+    integrity,
+  }
 }
 
 /// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
@@ -967,115 +926,86 @@ pub struct SnapshotFromLockfileParams<'a> {
 /// [`IncompleteSnapshot`] instance that's passed as the first argument for this
 /// function.
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub async fn snapshot_from_lockfile<'a>(
-  params: SnapshotFromLockfileParams<'a>,
+pub fn snapshot_from_lockfile(
+  params: SnapshotFromLockfileParams<'_>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
-  let api = params.api;
-  let incomplete_snapshot = params.incomplete_snapshot;
-
-  // fetch the package version information
-  let pkg_nvs = incomplete_snapshot
-    .packages
-    .iter()
-    .map(|p| p.id.nv.clone())
-    .collect::<Vec<_>>();
-  let get_version_infos = || {
-    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
-      let package_info = api
-        .package_info(&nv.name)
-        .await
-        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      Ok((package_info, nv))
-    }))
-  };
-  let mut version_infos = get_version_infos();
-  let mut i = 0;
-  let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
-  while let Some(result) = version_infos.next().await {
-    let result = result
-      .as_ref()
-      .map_err(|e: &SnapshotFromLockfileError| e.clone())
-      .and_then(|(package_info, nv)| {
-        package_info
-          .version_info(nv, params.patch_packages)
-          .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
-      });
-    match result {
-      Ok(version_info) => {
-        let snapshot_package = &incomplete_snapshot.packages[i];
-
-        if !params.skip_integrity_check {
-          if let Some(dist) = &version_info.dist {
-            let registry_integrity = dist.integrity().for_lockfile();
-            if Some(&registry_integrity) != snapshot_package.integrity.as_ref()
-            {
-              return Err(
-                IntegrityCheckFailedError {
-                  package_display_id: format!(
-                    "npm:{}",
-                    snapshot_package.id.as_serialized()
-                  ),
-                  expected: snapshot_package
-                    .integrity
-                    .clone()
-                    .unwrap_or_else(|| "<missing>".to_string()),
-                  actual: registry_integrity,
-                  filename: incomplete_snapshot
-                    .lockfile_file_name
-                    .display()
-                    .to_string(),
-                }
-                .into(),
-              );
-            }
-          }
-        }
-
-        packages.push(SerializedNpmResolutionSnapshotPackage {
-          id: snapshot_package.id.clone(),
-          dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist.clone(),
-          system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu.clone(),
-            os: version_info.os.clone(),
-          },
-          optional_peer_dependencies: version_info
-            .peer_dependencies_meta
-            .iter()
-            .filter(|(_, meta)| meta.optional)
-            .map(|(k, _)| k.clone())
-            .collect(),
-          optional_dependencies: version_info
-            .optional_dependencies
-            .keys()
-            .cloned()
-            .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
-          deprecated: version_info.deprecated.clone(),
-        });
+  let default_tarball_url = params.default_tarball_url;
+  let lockfile = params.lockfile;
+  let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
+    lockfile.content.packages.specifiers.len(),
+  );
+  // collect the specifiers to version mappings
+  for (key, value) in &lockfile.content.packages.specifiers {
+    match key.kind {
+      deno_semver::package::PackageKind::Npm => {
+        let package_id = NpmPackageId::from_serialized(&format!(
+          "{}@{}",
+          key.req.name, value
+        ))?;
+        root_packages.insert(key.req.clone(), package_id);
       }
-      Err(err) => {
-        if api.mark_force_reload() {
-          // reset and try again
-          version_infos = get_version_infos();
-          i = 0;
-          packages.clear();
-          continue;
-        } else {
-          return Err(err);
-        }
-      }
+      deno_semver::package::PackageKind::Jsr => {}
+    }
+  }
+
+  // now fill the packages except for the dist information
+  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
+  for (key, package) in &lockfile.content.packages.npm {
+    let id = NpmPackageId::from_serialized(key)?;
+
+    // collect the dependencies
+    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
+    for (name, specifier) in &package.dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      dependencies.insert(name.clone(), dep_id);
     }
 
-    i += 1;
+    let mut optional_dependencies =
+      HashMap::with_capacity(package.optional_dependencies.len());
+    for (name, specifier) in &package.optional_dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      optional_dependencies.insert(name.clone(), dep_id);
+    }
+
+    packages.push(SerializedNpmResolutionSnapshotPackage {
+      dist: Some(dist_from_incomplete_package_info(
+        &id,
+        package.integrity.as_deref(),
+        package.tarball.as_deref(),
+        default_tarball_url,
+      )),
+      id,
+      dependencies: dependencies
+        .into_iter()
+        .chain(optional_dependencies.clone().into_iter())
+        .collect(),
+      optional_dependencies: optional_dependencies.into_keys().collect(),
+      system: NpmResolutionPackageSystemInfo {
+        cpu: package.cpu.clone(),
+        os: package.os.clone(),
+      },
+      is_deprecated: package.deprecated,
+      has_bin: package.has_bin,
+      has_scripts: package.has_scripts,
+      optional_peer_dependencies: package
+        .optional_peers
+        .clone()
+        .into_keys()
+        .collect(),
+      extra: None,
+    });
   }
 
   let snapshot = SerializedNpmResolutionSnapshot {
     packages,
-    root_packages: incomplete_snapshot.root_packages,
+    root_packages,
   }
   .into_valid()?;
+
+  // Ok(IncompleteSnapshot {
+  //   root_packages,
+  //   packages,
+  // })
   Ok(snapshot)
 }
 
@@ -1153,22 +1083,32 @@ mod tests {
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
           optional_peer_dependencies: HashSet::from(["b".into()]),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: HashSet::from(["c".into()]),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/a@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
           dependencies: Default::default(),
           optional_peer_dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/b@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1178,22 +1118,32 @@ mod tests {
             os: vec!["win32".into()],
             cpu: vec!["x64".into()],
           },
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/c@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
           dependencies: Default::default(),
           optional_peer_dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/d@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
       ],
     }
@@ -1303,11 +1253,16 @@ mod tests {
       dependencies: Default::default(),
       optional_peer_dependencies: Default::default(),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
+        tarball: format!("https://example.com/{id}.tar.gz", id = id),
+        shasum: None,
+        integrity: None,
+      }),
+      extra: None,
+      is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 
@@ -1335,6 +1290,14 @@ mod tests {
       .collect()
   }
 
+  struct TestDefaultTarballUrlProvider;
+
+  impl DefaultTarballUrlProvider for TestDefaultTarballUrlProvider {
+    fn default_tarball_url(&self, id: &NpmPackageId) -> String {
+      format!("https://example.com/{id}.tar.gz", id = id)
+    }
+  }
+
   #[tokio::test]
   async fn test_snapshot_from_lockfile_v2() {
     let api = TestNpmRegistryApi::default();
@@ -1349,9 +1312,10 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
         "version": "2",
         "remote": {},
         "npm": {
@@ -1371,92 +1335,18 @@ mod tests {
           }
         }
       }"#,
-      overwrite: false,
-    })
+        overwrite: false,
+      },
+      &api,
+    )
+    .await
     .unwrap();
 
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
+      lockfile: &lockfile,
       patch_packages: &Default::default(),
-      skip_integrity_check: false
+      default_tarball_url: &TestDefaultTarballUrlProvider,
     })
-    .await
-    .is_ok());
-  }
-
-  #[tokio::test]
-  async fn test_snapshot_from_lockfile_bad_integrity() {
-    let api = TestNpmRegistryApi::default();
-    api.ensure_package_version_with_integrity(
-      "chalk",
-      "5.3.0",
-      Some("sha512-integrity1-bad"),
-    );
-    api.ensure_package_version_with_integrity(
-      "emoji-regex",
-      "10.2.1",
-      Some("sha512-integrity2"),
-    );
-
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
-        "version": "2",
-        "remote": {},
-        "npm": {
-          "specifiers": {
-            "chalk@5": "chalk@5.3.0",
-            "emoji-regex": "emoji-regex@10.2.1"
-          },
-          "packages": {
-            "chalk@5.3.0": {
-              "integrity": "sha512-integrity1",
-              "dependencies": {}
-            },
-            "emoji-regex@10.2.1": {
-              "integrity": "sha512-integrity2",
-              "dependencies": {}
-            }
-          }
-        }
-      }"#,
-      overwrite: false,
-    })
-    .unwrap();
-
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
-      patch_packages: &Default::default(),
-      skip_integrity_check: false,
-    })
-    .await
-    .unwrap_err();
-    match err {
-      SnapshotFromLockfileError::IntegrityCheckFailed(err) => {
-        assert_eq!(err.actual, "sha512-integrity1-bad");
-        assert_eq!(err.expected, "sha512-integrity1");
-        assert_eq!(err.filename, "/deno.lock");
-        assert_eq!(err.package_display_id, "npm:chalk@5.3.0");
-      }
-      _ => unreachable!(),
-    }
-
-    // now try with skipping the integrity check
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
-      patch_packages: &Default::default(),
-      skip_integrity_check: true, // will pass because ignored
-    })
-    .await
     .is_ok());
   }
 
@@ -1474,9 +1364,10 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
         "version": "4",
         "specifiers": {
           "npm:chalk@5": "5.3.0",
@@ -1494,19 +1385,18 @@ mod tests {
           }
         }
       }"#,
-      overwrite: false,
-    })
+        overwrite: false,
+      },
+      &api,
+    )
+    .await
     .unwrap();
 
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
+      lockfile: &lockfile,
       patch_packages: &Default::default(),
-      skip_integrity_check: false,
+      default_tarball_url: &TestDefaultTarballUrlProvider,
     })
-    .await
     .unwrap();
     assert_eq!(
       snapshot.as_serialized().root_packages,
@@ -1532,11 +1422,16 @@ mod tests {
       dependencies: deps(dependencies),
       optional_peer_dependencies: Default::default(),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
+        tarball: format!("https://example.com/{id}.tar.gz",),
+        shasum: None,
+        integrity: None,
+      }),
+      extra: None,
+      is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 
