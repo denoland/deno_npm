@@ -438,10 +438,25 @@ impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
         cpu: version_info.os.iter().map(|s| s.to_string()).collect(),
         os: version_info.cpu.iter().map(|s| s.to_string()).collect(),
         deprecated: version_info.deprecated.is_some(),
-        bin: version_info.bin.is_some(),
-        scripts: version_info.scripts.contains_key("preinstall")
+        has_bin: version_info.bin.is_some(),
+        has_scripts: version_info.scripts.contains_key("preinstall")
           || version_info.scripts.contains_key("install")
           || version_info.scripts.contains_key("postinstall"),
+        optional_peers: version_info
+          .peer_dependencies
+          .iter()
+          .filter_map(|(k, v)| {
+            if version_info
+              .peer_dependencies_meta
+              .get(k)
+              .is_some_and(|m| m.optional)
+            {
+              Some((k.to_string(), v.to_string()))
+            } else {
+              None
+            }
+          })
+          .collect(),
       };
       infos.push(lockfile_info);
     }

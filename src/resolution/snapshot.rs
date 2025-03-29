@@ -967,16 +967,6 @@ pub fn snapshot_from_lockfile(
       optional_dependencies.insert(name.clone(), dep_id);
     }
 
-    // packages.push(IncompletePackageInfo {
-    //   id,
-    //   integrity: package.integrity.clone(),
-    //   dependencies,
-    //   optional_dependencies,
-
-    //   cpu: package.cpu.clone(),
-    //   os: package.os.clone(),
-    //   tarball: None,
-    // });
     packages.push(SerializedNpmResolutionSnapshotPackage {
       dist: Some(dist_from_incomplete_package_info(
         &id,
@@ -995,13 +985,12 @@ pub fn snapshot_from_lockfile(
         os: package.os.clone(),
       },
       is_deprecated: package.deprecated,
-      has_bin: package.bin,
-      has_scripts: package.scripts,
-      optional_peer_dependencies: version_info
-        .peer_dependencies_meta
-        .iter()
-        .filter(|(_, meta)| meta.optional)
-        .map(|(k, _)| k.clone())
+      has_bin: package.has_bin,
+      has_scripts: package.has_scripts,
+      optional_peer_dependencies: package
+        .optional_peers
+        .clone()
+        .into_keys()
         .collect(),
       extra: None,
     });

@@ -676,21 +676,16 @@ impl Graph {
           os: version_info.os.clone(),
         },
         dist: version_info.dist.clone(),
-        dependencies,
         optional_dependencies: version_info
           .optional_dependencies
           .keys()
           .cloned()
           .collect(),
-        bin: version_info.bin.clone(),
-        scripts: version_info.scripts.clone(),
-        deprecated: version_info.deprecated.clone(),
         extra: Some(crate::NpmPackageExtraInfo {
           bin: version_info.bin.clone(),
           scripts: version_info.scripts.clone(),
           deprecated: version_info.deprecated.clone(),
         }),
-        dist: version_info.dist.clone(),
         is_deprecated: version_info.deprecated.is_some(),
         has_bin: version_info.bin.is_some(),
         has_scripts: version_info.scripts.contains_key("preinstall")
@@ -702,6 +697,7 @@ impl Graph {
           .filter(|(k, meta)| meta.optional && !dependencies.contains_key(*k))
           .map(|(k, _)| k.clone())
           .collect(),
+        dependencies,
       });
     }
 

@@ -194,7 +194,7 @@ dependencies = [
 [[package]]
 name = "deno_lockfile"
 version = "0.25.0"
-source = "git+https://github.com/nathanwhit/deno_lockfile?branch=npm-packument-in-lockfile#e515e87cf12e2677cfa1ec482cf7729ba038c20d"
+source = "git+https://github.com/nathanwhit/deno_lockfile?branch=npm-packument-in-lockfile#64e3410907f935a670f3173594378c520d937da6"
 dependencies = [
  "async-trait",
  "deno_semver",
