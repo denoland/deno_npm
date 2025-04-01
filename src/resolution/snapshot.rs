@@ -1006,8 +1006,10 @@ pub async fn snapshot_from_lockfile<'a>(
 
         if !params.skip_integrity_check {
           if let Some(dist) = &version_info.dist {
-            let registry_integrity = dist.integrity().for_lockfile();
-            if Some(&registry_integrity) != snapshot_package.integrity.as_ref()
+            let integrity = dist.integrity();
+            let registry_integrity = integrity.for_lockfile();
+            if registry_integrity.as_deref()
+              != snapshot_package.integrity.as_deref()
             {
               return Err(
                 IntegrityCheckFailedError {
@@ -1019,7 +1021,9 @@ pub async fn snapshot_from_lockfile<'a>(
                     .integrity
                     .clone()
                     .unwrap_or_else(|| "<missing>".to_string()),
-                  actual: registry_integrity,
+                  actual: registry_integrity
+                    .map(|i| i.into_owned())
+                    .unwrap_or_else(|| "<missing>".to_string()),
                   filename: incomplete_snapshot
                     .lockfile_file_name
                     .display()
