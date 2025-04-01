@@ -14,11 +14,16 @@ use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use reqwest::StatusCode;
 
-/// Example:
+/// This example is not an example, but is a tool to create a minimal
+/// reproduction of a bug from a set of real npm package requirements
+/// and a provided condition.
 ///
-/// ```sh
-/// cargo run --example minimal_dep_repro
-/// ```
+/// 1. Provide your package requirements below.
+/// 2. Update the condition saying what the bug is.
+/// 3. Run `cargo run --example minimal_dep_repro`
+///
+/// This will output some test code that you can use in order to have
+/// a small reproduction of the bug.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
   let (snapshot, api) = minimal_reproduction_while_condition(
