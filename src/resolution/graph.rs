@@ -5210,6 +5210,7 @@ mod test {
       ("vite", "6.2.4"),
       ("lightningcss", "^1.21.0"),
     );
+
     let (packages, package_reqs) = run_resolver_and_get_output(
       api,
       vec!["@deno/vite-plugin@~1.0.4", "@tailwindcss/vite@~4.0.17"],
