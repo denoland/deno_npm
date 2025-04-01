@@ -355,7 +355,7 @@ impl NpmPackageVersionDistInfo {
       },
       None => match &self.shasum {
         Some(shasum) => {
-          NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(&shasum)
+          NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(shasum)
         }
         None => NpmPackageVersionDistInfoIntegrity::None,
       },
