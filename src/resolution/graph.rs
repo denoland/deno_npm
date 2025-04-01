@@ -206,7 +206,7 @@ enum GraphPathNodeOrRoot {
 #[derive(Debug, Copy, Clone)]
 enum GraphPathResolutionMode {
   All,
-  OptionalOnly,
+  OptionalPeers,
 }
 
 /// Path through the graph that represents a traversal through the graph doing
@@ -1066,12 +1066,13 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         self.graph.unresolved_optional_peers.seen_count();
       if seen_optional_peers_count > previous_seen_optional_peers_count {
         previous_seen_optional_peers_count = seen_optional_peers_count;
+        debug!("Traversing graph to ensure newly seen optional peers are set.");
         // go through the graph again resolving any optional peers
         for (nv, node_id) in &self.graph.root_packages {
           self.pending_unresolved_nodes.push_back(GraphPath::for_root(
             *node_id,
             nv.clone(),
-            GraphPathResolutionMode::OptionalOnly,
+            GraphPathResolutionMode::OptionalPeers,
           ));
         }
       }
@@ -1284,8 +1285,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer
     ));
 
-    if peer_dep.kind.is_optional()
-      && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalOnly)
+    if !peer_dep.kind.is_optional()
+      && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalPeers)
     {
       if let Some(previous_nv) = previous_nv.cloned() {
         // don't re-resolve a peer dependency when only going through the graph
@@ -1296,7 +1297,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           *previous_id,
           peer_dep.bare_specifier.clone(),
           previous_nv,
-          GraphPathResolutionMode::OptionalOnly,
+          GraphPathResolutionMode::OptionalPeers,
         );
         self.pending_unresolved_nodes.push_back(new_path);
         return Ok(None);
