@@ -38,7 +38,7 @@ mod deserialization {
   fn get_next_packument_text() -> String {
     build_rt().block_on(async {
       // ensure the fs cache is populated
-      let _ = RealBenchRegistryApi::default()
+      let _ = TargetFolderCachedRegistryApi::default()
         .package_info("next")
         .await
         .unwrap();
@@ -91,7 +91,7 @@ mod resolution {
 
   #[divan::bench(sample_count = 1000)]
   fn nextjs_resolve(bencher: divan::Bencher) {
-    let api = RealBenchRegistryApi::default();
+    let api = TargetFolderCachedRegistryApi::default();
     let rt = build_rt();
 
     // run once to fill the caches
@@ -109,11 +109,11 @@ mod resolution {
   }
 }
 
-struct RealBenchRegistryApi {
+struct TargetFolderCachedRegistryApi {
   data: Rc<RefCell<HashMap<String, Arc<NpmPackageInfo>>>>,
 }
 
-impl Default for RealBenchRegistryApi {
+impl Default for TargetFolderCachedRegistryApi {
   fn default() -> Self {
     std::fs::create_dir_all("target/.deno_npm").unwrap();
     Self {
@@ -123,7 +123,7 @@ impl Default for RealBenchRegistryApi {
 }
 
 #[async_trait::async_trait(?Send)]
-impl NpmRegistryApi for RealBenchRegistryApi {
+impl NpmRegistryApi for TargetFolderCachedRegistryApi {
   async fn package_info(
     &self,
     name: &str,
@@ -160,14 +160,6 @@ impl NpmRegistryApi for RealBenchRegistryApi {
   }
 }
 
-fn build_rt() -> tokio::runtime::Runtime {
-  tokio::runtime::Builder::new_current_thread()
-    .enable_io()
-    .enable_time()
-    .build()
-    .unwrap()
-}
-
 fn packument_cache_filepath(name: &str) -> String {
   format!("target/.deno_npm/{}", encode_package_name(name))
 }
@@ -178,6 +170,14 @@ fn packument_url(name: &str) -> String {
 
 fn encode_package_name(name: &str) -> String {
   name.replace("/", "%2F")
+}
+
+fn build_rt() -> tokio::runtime::Runtime {
+  tokio::runtime::Builder::new_current_thread()
+    .enable_io()
+    .enable_time()
+    .build()
+    .unwrap()
 }
 
 async fn run_resolver_and_get_snapshot(
