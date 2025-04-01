@@ -128,8 +128,9 @@ fn get_test_code(
     .keys()
     .map(|k| format!("\"{}\"", k))
     .collect::<Vec<_>>();
-  text
-    .push_str("let (packages, package_reqs) = run_resolver_and_get_output(\n");
+  text.push_str(
+    "\nlet (packages, package_reqs) = run_resolver_and_get_output(\n",
+  );
   text.push_str("  api,\n");
   text.push_str("  vec![");
   text.push_str(&reqs.join(", "));
