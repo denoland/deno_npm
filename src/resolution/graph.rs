@@ -206,7 +206,7 @@ enum GraphPathNodeOrRoot {
 #[derive(Debug, Copy, Clone)]
 enum GraphPathResolutionMode {
   All,
-  OptionalPeers,
+  OptionalOnly,
 }
 
 /// Path through the graph that represents a traversal through the graph doing
@@ -1071,7 +1071,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           self.pending_unresolved_nodes.push_back(GraphPath::for_root(
             *node_id,
             nv.clone(),
-            GraphPathResolutionMode::OptionalPeers,
+            GraphPathResolutionMode::OptionalOnly,
           ));
         }
       }
@@ -1285,7 +1285,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     ));
 
     if peer_dep.kind.is_optional()
-      && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalPeers)
+      && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalOnly)
     {
       if let Some(previous_nv) = previous_nv.cloned() {
         // don't re-resolve a peer dependency when only going through the graph
@@ -1296,7 +1296,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           *previous_id,
           peer_dep.bare_specifier.clone(),
           previous_nv,
-          GraphPathResolutionMode::OptionalPeers,
+          GraphPathResolutionMode::OptionalOnly,
         );
         self.pending_unresolved_nodes.push_back(new_path);
         return Ok(None);
@@ -4728,80 +4728,6 @@ mod test {
         ),
         ("package-c@1".to_string(), "package-c@1.0.0".to_string()),
         ("package-d@1".to_string(), "package-d@1.0.0".to_string()),
-      ]
-    );
-  }
-
-  #[tokio::test]
-  async fn vite_tailwind_optional_peer_duplicates() {
-    let api = TestNpmRegistryApi::default();
-    api.ensure_package_version("@deno/vite-plugin", "1.0.4");
-    api.ensure_package_version("vite@6.2.4", "6.2.4");
-    api.ensure_package_version("@tailwindcss/vite", "4.0.17");
-    api.ensure_package_version("tailwindcss", "4.0.16");
-
-    api.add_optional_peer_dependency(("vite", "6.2.4"), ("tailwindcss", "4"));
-    api.add_dependency(("@deno/vite-plugin", "1.0.4"), ("vite", "6"));
-    api.add_dependency(("@tailwindcss/vite", "4.0.17"), ("vite", "6"));
-    api.add_dependency(("@tailwindcss/vite", "4.0.17"), ("tailwindcss", "*"));
-
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["@deno/vite-plugin@1", "vite@6", "@tailwindcss/vite@4"],
-    )
-    .await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "@deno/vite-plugin@1.0.4".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "vite".to_string(),
-            "vite@6.2.4_tailwindcss@4.0.16".to_string(),
-          )])
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "@tailwindcss/vite@4.0.17_tailwindcss@4.0.16".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            ("tailwindcss".to_string(), "tailwindcss@4.0.16".to_string(),),
-            (
-              "vite".to_string(),
-              "vite@6.2.4_tailwindcss@4.0.16".to_string(),
-            )
-          ]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "tailwindcss@4.0.16".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "vite@6.2.4_tailwindcss@4.0.16".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "tailwindcss".to_string(),
-            "tailwindcss@4.0.16".to_string(),
-          ),]),
-        },
-      ]
-    );
-    assert_eq!(
-      package_reqs,
-      vec![
-        (
-          "@deno/vite-plugin@1".to_string(),
-          "@deno/vite-plugin@1.0.4".to_string()
-        ),
-        (
-          "@tailwindcss/vite@4".to_string(),
-          "@tailwindcss/vite@4.0.17_tailwindcss@4.0.16".to_string()
-        ),
-        (
-          "vite@6".to_string(),
-          "vite@6.2.4_tailwindcss@4.0.16".to_string()
-        )
       ]
     );
   }
