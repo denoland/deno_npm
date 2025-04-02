@@ -1098,6 +1098,10 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .unwrap()
         .nv
         .clone();
+
+      #[cfg(feature = "seen_nv_events")]
+      self.api.on_seen_nv(&pkg_nv);
+
       let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
         deps.clone()
       } else {

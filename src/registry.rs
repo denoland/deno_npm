@@ -389,6 +389,12 @@ pub trait NpmRegistryApi {
   fn mark_force_reload(&self) -> bool {
     false
   }
+
+  /// Event for when an nv is seen by the resolver. This is used by the
+  /// minimal_dep_repro example for keeping track of the nvs the resolver
+  /// has traversed.
+  #[cfg(feature = "seen_nv_events")]
+  fn on_seen_nv(&self, _nv: &PackageNv) {}
 }
 
 /// A simple in-memory implementation of the NpmRegistryApi
