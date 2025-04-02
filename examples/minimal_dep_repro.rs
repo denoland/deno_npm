@@ -1,8 +1,10 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use deno_npm::registry::NpmPackageInfo;
 use deno_npm::registry::NpmPackageVersionInfo;
@@ -58,7 +60,7 @@ async fn main() {
 
 async fn minimal_reproduction_while_condition(
   reqs: &[&str],
-  condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
+  condition: impl Fn(&NpmResolutionSnapshot) -> bool + Send + Sync + 'static,
 ) -> (NpmResolutionSnapshot, SubsetRegistryApi) {
   let reqs = reqs.iter().map(|r| r.to_string()).collect();
   let mut solver = MinimalReproductionSolver::new(reqs, condition).await;
@@ -144,7 +146,7 @@ fn get_test_code(
 
 struct MinimalReproductionSolver {
   reqs: Vec<String>,
-  condition: Box<dyn Fn(&NpmResolutionSnapshot) -> bool>,
+  condition: Arc<dyn Fn(&NpmResolutionSnapshot) -> bool + Send + Sync>,
   api: SubsetRegistryApi,
   current_snapshot: NpmResolutionSnapshot,
 }
@@ -152,14 +154,14 @@ struct MinimalReproductionSolver {
 impl MinimalReproductionSolver {
   pub async fn new(
     reqs: Vec<String>,
-    condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
+    condition: impl Fn(&NpmResolutionSnapshot) -> bool + Send + Sync + 'static,
   ) -> Self {
     let api = SubsetRegistryApi::default();
     let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
     assert!(condition(&snapshot), "bug does not exist in provided setup");
     MinimalReproductionSolver {
       reqs,
-      condition: Box::new(condition),
+      condition: Arc::new(condition),
       api,
       current_snapshot: snapshot,
     }
@@ -170,10 +172,13 @@ impl MinimalReproductionSolver {
     for i in (0..self.reqs.len()).rev() {
       let mut new_reqs = self.reqs.clone();
       let removed_req = new_reqs.remove(i);
-      let snapshot = run_resolver_and_get_snapshot(&self.api, &new_reqs).await;
-      if (self.condition)(&snapshot) {
-        self.reqs = new_reqs;
-        self.current_snapshot = snapshot;
+      let changed = self
+        .resolve_and_update_state_if_matches_condition(
+          self.api.clone(),
+          new_reqs,
+        )
+        .await;
+      if changed {
         made_reduction = true;
         eprintln!("Removed req: {}", removed_req);
       }
@@ -209,11 +214,13 @@ impl MinimalReproductionSolver {
         new_version_info.peer_dependencies.remove(&dep_name);
         new_version_info.peer_dependencies_meta.remove(&dep_name);
         new_api.set_package_version_info(&package_nv, new_version_info);
-        let snapshot =
-          run_resolver_and_get_snapshot(&new_api, &self.reqs).await;
-        if (self.condition)(&snapshot) {
-          self.api = new_api;
-          self.current_snapshot = snapshot;
+        let changed = self
+          .resolve_and_update_state_if_matches_condition(
+            new_api,
+            self.reqs.clone(),
+          )
+          .await;
+        if changed {
           made_reduction = true;
           eprintln!("{}: removed {}", package_nv, dep_name);
         }
@@ -222,10 +229,32 @@ impl MinimalReproductionSolver {
 
     made_reduction
   }
+
+  async fn resolve_and_update_state_if_matches_condition(
+    &mut self,
+    api: SubsetRegistryApi,
+    reqs: Vec<String>,
+  ) -> bool {
+    let snapshot = tokio::select! {
+      snapshot = run_resolver_and_get_snapshot(&api, &reqs) => {
+        snapshot
+      }
+      _ = tokio::time::sleep(Duration::from_secs(5)) => {
+        return true;
+      }
+    };
+    if !(self.condition)(&snapshot) {
+      return false;
+    }
+    self.api = api;
+    self.reqs = reqs;
+    self.current_snapshot = snapshot;
+    true
+  }
 }
 
 async fn run_resolver_and_get_snapshot(
-  api: &impl NpmRegistryApi,
+  api: &SubsetRegistryApi,
   reqs: &[String],
 ) -> NpmResolutionSnapshot {
   let snapshot = NpmResolutionSnapshot::new(Default::default());
@@ -246,9 +275,16 @@ async fn run_resolver_and_get_snapshot(
   result.dep_graph_result.unwrap()
 }
 
-#[derive(Clone)]
 struct SubsetRegistryApi {
-  data: RefCell<HashMap<String, Arc<NpmPackageInfo>>>,
+  data: Mutex<HashMap<String, Arc<NpmPackageInfo>>>,
+}
+
+impl Clone for SubsetRegistryApi {
+  fn clone(&self) -> Self {
+    Self {
+      data: Mutex::new(self.data.lock().unwrap().clone()),
+    }
+  }
 }
 
 impl Default for SubsetRegistryApi {
@@ -264,7 +300,8 @@ impl SubsetRegistryApi {
   pub fn get_version_info(&self, nv: &PackageNv) -> NpmPackageVersionInfo {
     self
       .data
-      .borrow()
+      .lock()
+      .unwrap()
       .get(nv.name.as_str())
       .unwrap()
       .versions
@@ -278,7 +315,7 @@ impl SubsetRegistryApi {
     nv: &PackageNv,
     version_info: NpmPackageVersionInfo,
   ) {
-    let mut data = self.data.borrow_mut();
+    let mut data = self.data.lock().unwrap();
     let mut package_info = data.get(nv.name.as_str()).unwrap().as_ref().clone();
     package_info
       .versions
@@ -293,15 +330,16 @@ impl NpmRegistryApi for SubsetRegistryApi {
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
-    if let Some(data) = self.data.borrow_mut().get(name).cloned() {
+    if let Some(data) = self.data.lock().unwrap().get(name).cloned() {
       return Ok(data);
     }
-    let file_path = packument_cache_filepath(name);
+    let file_path = PathBuf::from(packument_cache_filepath(name));
     if let Ok(data) = std::fs::read_to_string(&file_path) {
       if let Ok(data) = serde_json::from_str::<Arc<NpmPackageInfo>>(&data) {
         self
           .data
-          .borrow_mut()
+          .lock()
+          .unwrap()
           .insert(name.to_string(), data.clone());
         return Ok(data);
       }
@@ -315,11 +353,14 @@ impl NpmRegistryApi for SubsetRegistryApi {
       });
     }
     let text = resp.text().await.unwrap();
-    std::fs::write(&file_path, &text).unwrap();
+    let temp_path = file_path.with_extension(".tmp");
+    std::fs::write(&temp_path, &text).unwrap();
+    std::fs::rename(&temp_path, &file_path).unwrap();
     let data = serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap();
     self
       .data
-      .borrow_mut()
+      .lock()
+      .unwrap()
       .insert(name.to_string(), data.clone());
     Ok(data)
   }
