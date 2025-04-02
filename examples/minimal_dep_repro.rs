@@ -1,9 +1,9 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use deno_npm::registry::NpmPackageInfo;
@@ -146,7 +146,7 @@ fn get_test_code(
 
 struct MinimalReproductionSolver {
   reqs: Vec<String>,
-  condition: Arc<dyn Fn(&NpmResolutionSnapshot) -> bool + Send + Sync>,
+  condition: Box<dyn Fn(&NpmResolutionSnapshot) -> bool>,
   api: SubsetRegistryApi,
   current_snapshot: NpmResolutionSnapshot,
 }
@@ -154,14 +154,14 @@ struct MinimalReproductionSolver {
 impl MinimalReproductionSolver {
   pub async fn new(
     reqs: Vec<String>,
-    condition: impl Fn(&NpmResolutionSnapshot) -> bool + Send + Sync + 'static,
+    condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
   ) -> Self {
     let api = SubsetRegistryApi::default();
     let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
     assert!(condition(&snapshot), "bug does not exist in provided setup");
     MinimalReproductionSolver {
       reqs,
-      condition: Arc::new(condition),
+      condition: Box::new(condition),
       api,
       current_snapshot: snapshot,
     }
@@ -275,16 +275,9 @@ async fn run_resolver_and_get_snapshot(
   result.dep_graph_result.unwrap()
 }
 
+#[derive(Clone)]
 struct SubsetRegistryApi {
-  data: Mutex<HashMap<String, Arc<NpmPackageInfo>>>,
-}
-
-impl Clone for SubsetRegistryApi {
-  fn clone(&self) -> Self {
-    Self {
-      data: Mutex::new(self.data.lock().unwrap().clone()),
-    }
-  }
+  data: RefCell<HashMap<String, Arc<NpmPackageInfo>>>,
 }
 
 impl Default for SubsetRegistryApi {
@@ -300,8 +293,7 @@ impl SubsetRegistryApi {
   pub fn get_version_info(&self, nv: &PackageNv) -> NpmPackageVersionInfo {
     self
       .data
-      .lock()
-      .unwrap()
+      .borrow()
       .get(nv.name.as_str())
       .unwrap()
       .versions
@@ -315,7 +307,7 @@ impl SubsetRegistryApi {
     nv: &PackageNv,
     version_info: NpmPackageVersionInfo,
   ) {
-    let mut data = self.data.lock().unwrap();
+    let mut data = self.data.borrow_mut();
     let mut package_info = data.get(nv.name.as_str()).unwrap().as_ref().clone();
     package_info
       .versions
@@ -330,7 +322,7 @@ impl NpmRegistryApi for SubsetRegistryApi {
     &self,
     name: &str,
   ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
-    if let Some(data) = self.data.lock().unwrap().get(name).cloned() {
+    if let Some(data) = self.data.borrow_mut().get(name).cloned() {
       return Ok(data);
     }
     let file_path = PathBuf::from(packument_cache_filepath(name));
@@ -338,8 +330,7 @@ impl NpmRegistryApi for SubsetRegistryApi {
       if let Ok(data) = serde_json::from_str::<Arc<NpmPackageInfo>>(&data) {
         self
           .data
-          .lock()
-          .unwrap()
+          .borrow_mut()
           .insert(name.to_string(), data.clone());
         return Ok(data);
       }
@@ -359,8 +350,7 @@ impl NpmRegistryApi for SubsetRegistryApi {
     let data = serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap();
     self
       .data
-      .lock()
-      .unwrap()
+      .borrow_mut()
       .insert(name.to_string(), data.clone());
     Ok(data)
   }
