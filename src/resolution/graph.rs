@@ -203,6 +203,12 @@ enum GraphPathNodeOrRoot {
   Root(Rc<PackageNv>),
 }
 
+#[derive(Debug, Copy, Clone)]
+enum GraphPathResolutionMode {
+  All,
+  OptionalPeers,
+}
+
 /// Path through the graph that represents a traversal through the graph doing
 /// the dependency resolution. The graph tries to share duplicate package
 /// information and we try to avoid traversing parts of the graph that we know
@@ -217,10 +223,15 @@ struct GraphPath {
   /// Descendants in the path that circularly link to an ancestor in a child. These
   /// descendants should be kept up to date and always point to this node.
   linked_circular_descendants: RefCell<Vec<Rc<GraphPath>>>,
+  mode: GraphPathResolutionMode,
 }
 
 impl GraphPath {
-  pub fn for_root(node_id: NodeId, nv: Rc<PackageNv>) -> Rc<Self> {
+  pub fn for_root(
+    node_id: NodeId,
+    nv: Rc<PackageNv>,
+    mode: GraphPathResolutionMode,
+  ) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -228,6 +239,7 @@ impl GraphPath {
       specifier: "".into(),
       nv,
       linked_circular_descendants: Default::default(),
+      mode,
     })
   }
 
@@ -248,6 +260,7 @@ impl GraphPath {
     node_id: NodeId,
     specifier: StackString,
     nv: Rc<PackageNv>,
+    mode: GraphPathResolutionMode,
   ) -> Rc<Self> {
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Node(self.clone())),
@@ -255,6 +268,7 @@ impl GraphPath {
       specifier,
       nv,
       linked_circular_descendants: Default::default(),
+      mode,
     })
   }
 
@@ -415,10 +429,10 @@ impl Graph {
         }
       }
       for key in &resolution.optional_peer_dependencies {
-        if !resolution.dependencies.contains_key(key) {
+        if resolution.dependencies.contains_key(key) {
           graph
             .unresolved_optional_peers
-            .mark_unresolved(graph_resolved_id.nv.clone(), key.clone());
+            .mark_seen(graph_resolved_id.nv.clone(), key);
         }
       }
       graph.resolved_node_ids.set(node_id, graph_resolved_id);
@@ -694,7 +708,7 @@ impl Graph {
         optional_peer_dependencies: version_info
           .peer_dependencies_meta
           .iter()
-          .filter(|(k, meta)| meta.optional && !dependencies.contains_key(*k))
+          .filter(|(_, meta)| meta.optional)
           .map(|(k, _)| k.clone())
           .collect(),
         dependencies,
@@ -845,41 +859,36 @@ impl DepEntryCache {
 
 #[derive(Default)]
 struct UnresolvedOptionalPeers {
-  unresolved: HashSet<(Rc<PackageNv>, StackString)>,
-  seen: HashSet<(Rc<PackageNv>, StackString)>,
+  seen: HashMap<Rc<PackageNv>, Vec<StackString>>,
+  seen_count: usize,
 }
 
 impl UnresolvedOptionalPeers {
-  pub fn mark_unresolved(
-    &mut self,
-    parent_nv: Rc<PackageNv>,
-    specifier: StackString,
-  ) {
-    self.unresolved.insert((parent_nv, specifier));
+  pub fn has_seen(
+    &self,
+    parent_nv: &Rc<PackageNv>,
+    specifier: &StackString,
+  ) -> bool {
+    let Some(entries) = self.seen.get(parent_nv) else {
+      return false;
+    };
+    entries.binary_search(specifier).is_ok()
   }
 
   pub fn mark_seen(
     &mut self,
     parent_nv: Rc<PackageNv>,
-    specifier: StackString,
+    specifier: &StackString,
   ) {
-    let key = (parent_nv, specifier);
-    if self.unresolved.remove(&key) {
-      self.seen.insert(key);
+    let entries = self.seen.entry(parent_nv).or_default();
+    if let Err(insert_index) = entries.binary_search(specifier) {
+      entries.insert(insert_index, specifier.clone());
+      self.seen_count += 1;
     }
   }
 
-  pub fn has_unresolved(
-    &self,
-    parent_nv: Rc<PackageNv>,
-    specifier: StackString,
-  ) -> bool {
-    let key = (parent_nv, specifier);
-    self.unresolved.contains(&key)
-  }
-
   pub fn seen_count(&self) -> usize {
-    self.seen.len()
+    self.seen_count
   }
 }
 
@@ -938,9 +947,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           package_info,
           None,
         )?;
-        self
-          .pending_unresolved_nodes
-          .push_back(GraphPath::for_root(node_id, pkg_nv.clone()));
+        self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+          node_id,
+          pkg_nv.clone(),
+          GraphPathResolutionMode::All,
+        ));
         (pkg_nv, node_id)
       }
     };
@@ -975,8 +986,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         child_id = ancestor.node_id();
       }
 
-      let new_path =
-        parent_path.with_id(child_id, entry.bare_specifier.clone(), child_nv);
+      let new_path = parent_path.with_id(
+        child_id,
+        entry.bare_specifier.clone(),
+        child_nv,
+        GraphPathResolutionMode::All,
+      );
       if let Some(ancestor) = maybe_ancestor {
         // this node is circular, so we link it to the ancestor
         self.add_linked_circular_descendant(&ancestor, new_path);
@@ -1058,11 +1073,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         self.graph.unresolved_optional_peers.seen_count();
       if seen_optional_peers_count > previous_seen_optional_peers_count {
         previous_seen_optional_peers_count = seen_optional_peers_count;
+        debug!("Traversing graph to ensure newly seen optional peers are set.");
         // go through the graph again resolving any optional peers
         for (nv, node_id) in &self.graph.root_packages {
-          self
-            .pending_unresolved_nodes
-            .push_back(GraphPath::for_root(*node_id, nv.clone()));
+          self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+            *node_id,
+            nv.clone(),
+            GraphPathResolutionMode::OptionalPeers,
+          ));
         }
       }
     }
@@ -1146,6 +1164,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                 child_id,
                 dep.bare_specifier.clone(),
                 child_nv,
+                parent_path.mode,
               );
               if let Some(ancestor) = maybe_ancestor {
                 // when the nv appears as an ancestor, use that node
@@ -1177,6 +1196,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                   .unwrap()
                   .nv
                   .clone(),
+                parent_path.mode,
               ),
             ));
           }
@@ -1202,7 +1222,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             dep,
             &package_info,
             &parent_path,
-            previous_nv.as_deref(),
+            previous_nv.as_ref(),
           )?;
 
           #[cfg(feature = "tracing")]
@@ -1220,25 +1240,19 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                   .unwrap()
                   .nv
                   .clone(),
+                parent_path.mode,
               ),
             ));
           }
 
-          if dep.kind == NpmDependencyEntryKind::OptionalPeer {
-            if maybe_new_id.is_some() {
-              // mark that we've seen it
-              self
-                .graph
-                .unresolved_optional_peers
-                .mark_seen(parent_nv.clone(), dep.bare_specifier.clone());
-            } else {
-              // store this so it potentially gets resolved in the future if any other
-              // same nv node resolves the optional peer
-              self
-                .graph
-                .unresolved_optional_peers
-                .mark_unresolved(parent_nv.clone(), dep.bare_specifier.clone());
-            }
+          if dep.kind == NpmDependencyEntryKind::OptionalPeer
+            && maybe_new_id.is_some()
+          {
+            // mark that we've seen it
+            self
+              .graph
+              .unresolved_optional_peers
+              .mark_seen(parent_nv.clone(), &dep.bare_specifier);
           }
         }
       }
@@ -1256,7 +1270,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     peer_dep: &NpmDependencyEntry,
     peer_package_info: &NpmPackageInfo,
     ancestor_path: &Rc<GraphPath>,
-    previous_nv: Option<&PackageNv>,
+    previous_nv: Option<&Rc<PackageNv>>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
     fn get_path(
       index: usize,
@@ -1277,6 +1291,25 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       peer_dep.kind,
       NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer
     ));
+
+    if !peer_dep.kind.is_optional()
+      && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalPeers)
+    {
+      if let Some(previous_nv) = previous_nv.cloned() {
+        // don't re-resolve a peer dependency when only going through the graph
+        // resolving optional peers
+        let node = self.graph.nodes.get(&ancestor_path.node_id()).unwrap();
+        let previous_id = node.children.get(&peer_dep.bare_specifier).unwrap();
+        let new_path = ancestor_path.with_id(
+          *previous_id,
+          peer_dep.bare_specifier.clone(),
+          previous_nv,
+          GraphPathResolutionMode::OptionalPeers,
+        );
+        self.pending_unresolved_nodes.push_back(new_path);
+        return Ok(None);
+      }
+    }
 
     // the current dependency might have had the peer dependency
     // in another bare specifier slot... if so resolve it to that
@@ -1357,7 +1390,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       for item in matching_peers_going_up {
         let item = item?;
         let id = self.graph.resolved_node_ids.get(item.2).unwrap();
-        if id.nv.as_ref() == previous_nv {
+        if id.nv == *previous_nv {
           found_result = Some(item);
           break;
         } else if found_result.is_none() {
@@ -1374,10 +1407,10 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
 
     if peer_dep.kind.is_optional() {
-      if !self
+      if self
         .graph
         .unresolved_optional_peers
-        .has_unresolved(ancestor_path.nv.clone(), specifier.clone())
+        .has_seen(&ancestor_path.nv, specifier)
       {
         // for optional peer deps that haven't been found, traverse the entire
         // graph searching for the first same nv that uses this
@@ -1388,12 +1421,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             pending_ids.push_back(id);
           }
         }
-        while let Some(id) = pending_ids.pop_front() {
-          let Some(node) = self.graph.nodes.get(&id) else {
+        while let Some(node_id) = pending_ids.pop_front() {
+          let Some(node) = self.graph.nodes.get(&node_id) else {
             continue;
           };
 
-          if let Some(id) = self.graph.resolved_node_ids.get(id) {
+          if let Some(id) = self.graph.resolved_node_ids.get(node_id) {
             if id.nv == ancestor_path.nv {
               if let Some(node_id) = node.children.get(specifier).copied() {
                 let peer_parent =
@@ -1700,8 +1733,12 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     );
 
     // queue next step
-    let new_path =
-      bottom_node.with_id(peer_dep_id, peer_dep_specifier.clone(), peer_dep_nv);
+    let new_path = bottom_node.with_id(
+      peer_dep_id,
+      peer_dep_specifier.clone(),
+      peer_dep_nv,
+      GraphPathResolutionMode::All,
+    );
     if let Some(ancestor_node) = maybe_circular_ancestor {
       // it's circular, so link this in step with the ancestor node
       ancestor_node
@@ -5158,6 +5195,83 @@ mod test {
         ("package-peer@1".to_string(), "package-peer@1.0.2".to_string()),
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn vite_tailwind_optional_peer_duplicates() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("@deno/vite-plugin", "1.0.4");
+    api.ensure_package_version("@tailwindcss/vite", "4.0.17");
+    api.ensure_package_version("lightningcss", "1.29.2");
+    api.ensure_package_version("vite", "6.2.4");
+
+    api.add_peer_dependency(
+      ("@deno/vite-plugin", "1.0.4"),
+      ("vite", "5.x || 6.x"),
+    );
+
+    api.add_dependency(
+      ("@tailwindcss/vite", "4.0.17"),
+      ("lightningcss", "1.29.2"),
+    );
+    api.add_peer_dependency(
+      ("@tailwindcss/vite", "4.0.17"),
+      ("vite", "^5.2.0 || ^6"),
+    );
+
+    api.add_optional_peer_dependency(
+      ("vite", "6.2.4"),
+      ("lightningcss", "^1.21.0"),
+    );
+
+    let (packages, package_reqs) = run_resolver_and_get_output(
+      api,
+      vec!["@deno/vite-plugin@~1.0.4", "@tailwindcss/vite@~4.0.17"],
+    )
+    .await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "@deno/vite-plugin@1.0.4_vite@6.2.4__lightningcss@1.29.2"
+            .to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "vite".to_string(),
+            "vite@6.2.4_lightningcss@1.29.2".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "@tailwindcss/vite@4.0.17_vite@6.2.4__lightningcss@1.29.2_lightningcss@1.29.2"
+            .to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "lightningcss".to_string(),
+            "lightningcss@1.29.2".to_string(),
+          ), (
+            "vite".to_string(),
+            "vite@6.2.4_lightningcss@1.29.2".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "lightningcss@1.29.2".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "vite@6.2.4_lightningcss@1.29.2".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "lightningcss".to_string(),
+            "lightningcss@1.29.2".to_string(),
+          )])
+        },
+      ]
+    );
+    assert_eq!(package_reqs, vec![
+      ("@deno/vite-plugin@~1.0.4".to_string(), "@deno/vite-plugin@1.0.4_vite@6.2.4__lightningcss@1.29.2".to_string()),
+      ("@tailwindcss/vite@~4.0.17".to_string(), "@tailwindcss/vite@4.0.17_vite@6.2.4__lightningcss@1.29.2_lightningcss@1.29.2".to_string()),
+    ]);
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
