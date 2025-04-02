@@ -16,7 +16,7 @@ tracing = []
 async-trait = "0.1.68"
 deno_semver = "0.7.0"
 deno_error = "0.5.2"
-deno_lockfile = { git = "https://github.com/nathanwhit/deno_lockfile", branch = "npm-packument-in-lockfile", version = "0.25.0" }
+deno_lockfile = "0.26.0"
 indexmap = "2"
 monch = "0.5.0"
 log = "0.4"
