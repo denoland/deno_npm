@@ -335,8 +335,8 @@ impl NpmPackageVersionDistInfoIntegrity<'_> {
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.
   pub tarball: String,
-  shasum: Option<String>,
-  integrity: Option<String>,
+  pub(crate) shasum: Option<String>,
+  pub(crate) integrity: Option<String>,
 }
 
 impl NpmPackageVersionDistInfo {
