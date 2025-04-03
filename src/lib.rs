@@ -332,16 +332,12 @@ pub struct NpmResolutionPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
   pub optional_peer_dependencies: HashSet<StackString>,
-
   #[serde(flatten)]
   pub extra: Option<NpmPackageExtraInfo>,
-
   #[serde(skip)]
   pub is_deprecated: bool,
-
   #[serde(skip)]
   pub has_bin: bool,
-
   #[serde(skip)]
   pub has_scripts: bool,
 }
