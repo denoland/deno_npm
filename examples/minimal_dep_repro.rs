@@ -135,8 +135,8 @@ impl MinimalReproductionSolver {
     reqs: Option<Vec<String>>,
   ) -> bool {
     let snapshot = run_resolver_and_get_snapshot(
-      &api.as_ref().unwrap_or(&self.api),
-      &reqs.as_ref().unwrap_or(&self.reqs),
+      api.as_ref().unwrap_or(&self.api),
+      reqs.as_ref().unwrap_or(&self.reqs),
     )
     .await;
     if !(self.condition)(&snapshot) {
