@@ -690,6 +690,21 @@ impl Graph {
           os: version_info.os.clone(),
         },
         dist: version_info.dist.clone(),
+        optional_dependencies: version_info
+          .optional_dependencies
+          .keys()
+          .cloned()
+          .collect(),
+        extra: Some(crate::NpmPackageExtraInfo {
+          bin: version_info.bin.clone(),
+          scripts: version_info.scripts.clone(),
+          deprecated: version_info.deprecated.clone(),
+        }),
+        is_deprecated: version_info.deprecated.is_some(),
+        has_bin: version_info.bin.is_some(),
+        has_scripts: version_info.scripts.contains_key("preinstall")
+          || version_info.scripts.contains_key("install")
+          || version_info.scripts.contains_key("postinstall"),
         optional_peer_dependencies: version_info
           .peer_dependencies_meta
           .iter()
@@ -697,14 +712,6 @@ impl Graph {
           .map(|(k, _)| k.clone())
           .collect(),
         dependencies,
-        optional_dependencies: version_info
-          .optional_dependencies
-          .keys()
-          .cloned()
-          .collect(),
-        bin: version_info.bin.clone(),
-        scripts: version_info.scripts.clone(),
-        deprecated: version_info.deprecated.clone(),
       });
     }
 
@@ -4746,16 +4753,22 @@ mod test {
         crate::resolution::SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           system: Default::default(),
-          dist: Default::default(),
           dependencies: HashMap::from([(
             "package-a".into(),
             NpmPackageId::from_serialized("package-0@1.0.0").unwrap(),
           )]),
+
           optional_peer_dependencies: Default::default(),
-          optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: None,
+          optional_dependencies: HashSet::new(),
+          extra: None,
+          is_deprecated: false,
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/package-0@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          has_bin: false,
+          has_scripts: false,
         },
       ]),
     };

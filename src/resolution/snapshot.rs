@@ -5,7 +5,6 @@ use deno_lockfile::Lockfile;
 use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
-use deno_semver::SmallStackString;
 use deno_semver::StackString;
 use deno_semver::VersionReq;
 use futures::stream::FuturesOrdered;
@@ -29,12 +28,12 @@ use super::NpmPackageVersionNotFound;
 use super::UnmetPeerDepDiagnostic;
 
 use crate::registry::NpmPackageInfo;
-use crate::registry::NpmPackageVersionBinEntry;
 use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::NpmPackageCacheFolderId;
+use crate::NpmPackageExtraInfo;
 use crate::NpmPackageId;
 use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
@@ -120,9 +119,11 @@ pub struct SerializedNpmResolutionSnapshotPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
   pub optional_peer_dependencies: HashSet<StackString>,
-  pub bin: Option<NpmPackageVersionBinEntry>,
-  pub scripts: HashMap<SmallStackString, String>,
-  pub deprecated: Option<String>,
+  #[serde(flatten)]
+  pub extra: Option<NpmPackageExtraInfo>,
+  pub is_deprecated: bool,
+  pub has_bin: bool,
+  pub has_scripts: bool,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -275,13 +276,14 @@ impl NpmResolutionSnapshot {
           id: package.id,
           copy_index,
           system: package.system,
-          dist: package.dist,
           dependencies: package.dependencies,
           optional_dependencies: package.optional_dependencies,
           optional_peer_dependencies: package.optional_peer_dependencies,
-          bin: package.bin,
-          scripts: package.scripts,
-          deprecated: package.deprecated,
+          dist: package.dist,
+          extra: package.extra,
+          is_deprecated: package.is_deprecated,
+          has_bin: package.has_bin,
+          has_scripts: package.has_scripts,
         },
       );
     }
@@ -475,15 +477,16 @@ impl NpmResolutionSnapshot {
     while let Some(pkg) = pending.pop_front() {
       let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
         id: pkg.id.clone(),
-        dist: pkg.dist.clone(),
         dependencies: HashMap::with_capacity(pkg.dependencies.len()),
         optional_peer_dependencies: pkg.optional_peer_dependencies.clone(),
         // the fields below are stripped from the output
         system: Default::default(),
         optional_dependencies: Default::default(),
-        bin: None,
-        scripts: Default::default(),
-        deprecated: Default::default(),
+        extra: pkg.extra.clone(),
+        dist: pkg.dist.clone(),
+        is_deprecated: pkg.is_deprecated,
+        has_bin: pkg.has_bin,
+        has_scripts: pkg.has_scripts,
       };
       for (key, dep_id) in &pkg.dependencies {
         let dep = self.packages.get(dep_id).unwrap();
@@ -717,9 +720,9 @@ impl NpmResolutionSnapshot {
       // partition out any packages that are "copy" packages
       for i in (0..packages.len()).rev() {
         if packages[i].copy_index > 0
-          // the system might not have resolved the package with a
-          // copy_index of 0, so we also need to check that
-          && copy_index_zero_nvs.contains(&packages[i].id.nv)
+        // the system might not have resolved the package with a
+        // copy_index of 0, so we also need to check that
+        && copy_index_zero_nvs.contains(&packages[i].id.nv)
         {
           copy_packages.push(packages.swap_remove(i));
         }
@@ -841,6 +844,83 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
+#[derive(Debug, Clone, Error, JsError)]
+#[class(type)]
+#[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
+is the same as when the lockfile was generated.
+
+Actual: {actual}
+Expected: {expected}
+
+This could be caused by:
+  * the lock file may be corrupt
+  * the source itself may be corrupt
+
+Investigate the lockfile; delete it to regenerate the lockfile at \"{filename}\".",
+)]
+pub struct IntegrityCheckFailedError {
+  pub package_display_id: String,
+  pub actual: String,
+  pub expected: String,
+  pub filename: String,
+}
+
+#[derive(Debug, Error, Clone, JsError)]
+pub enum SnapshotFromLockfileError {
+  #[error(transparent)]
+  #[class(inherit)]
+  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
+  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
+  #[class(inherit)]
+  VersionNotFound {
+    #[from]
+    source: NpmPackageVersionNotFound,
+  },
+  #[error("The lockfile is corrupt. Remove the lockfile to regenerate it.")]
+  #[class(inherit)]
+  PackageIdNotFound(#[from] PackageIdNotFoundError),
+  #[error(transparent)]
+  #[class(inherit)]
+  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
+  #[error(transparent)]
+  #[class(inherit)]
+  PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
+}
+
+pub struct SnapshotFromLockfileV5Params<'a> {
+  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  pub lockfile: &'a Lockfile,
+  pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
+}
+
+pub trait DefaultTarballUrlProvider {
+  fn default_tarball_url(&self, id: &NpmPackageId) -> String;
+}
+
+fn dist_from_incomplete_package_info(
+  id: &NpmPackageId,
+  integrity: Option<&str>,
+  tarball: Option<&str>,
+  default_tarball_url: &dyn DefaultTarballUrlProvider,
+) -> NpmPackageVersionDistInfo {
+  let (shasum, integrity) = if let Some(integrity) = integrity {
+    if integrity.contains('-') {
+      (None, Some(integrity.to_string()))
+    } else {
+      (Some(integrity.to_string()), None)
+    }
+  } else {
+    (None, None)
+  };
+  NpmPackageVersionDistInfo {
+    tarball: tarball
+      .map(|t| t.to_string())
+      .unwrap_or_else(|| default_tarball_url.default_tarball_url(id)),
+    shasum,
+    integrity,
+  }
+}
+
 #[derive(Debug, Error, Clone, JsError)]
 pub enum IncompleteSnapshotFromLockfileError {
   #[error(transparent)]
@@ -912,46 +992,6 @@ pub fn incomplete_snapshot_from_lockfile(
     root_packages,
     packages,
   })
-}
-
-#[derive(Debug, Clone, Error, JsError)]
-#[class(type)]
-#[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
-is the same as when the lockfile was generated.
-
-Actual: {actual}
-Expected: {expected}
-
-This could be caused by:
-  * the lock file may be corrupt
-  * the source itself may be corrupt
-
-Investigate the lockfile; delete it to regenerate the lockfile at \"{filename}\".",
-)]
-pub struct IntegrityCheckFailedError {
-  pub package_display_id: String,
-  pub actual: String,
-  pub expected: String,
-  pub filename: String,
-}
-
-#[derive(Debug, Error, Clone, JsError)]
-pub enum SnapshotFromLockfileError {
-  #[error(transparent)]
-  #[class(inherit)]
-  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
-  #[error("Could not find '{}' specified in the lockfile.", .source.0)]
-  #[class(inherit)]
-  VersionNotFound {
-    #[from]
-    source: NpmPackageVersionNotFound,
-  },
-  #[error("The lockfile is corrupt. Remove the lockfile to regenerate it.")]
-  #[class(inherit)]
-  PackageIdNotFound(#[from] PackageIdNotFoundError),
-  #[error(transparent)]
-  #[class(inherit)]
-  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
 }
 
 pub struct SnapshotFromLockfileParams<'a> {
@@ -1054,9 +1094,16 @@ pub async fn snapshot_from_lockfile<'a>(
             .keys()
             .cloned()
             .collect(),
-          bin: version_info.bin.clone(),
-          scripts: version_info.scripts.clone(),
-          deprecated: version_info.deprecated.clone(),
+          has_bin: version_info.bin.is_some(),
+          has_scripts: version_info.scripts.contains_key("preinstall")
+            || version_info.scripts.contains_key("install")
+            || version_info.scripts.contains_key("postinstall"),
+          is_deprecated: version_info.deprecated.is_some(),
+          extra: Some(NpmPackageExtraInfo {
+            bin: version_info.bin.clone(),
+            scripts: version_info.scripts.clone(),
+            deprecated: version_info.deprecated.clone(),
+          }),
         });
       }
       Err(err) => {
@@ -1078,6 +1125,86 @@ pub async fn snapshot_from_lockfile<'a>(
   let snapshot = SerializedNpmResolutionSnapshot {
     packages,
     root_packages: incomplete_snapshot.root_packages,
+  }
+  .into_valid()?;
+  Ok(snapshot)
+}
+
+/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
+#[allow(clippy::needless_lifetimes)] // clippy bug
+pub fn snapshot_from_lockfile_v5(
+  params: SnapshotFromLockfileV5Params<'_>,
+) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
+  let default_tarball_url = params.default_tarball_url;
+  let lockfile = params.lockfile;
+  let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
+    lockfile.content.packages.specifiers.len(),
+  );
+  // collect the specifiers to version mappings
+  for (key, value) in &lockfile.content.packages.specifiers {
+    match key.kind {
+      deno_semver::package::PackageKind::Npm => {
+        let package_id = NpmPackageId::from_serialized(&format!(
+          "{}@{}",
+          key.req.name, value
+        ))?;
+        root_packages.insert(key.req.clone(), package_id);
+      }
+      deno_semver::package::PackageKind::Jsr => {}
+    }
+  }
+
+  // now fill the packages except for the dist information
+  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
+  for (key, package) in &lockfile.content.packages.npm {
+    let id = NpmPackageId::from_serialized(key)?;
+
+    // collect the dependencies
+    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
+    for (name, specifier) in &package.dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      dependencies.insert(name.clone(), dep_id);
+    }
+
+    let mut optional_dependencies =
+      HashMap::with_capacity(package.optional_dependencies.len());
+    for (name, specifier) in &package.optional_dependencies {
+      let dep_id = NpmPackageId::from_serialized(specifier)?;
+      optional_dependencies.insert(name.clone(), dep_id);
+    }
+
+    packages.push(SerializedNpmResolutionSnapshotPackage {
+      dist: Some(dist_from_incomplete_package_info(
+        &id,
+        package.integrity.as_deref(),
+        package.tarball.as_deref(),
+        default_tarball_url,
+      )),
+      id,
+      dependencies: dependencies
+        .into_iter()
+        .chain(optional_dependencies.clone().into_iter())
+        .collect(),
+      optional_dependencies: optional_dependencies.into_keys().collect(),
+      system: NpmResolutionPackageSystemInfo {
+        cpu: package.cpu.clone(),
+        os: package.os.clone(),
+      },
+      is_deprecated: package.deprecated,
+      has_bin: package.has_bin,
+      has_scripts: package.has_scripts,
+      optional_peer_dependencies: package
+        .optional_peers
+        .clone()
+        .into_keys()
+        .collect(),
+      extra: None,
+    });
+  }
+
+  let snapshot = SerializedNpmResolutionSnapshot {
+    packages,
+    root_packages,
   }
   .into_valid()?;
   Ok(snapshot)
@@ -1157,22 +1284,32 @@ mod tests {
           dependencies: deps(&[("b", "b@1.0.0"), ("c", "c@1.0.0")]),
           optional_peer_dependencies: HashSet::from(["b".into()]),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: HashSet::from(["c".into()]),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/a@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("b@1.0.0").unwrap(),
           dependencies: Default::default(),
           optional_peer_dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/b@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("c@1.0.0").unwrap(),
@@ -1182,22 +1319,32 @@ mod tests {
             os: vec!["win32".into()],
             cpu: vec!["x64".into()],
           },
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/c@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
         SerializedNpmResolutionSnapshotPackage {
           id: NpmPackageId::from_serialized("d@1.0.0").unwrap(),
           dependencies: Default::default(),
           optional_peer_dependencies: Default::default(),
           system: Default::default(),
-          dist: Default::default(),
           optional_dependencies: Default::default(),
-          bin: None,
-          scripts: Default::default(),
-          deprecated: Default::default(),
+          dist: Some(crate::registry::NpmPackageVersionDistInfo {
+            tarball: "https://example.com/d@1.0.0.tgz".to_string(),
+            shasum: None,
+            integrity: None,
+          }),
+          extra: None,
+          is_deprecated: false,
+          has_bin: false,
+          has_scripts: false,
         },
       ],
     }
@@ -1307,11 +1454,16 @@ mod tests {
       dependencies: Default::default(),
       optional_peer_dependencies: Default::default(),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
+        tarball: format!("https://example.com/{id}.tar.gz", id = id),
+        shasum: None,
+        integrity: None,
+      }),
+      extra: None,
+      is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 
@@ -1339,6 +1491,14 @@ mod tests {
       .collect()
   }
 
+  struct TestDefaultTarballUrlProvider;
+
+  impl DefaultTarballUrlProvider for TestDefaultTarballUrlProvider {
+    fn default_tarball_url(&self, id: &NpmPackageId) -> String {
+      format!("https://example.com/{id}.tar.gz", id = id)
+    }
+  }
+
   #[tokio::test]
   async fn test_snapshot_from_lockfile_v2() {
     let api = TestNpmRegistryApi::default();
@@ -1353,9 +1513,10 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
         "version": "2",
         "remote": {},
         "npm": {
@@ -1375,92 +1536,19 @@ mod tests {
           }
         }
       }"#,
-      overwrite: false,
-    })
+        overwrite: false,
+        next_version: true,
+      },
+      &api,
+    )
+    .await
     .unwrap();
 
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
+    assert!(snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
+      lockfile: &lockfile,
       patch_packages: &Default::default(),
-      skip_integrity_check: false
+      default_tarball_url: &TestDefaultTarballUrlProvider,
     })
-    .await
-    .is_ok());
-  }
-
-  #[tokio::test]
-  async fn test_snapshot_from_lockfile_bad_integrity() {
-    let api = TestNpmRegistryApi::default();
-    api.ensure_package_version_with_integrity(
-      "chalk",
-      "5.3.0",
-      Some("sha512-integrity1-bad"),
-    );
-    api.ensure_package_version_with_integrity(
-      "emoji-regex",
-      "10.2.1",
-      Some("sha512-integrity2"),
-    );
-
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
-        "version": "2",
-        "remote": {},
-        "npm": {
-          "specifiers": {
-            "chalk@5": "chalk@5.3.0",
-            "emoji-regex": "emoji-regex@10.2.1"
-          },
-          "packages": {
-            "chalk@5.3.0": {
-              "integrity": "sha512-integrity1",
-              "dependencies": {}
-            },
-            "emoji-regex@10.2.1": {
-              "integrity": "sha512-integrity2",
-              "dependencies": {}
-            }
-          }
-        }
-      }"#,
-      overwrite: false,
-    })
-    .unwrap();
-
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    let err = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
-      patch_packages: &Default::default(),
-      skip_integrity_check: false,
-    })
-    .await
-    .unwrap_err();
-    match err {
-      SnapshotFromLockfileError::IntegrityCheckFailed(err) => {
-        assert_eq!(err.actual, "sha512-integrity1-bad");
-        assert_eq!(err.expected, "sha512-integrity1");
-        assert_eq!(err.filename, "/deno.lock");
-        assert_eq!(err.package_display_id, "npm:chalk@5.3.0");
-      }
-      _ => unreachable!(),
-    }
-
-    // now try with skipping the integrity check
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
-    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
-      api: &api,
-      patch_packages: &Default::default(),
-      skip_integrity_check: true, // will pass because ignored
-    })
-    .await
     .is_ok());
   }
 
@@ -1478,9 +1566,10 @@ mod tests {
       Some("sha512-integrity2"),
     );
 
-    let lockfile = Lockfile::new(NewLockfileOptions {
-      file_path: PathBuf::from("/deno.lock"),
-      content: r#"{
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
         "version": "4",
         "specifiers": {
           "npm:chalk@5": "5.3.0",
@@ -1498,17 +1587,85 @@ mod tests {
           }
         }
       }"#,
-      overwrite: false,
-    })
+        overwrite: false,
+        next_version: true,
+      },
+      &api,
+    )
+    .await
     .unwrap();
 
-    let incomplete_snapshot =
-      incomplete_snapshot_from_lockfile(&lockfile).unwrap();
+    let snapshot = snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
+      lockfile: &lockfile,
+      patch_packages: &Default::default(),
+      default_tarball_url: &TestDefaultTarballUrlProvider,
+    })
+    .unwrap();
+    assert_eq!(
+      snapshot.as_serialized().root_packages,
+      HashMap::from([
+        (
+          PackageReq::from_str("chalk@5").unwrap(),
+          NpmPackageId::from_serialized("chalk@5.3.0").unwrap()
+        ),
+        (
+          PackageReq::from_str("emoji-regex").unwrap(),
+          NpmPackageId::from_serialized("emoji-regex@10.2.1").unwrap()
+        )
+      ])
+    );
+  }
+
+  // TODO(nathanwhit): remove once v5 is default
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile_v4_old() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version_with_integrity(
+      "chalk",
+      "5.3.0",
+      Some("sha512-integrity1"),
+    );
+    api.ensure_package_version_with_integrity(
+      "emoji-regex",
+      "10.2.1",
+      Some("sha512-integrity2"),
+    );
+
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
+        "version": "4",
+        "specifiers": {
+          "npm:chalk@5": "5.3.0",
+          "npm:emoji-regex": "10.2.1",
+          "jsr:@std/path": "1.0.0"
+        },
+        "npm": {
+          "chalk@5.3.0": {
+            "integrity": "sha512-integrity1",
+            "dependencies": []
+          },
+          "emoji-regex@10.2.1": {
+            "integrity": "sha512-integrity2",
+            "dependencies": []
+          }
+        }
+      }"#,
+        overwrite: false,
+        next_version: false,
+      },
+      &api,
+    )
+    .await
+    .unwrap();
+
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      incomplete_snapshot,
       api: &api,
       patch_packages: &Default::default(),
-      skip_integrity_check: false,
+      incomplete_snapshot: incomplete_snapshot_from_lockfile(&lockfile)
+        .unwrap(),
+      skip_integrity_check: true,
     })
     .await
     .unwrap();
@@ -1536,11 +1693,16 @@ mod tests {
       dependencies: deps(dependencies),
       optional_peer_dependencies: Default::default(),
       system: Default::default(),
-      dist: Default::default(),
       optional_dependencies: Default::default(),
-      bin: None,
-      scripts: Default::default(),
-      deprecated: Default::default(),
+      dist: Some(crate::registry::NpmPackageVersionDistInfo {
+        tarball: format!("https://example.com/{id}.tar.gz",),
+        shasum: None,
+        integrity: None,
+      }),
+      extra: None,
+      is_deprecated: false,
+      has_bin: false,
+      has_scripts: false,
     }
   }
 

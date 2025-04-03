@@ -332,6 +332,19 @@ pub struct NpmResolutionPackage {
   pub dependencies: HashMap<StackString, NpmPackageId>,
   pub optional_dependencies: HashSet<StackString>,
   pub optional_peer_dependencies: HashSet<StackString>,
+  #[serde(flatten)]
+  pub extra: Option<NpmPackageExtraInfo>,
+  #[serde(skip)]
+  pub is_deprecated: bool,
+  #[serde(skip)]
+  pub has_bin: bool,
+  #[serde(skip)]
+  pub has_scripts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NpmPackageExtraInfo {
   pub bin: Option<NpmPackageVersionBinEntry>,
   pub scripts: HashMap<SmallStackString, String>,
   pub deprecated: Option<String>,
@@ -344,7 +357,10 @@ impl std::fmt::Debug for NpmResolutionPackage {
       .field("pkg_id", &self.id)
       .field("copy_index", &self.copy_index)
       .field("system", &self.system)
-      .field("dist", &self.dist)
+      .field("extra", &self.extra)
+      .field("is_deprecated", &self.is_deprecated)
+      .field("has_bin", &self.has_bin)
+      .field("has_scripts", &self.has_scripts)
       .field(
         "dependencies",
         &self.dependencies.iter().collect::<BTreeMap<_, _>>(),
@@ -354,7 +370,7 @@ impl std::fmt::Debug for NpmResolutionPackage {
         deps.sort();
         deps
       })
-      .field("deprecated", &self.deprecated)
+      .field("dist", &self.dist)
       .finish()
   }
 }
@@ -364,13 +380,14 @@ impl NpmResolutionPackage {
     SerializedNpmResolutionSnapshotPackage {
       id: self.id.clone(),
       system: self.system.clone(),
-      dist: self.dist.clone(),
       dependencies: self.dependencies.clone(),
       optional_peer_dependencies: self.optional_peer_dependencies.clone(),
       optional_dependencies: self.optional_dependencies.clone(),
-      bin: self.bin.clone(),
-      scripts: self.scripts.clone(),
-      deprecated: self.deprecated.clone(),
+      dist: self.dist.clone(),
+      extra: self.extra.clone(),
+      is_deprecated: self.is_deprecated,
+      has_bin: self.has_bin,
+      has_scripts: self.has_scripts,
     }
   }
 
