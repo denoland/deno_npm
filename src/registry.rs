@@ -309,22 +309,22 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
   UnknownIntegrity(&'a str),
   /// The legacy sha1 hex hash (ex. "62afbee2ffab5e0db139450767a6125cbea50fa2").
   LegacySha1Hex(&'a str),
-  /// The integrity is not available.
+  /// No integrity was found.
   None,
 }
 
 impl NpmPackageVersionDistInfoIntegrity<'_> {
-  pub fn for_lockfile(&self) -> Option<String> {
+  pub fn for_lockfile(&self) -> Option<Cow<str>> {
     match self {
       NpmPackageVersionDistInfoIntegrity::Integrity {
         algorithm,
         base64_hash,
-      } => Some(format!("{}-{}", algorithm, base64_hash)),
+      } => Some(Cow::Owned(format!("{}-{}", algorithm, base64_hash))),
       NpmPackageVersionDistInfoIntegrity::UnknownIntegrity(integrity) => {
-        Some(integrity.to_string())
+        Some(Cow::Borrowed(integrity))
       }
       NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(hex) => {
-        Some(hex.to_string())
+        Some(Cow::Borrowed(hex))
       }
       NpmPackageVersionDistInfoIntegrity::None => None,
     }
@@ -335,8 +335,8 @@ impl NpmPackageVersionDistInfoIntegrity<'_> {
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.
   pub tarball: String,
-  pub(crate) shasum: Option<String>,
-  pub(crate) integrity: Option<String>,
+  shasum: Option<String>,
+  integrity: Option<String>,
 }
 
 impl NpmPackageVersionDistInfo {
@@ -355,7 +355,7 @@ impl NpmPackageVersionDistInfo {
       },
       None => match &self.shasum {
         Some(shasum) => {
-          NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(shasum.as_str())
+          NpmPackageVersionDistInfoIntegrity::LegacySha1Hex(shasum)
         }
         None => NpmPackageVersionDistInfoIntegrity::None,
       },
@@ -960,7 +960,7 @@ mod test {
 
   #[test]
   fn deserializes_minimal_pkg_info() {
-    let text = r#"{ "version": "1.0.0", "dist": { "tarball": "value", "shasum": "test" } }"#;
+    let text = r#"{ "version": "1.0.0", "dist": { "tarball": "value" } }"#;
     let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
     assert_eq!(
       info,
@@ -968,7 +968,7 @@ mod test {
         version: Version::parse_from_npm("1.0.0").unwrap(),
         dist: Some(NpmPackageVersionDistInfo {
           tarball: "value".to_string(),
-          shasum: Some("test".to_string()),
+          shasum: None,
           integrity: None,
         }),
         ..Default::default()
