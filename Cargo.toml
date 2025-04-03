@@ -29,8 +29,10 @@ capacity_builder = "0.5.0"
 
 [dev-dependencies]
 divan = "0.1.17"
+hex = "0.4.3"
 pretty_assertions = "1.0.0"
 reqwest = "0.12.9"
+sha2 = "0.10.8"
 tokio = { version = "1.27.0", features = ["full"] }
 
 [profile.release-with-debug]
