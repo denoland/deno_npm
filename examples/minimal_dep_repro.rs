@@ -1,7 +1,7 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use deno_npm::registry::NpmPackageInfo;
@@ -26,42 +26,13 @@ use reqwest::StatusCode;
 /// a small reproduction of the bug.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-  let (snapshot, api) = minimal_reproduction_while_condition(
-    &[
-      "@deno/vite-plugin@~1.0.4",
-      "@tailwindcss/vite@~4.0.17",
-      "tailwindcss@~4.0.17",
-      "@types/react@~19.0.10",
-      "@types/react-dom@~19.0.4",
-      "@vitejs/plugin-react-swc@~3.8.0",
-      "react@~19.0.0",
-      "react-dom@~19.0.0",
-      "vite@~6.1.1",
-    ],
-    |snapshot| {
-      // condition that has the bug
-      snapshot
-        .all_packages_for_every_system()
-        .filter(|p| p.id.nv.name == "vite")
-        .count()
-        > 1
-    },
-  )
-  .await;
-
-  let test_code = get_test_code(&snapshot, &api);
-  eprintln!("===========================");
-  eprintln!("Test code");
-  eprintln!("===========================");
-  println!("{}", test_code);
-}
-
-async fn minimal_reproduction_while_condition(
-  reqs: &[&str],
-  condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
-) -> (NpmResolutionSnapshot, SubsetRegistryApi) {
-  let reqs = reqs.iter().map(|r| r.to_string()).collect();
-  let mut solver = MinimalReproductionSolver::new(reqs, condition).await;
+  let mut solver =
+    MinimalReproductionSolver::new(&["@aws-cdk/aws-ecs"], |snapshot| {
+      snapshot.all_packages_for_every_system().any(|s| {
+        s.id.as_serialized().chars().filter(|c| *c == '_').count() > 20
+      })
+    })
+    .await;
   let mut had_change = true;
   while had_change {
     had_change = false;
@@ -69,91 +40,26 @@ async fn minimal_reproduction_while_condition(
     had_change |= solver.attempt_reduce_dependendencies().await;
   }
 
-  (solver.current_snapshot, solver.api)
-}
-
-fn get_test_code(
-  snapshot: &NpmResolutionSnapshot,
-  api: &SubsetRegistryApi,
-) -> String {
-  let mut text = String::new();
-
-  text.push_str("let api = TestNpmRegistryApi::default();\n");
-
-  let ids = snapshot
-    .all_packages_for_every_system()
-    .map(|pkg| &pkg.id)
-    .collect::<BTreeSet<_>>();
-  let nvs = ids.iter().map(|id| &id.nv).collect::<BTreeSet<_>>();
-
-  for nv in &nvs {
-    text.push_str(&format!(
-      "api.ensure_package_version(\"{}\", \"{}\");\n",
-      nv.name, nv.version
-    ));
-  }
-
-  for nv in &nvs {
-    text.push('\n');
-    // text.push_str(&format!("// {}\n", nv));
-    let version_info = api.get_version_info(nv);
-    for (key, value) in &version_info.dependencies {
-      text.push_str(&format!(
-        "api.add_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
-        nv.name, nv.version, key, value
-      ));
-    }
-    for (key, value) in &version_info.peer_dependencies {
-      let is_optional = version_info
-        .peer_dependencies_meta
-        .get(key)
-        .map(|m| m.optional)
-        .unwrap_or(false);
-      if is_optional {
-        text.push_str(&format!(
-          "api.add_optional_peer_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
-          nv.name, nv.version, key, value
-        ));
-      } else {
-        text.push_str(&format!(
-          "api.add_peer_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
-          nv.name, nv.version, key, value
-        ));
-      }
-    }
-  }
-
-  let reqs = snapshot.package_reqs().iter().collect::<BTreeMap<_, _>>();
-  let reqs = reqs
-    .keys()
-    .map(|k| format!("\"{}\"", k))
-    .collect::<Vec<_>>();
-  text.push_str(
-    "\nlet (packages, package_reqs) = run_resolver_and_get_output(\n",
-  );
-  text.push_str("  api,\n");
-  text.push_str("  vec![");
-  text.push_str(&reqs.join(", "));
-  text.push_str("],\n");
-  text.push_str(").await;\n");
-  text.push_str("assert_eq!(packages, vec![]);\n");
-  text.push_str("assert_eq!(package_reqs, vec![]);\n");
-
-  text
+  eprintln!("===========================");
+  eprintln!("Test code");
+  eprintln!("===========================");
+  let test_code = solver.get_test_code();
+  println!("{}", test_code);
 }
 
 struct MinimalReproductionSolver {
   reqs: Vec<String>,
-  condition: Box<dyn Fn(&NpmResolutionSnapshot) -> bool>,
+  condition: Box<dyn Fn(&NpmResolutionSnapshot) -> bool + 'static>,
   api: SubsetRegistryApi,
   current_snapshot: NpmResolutionSnapshot,
 }
 
 impl MinimalReproductionSolver {
   pub async fn new(
-    reqs: Vec<String>,
+    reqs: &[&str],
     condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
   ) -> Self {
+    let reqs = reqs.iter().map(|r| r.to_string()).collect::<Vec<_>>();
     let api = SubsetRegistryApi::default();
     let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
     assert!(condition(&snapshot), "bug does not exist in provided setup");
@@ -168,12 +74,16 @@ impl MinimalReproductionSolver {
   pub async fn attempt_reduce_reqs(&mut self) -> bool {
     let mut made_reduction = false;
     for i in (0..self.reqs.len()).rev() {
+      if self.reqs.len() <= 1 {
+        break;
+      }
       let mut new_reqs = self.reqs.clone();
       let removed_req = new_reqs.remove(i);
-      let snapshot = run_resolver_and_get_snapshot(&self.api, &new_reqs).await;
-      if (self.condition)(&snapshot) {
-        self.reqs = new_reqs;
-        self.current_snapshot = snapshot;
+      eprintln!("Checking removal of package req {}", removed_req);
+      let changed = self
+        .resolve_and_update_state_if_matches_condition(None, Some(new_reqs))
+        .await;
+      if changed {
         made_reduction = true;
         eprintln!("Removed req: {}", removed_req);
       }
@@ -183,11 +93,7 @@ impl MinimalReproductionSolver {
 
   pub async fn attempt_reduce_dependendencies(&mut self) -> bool {
     let mut made_reduction = false;
-    let package_nvs = self
-      .current_snapshot
-      .all_packages_for_every_system()
-      .map(|pkg| pkg.id.nv.clone())
-      .collect::<BTreeSet<_>>();
+    let package_nvs = self.current_nvs();
 
     for package_nv in package_nvs {
       let dep_names = {
@@ -201,6 +107,7 @@ impl MinimalReproductionSolver {
           .collect::<BTreeSet<_>>()
       };
       for dep_name in dep_names {
+        eprintln!("{}: checking removal of {}", package_nv, dep_name);
         let new_api = self.api.clone();
         let mut new_version_info =
           self.api.get_version_info(&package_nv).clone();
@@ -209,11 +116,10 @@ impl MinimalReproductionSolver {
         new_version_info.peer_dependencies.remove(&dep_name);
         new_version_info.peer_dependencies_meta.remove(&dep_name);
         new_api.set_package_version_info(&package_nv, new_version_info);
-        let snapshot =
-          run_resolver_and_get_snapshot(&new_api, &self.reqs).await;
-        if (self.condition)(&snapshot) {
-          self.api = new_api;
-          self.current_snapshot = snapshot;
+        let changed = self
+          .resolve_and_update_state_if_matches_condition(Some(new_api), None)
+          .await;
+        if changed {
           made_reduction = true;
           eprintln!("{}: removed {}", package_nv, dep_name);
         }
@@ -222,10 +128,105 @@ impl MinimalReproductionSolver {
 
     made_reduction
   }
+
+  async fn resolve_and_update_state_if_matches_condition(
+    &mut self,
+    api: Option<SubsetRegistryApi>,
+    reqs: Option<Vec<String>>,
+  ) -> bool {
+    let snapshot = run_resolver_and_get_snapshot(
+      api.as_ref().unwrap_or(&self.api),
+      reqs.as_ref().unwrap_or(&self.reqs),
+    )
+    .await;
+    if !(self.condition)(&snapshot) {
+      return false;
+    }
+    if let Some(api) = api {
+      self.api = api;
+    }
+    if let Some(reqs) = reqs {
+      self.reqs = reqs;
+    }
+    true
+  }
+
+  fn current_nvs(&self) -> BTreeSet<PackageNv> {
+    self
+      .current_snapshot
+      .all_packages_for_every_system()
+      .map(|pkg| pkg.id.nv.clone())
+      .collect::<BTreeSet<_>>()
+  }
+
+  fn get_test_code(&self) -> String {
+    let mut text = String::new();
+
+    text.push_str("let api = TestNpmRegistryApi::default();\n");
+
+    let nvs = self.current_nvs();
+
+    for nv in &nvs {
+      text.push_str(&format!(
+        "api.ensure_package_version(\"{}\", \"{}\");\n",
+        nv.name, nv.version
+      ));
+    }
+
+    for nv in &nvs {
+      if !text.ends_with("\n\n") {
+        text.push('\n');
+      }
+      // text.push_str(&format!("// {}\n", nv));
+      let version_info = self.api.get_version_info(nv);
+      for (key, value) in &version_info.dependencies {
+        text.push_str(&format!(
+          "api.add_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
+          nv.name, nv.version, key, value
+        ));
+      }
+      for (key, value) in &version_info.peer_dependencies {
+        let is_optional = version_info
+          .peer_dependencies_meta
+          .get(key)
+          .map(|m| m.optional)
+          .unwrap_or(false);
+        if is_optional {
+          text.push_str(&format!(
+            "api.add_optional_peer_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
+            nv.name, nv.version, key, value
+          ));
+        } else {
+          text.push_str(&format!(
+            "api.add_peer_dependency((\"{}\", \"{}\"), (\"{}\", \"{}\"));\n",
+            nv.name, nv.version, key, value
+          ));
+        }
+      }
+    }
+
+    let reqs = self
+      .reqs
+      .iter()
+      .map(|k| format!("\"{}\"", k))
+      .collect::<Vec<_>>();
+    text.push_str(
+      "\nlet (packages, package_reqs) = run_resolver_and_get_output(\n",
+    );
+    text.push_str("  api,\n");
+    text.push_str("  vec![");
+    text.push_str(&reqs.join(", "));
+    text.push_str("],\n");
+    text.push_str(").await;\n");
+    text.push_str("assert_eq!(packages, vec![]);\n");
+    text.push_str("assert_eq!(package_reqs, vec![]);\n");
+
+    text
+  }
 }
 
 async fn run_resolver_and_get_snapshot(
-  api: &impl NpmRegistryApi,
+  api: &SubsetRegistryApi,
   reqs: &[String],
 ) -> NpmResolutionSnapshot {
   let snapshot = NpmResolutionSnapshot::new(Default::default());
@@ -296,7 +297,7 @@ impl NpmRegistryApi for SubsetRegistryApi {
     if let Some(data) = self.data.borrow_mut().get(name).cloned() {
       return Ok(data);
     }
-    let file_path = packument_cache_filepath(name);
+    let file_path = PathBuf::from(packument_cache_filepath(name));
     if let Ok(data) = std::fs::read_to_string(&file_path) {
       if let Ok(data) = serde_json::from_str::<Arc<NpmPackageInfo>>(&data) {
         self
@@ -315,7 +316,9 @@ impl NpmRegistryApi for SubsetRegistryApi {
       });
     }
     let text = resp.text().await.unwrap();
-    std::fs::write(&file_path, &text).unwrap();
+    let temp_path = file_path.with_extension(".tmp");
+    std::fs::write(&temp_path, &text).unwrap();
+    std::fs::rename(&temp_path, &file_path).unwrap();
     let data = serde_json::from_str::<Arc<NpmPackageInfo>>(&text).unwrap();
     self
       .data
