@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use deno_npm::registry::NpmPackageInfo;
 use deno_npm::registry::NpmPackageVersionInfo;
@@ -15,33 +14,25 @@ use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use reqwest::StatusCode;
 
-#[allow(dead_code)]
-enum Condition {
-  TimeOut(Duration),
-  Snapshot(Box<dyn Fn(&NpmResolutionSnapshot) -> bool + 'static>),
-}
-
 /// This example is not an example, but is a tool to create a minimal
 /// reproduction of a bug from a set of real npm package requirements
 /// and a provided condition.
 ///
 /// 1. Provide your package requirements below.
 /// 2. Update the condition saying what the bug is.
-/// 3. Run `cargo run --example minimal_dep_repro --features internal_minimal_dep_repro`
+/// 3. Run `cargo run --example minimal_dep_repro`
 ///
 /// This will output some test code that you can use in order to have
 /// a small reproduction of the bug.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-  let mut solver = MinimalReproductionSolver::new(
-    &["@aws-cdk/aws-ecs"],
-    Condition::Snapshot(Box::new(|snapshot| {
+  let mut solver =
+    MinimalReproductionSolver::new(&["@aws-cdk/aws-ecs"], |snapshot| {
       snapshot.all_packages_for_every_system().any(|s| {
         s.id.as_serialized().chars().filter(|c| *c == '_').count() > 20
       })
-    })),
-  )
-  .await;
+    })
+    .await;
   let mut had_change = true;
   while had_change {
     had_change = false;
@@ -58,34 +49,25 @@ async fn main() {
 
 struct MinimalReproductionSolver {
   reqs: Vec<String>,
-  condition: Condition,
+  condition: Box<dyn Fn(&NpmResolutionSnapshot) -> bool + 'static>,
   api: SubsetRegistryApi,
+  current_snapshot: NpmResolutionSnapshot,
 }
 
 impl MinimalReproductionSolver {
-  pub async fn new(reqs: &[&str], condition: Condition) -> Self {
+  pub async fn new(
+    reqs: &[&str],
+    condition: impl Fn(&NpmResolutionSnapshot) -> bool + 'static,
+  ) -> Self {
     let reqs = reqs.iter().map(|r| r.to_string()).collect::<Vec<_>>();
     let api = SubsetRegistryApi::default();
-    match &condition {
-      Condition::TimeOut(duration) => {
-        tokio::select! {
-          // fill the api with some initial items
-          _ = run_resolver_and_get_snapshot(&api, &reqs) => {
-            panic!("bug does not exist in provided setup");
-          }
-          _ = tokio::time::sleep(duration.clone()) => {
-          }
-        }
-      }
-      Condition::Snapshot(condition) => {
-        let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
-        assert!(condition(&snapshot), "bug does not exist in provided setup");
-      }
-    };
+    let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
+    assert!(condition(&snapshot), "bug does not exist in provided setup");
     MinimalReproductionSolver {
       reqs,
-      condition,
+      condition: Box::new(condition),
       api,
+      current_snapshot: snapshot,
     }
   }
 
@@ -99,10 +81,7 @@ impl MinimalReproductionSolver {
       let removed_req = new_reqs.remove(i);
       eprintln!("Checking removal of package req {}", removed_req);
       let changed = self
-        .resolve_and_update_state_if_matches_condition(
-          self.api.clone_with_only_data(),
-          new_reqs,
-        )
+        .resolve_and_update_state_if_matches_condition(None, Some(new_reqs))
         .await;
       if changed {
         made_reduction = true;
@@ -114,7 +93,7 @@ impl MinimalReproductionSolver {
 
   pub async fn attempt_reduce_dependendencies(&mut self) -> bool {
     let mut made_reduction = false;
-    let package_nvs = self.api.get_seen_nvs();
+    let package_nvs = self.current_nvs();
 
     for package_nv in package_nvs {
       let dep_names = {
@@ -129,7 +108,7 @@ impl MinimalReproductionSolver {
       };
       for dep_name in dep_names {
         eprintln!("{}: checking removal of {}", package_nv, dep_name);
-        let new_api = self.api.clone_with_only_data();
+        let new_api = self.api.clone();
         let mut new_version_info =
           self.api.get_version_info(&package_nv).clone();
         new_version_info.dependencies.remove(&dep_name);
@@ -138,10 +117,7 @@ impl MinimalReproductionSolver {
         new_version_info.peer_dependencies_meta.remove(&dep_name);
         new_api.set_package_version_info(&package_nv, new_version_info);
         let changed = self
-          .resolve_and_update_state_if_matches_condition(
-            new_api,
-            self.reqs.clone(),
-          )
+          .resolve_and_update_state_if_matches_condition(Some(new_api), None)
           .await;
         if changed {
           made_reduction = true;
@@ -155,32 +131,32 @@ impl MinimalReproductionSolver {
 
   async fn resolve_and_update_state_if_matches_condition(
     &mut self,
-    api: SubsetRegistryApi,
-    reqs: Vec<String>,
+    api: Option<SubsetRegistryApi>,
+    reqs: Option<Vec<String>>,
   ) -> bool {
-    match &self.condition {
-      Condition::TimeOut(duration) => {
-        tokio::select! {
-          _ = run_resolver_and_get_snapshot(&api, &reqs) => {
-            false
-          }
-          _ = tokio::time::sleep(duration.clone()) => {
-            self.api = api;
-            self.reqs = reqs;
-            true
-          }
-        }
-      }
-      Condition::Snapshot(condition) => {
-        let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
-        if !(condition)(&snapshot) {
-          return false;
-        }
-        self.api = api;
-        self.reqs = reqs;
-        true
-      }
+    let snapshot = run_resolver_and_get_snapshot(
+      &api.as_ref().unwrap_or(&self.api),
+      &reqs.as_ref().unwrap_or(&self.reqs),
+    )
+    .await;
+    if !(self.condition)(&snapshot) {
+      return false;
     }
+    if let Some(api) = api {
+      self.api = api;
+    }
+    if let Some(reqs) = reqs {
+      self.reqs = reqs;
+    }
+    true
+  }
+
+  fn current_nvs(&self) -> BTreeSet<PackageNv> {
+    self
+      .current_snapshot
+      .all_packages_for_every_system()
+      .map(|pkg| pkg.id.nv.clone())
+      .collect::<BTreeSet<_>>()
   }
 
   fn get_test_code(&self) -> String {
@@ -188,7 +164,7 @@ impl MinimalReproductionSolver {
 
     text.push_str("let api = TestNpmRegistryApi::default();\n");
 
-    let nvs = self.api.get_seen_nvs();
+    let nvs = self.current_nvs();
 
     for nv in &nvs {
       text.push_str(&format!(
@@ -269,9 +245,9 @@ async fn run_resolver_and_get_snapshot(
   result.dep_graph_result.unwrap()
 }
 
+#[derive(Clone)]
 struct SubsetRegistryApi {
   data: RefCell<HashMap<String, Arc<NpmPackageInfo>>>,
-  nvs: RefCell<BTreeSet<PackageNv>>,
 }
 
 impl Default for SubsetRegistryApi {
@@ -279,19 +255,11 @@ impl Default for SubsetRegistryApi {
     std::fs::create_dir_all("target/.deno_npm").unwrap();
     Self {
       data: Default::default(),
-      nvs: Default::default(),
     }
   }
 }
 
 impl SubsetRegistryApi {
-  pub fn clone_with_only_data(&self) -> Self {
-    Self {
-      data: self.data.clone(),
-      nvs: Default::default(),
-    }
-  }
-
   pub fn get_version_info(&self, nv: &PackageNv) -> NpmPackageVersionInfo {
     self
       .data
@@ -315,10 +283,6 @@ impl SubsetRegistryApi {
       .versions
       .insert(nv.version.clone(), version_info);
     data.insert(nv.name.to_string(), Arc::new(package_info));
-  }
-
-  pub fn get_seen_nvs(&self) -> BTreeSet<PackageNv> {
-    self.nvs.borrow().clone()
   }
 }
 
@@ -359,10 +323,6 @@ impl NpmRegistryApi for SubsetRegistryApi {
       .borrow_mut()
       .insert(name.to_string(), data.clone());
     Ok(data)
-  }
-
-  fn on_seen_nv(&self, nv: &PackageNv) {
-    self.nvs.borrow_mut().insert(nv.clone());
   }
 }
 
