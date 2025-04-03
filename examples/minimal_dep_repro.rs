@@ -174,7 +174,9 @@ impl MinimalReproductionSolver {
     }
 
     for nv in &nvs {
-      text.push('\n');
+      if !text.ends_with("\n\n") {
+        text.push('\n');
+      }
       // text.push_str(&format!("// {}\n", nv));
       let version_info = self.api.get_version_info(nv);
       for (key, value) in &version_info.dependencies {
