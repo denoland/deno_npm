@@ -20,7 +20,7 @@ use reqwest::StatusCode;
 ///
 /// 1. Provide your package requirements below.
 /// 2. Update the condition saying what the bug is.
-/// 3. Run `cargo run --example minimal_repro_solver`
+/// 3. Run `cargo run --example min_repro_solver`
 ///
 /// This will output some test code that you can use in order to have
 /// a small reproduction of the bug.
