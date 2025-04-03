@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +27,7 @@ enum Condition {
 ///
 /// 1. Provide your package requirements below.
 /// 2. Update the condition saying what the bug is.
-/// 3. Run `cargo run --example minimal_dep_repro --feature seen_nv_events`
+/// 3. Run `cargo run --example minimal_dep_repro --features internal_minimal_dep_repro`
 ///
 /// This will output some test code that you can use in order to have
 /// a small reproduction of the bug.
@@ -36,7 +35,11 @@ enum Condition {
 async fn main() {
   let mut solver = MinimalReproductionSolver::new(
     &["@aws-cdk/aws-ecs"],
-    Condition::TimeOut(Duration::from_secs(5)),
+    Condition::Snapshot(Box::new(|snapshot| {
+      snapshot.all_packages_for_every_system().any(|s| {
+        s.id.as_serialized().chars().filter(|c| *c == '_').count() > 20
+      })
+    })),
   )
   .await;
   let mut had_change = true;
@@ -46,10 +49,10 @@ async fn main() {
     had_change |= solver.attempt_reduce_dependendencies().await;
   }
 
-  let test_code = solver.get_test_code();
   eprintln!("===========================");
   eprintln!("Test code");
   eprintln!("===========================");
+  let test_code = solver.get_test_code();
   println!("{}", test_code);
 }
 
@@ -64,7 +67,16 @@ impl MinimalReproductionSolver {
     let reqs = reqs.iter().map(|r| r.to_string()).collect::<Vec<_>>();
     let api = SubsetRegistryApi::default();
     match &condition {
-      Condition::TimeOut(_) => {}
+      Condition::TimeOut(duration) => {
+        tokio::select! {
+          // fill the api with some initial items
+          _ = run_resolver_and_get_snapshot(&api, &reqs) => {
+            panic!("bug does not exist in provided setup");
+          }
+          _ = tokio::time::sleep(duration.clone()) => {
+          }
+        }
+      }
       Condition::Snapshot(condition) => {
         let snapshot = run_resolver_and_get_snapshot(&api, &reqs).await;
         assert!(condition(&snapshot), "bug does not exist in provided setup");
@@ -85,6 +97,7 @@ impl MinimalReproductionSolver {
       }
       let mut new_reqs = self.reqs.clone();
       let removed_req = new_reqs.remove(i);
+      eprintln!("Checking removal of package req {}", removed_req);
       let changed = self
         .resolve_and_update_state_if_matches_condition(
           self.api.clone_with_only_data(),
@@ -115,6 +128,7 @@ impl MinimalReproductionSolver {
           .collect::<BTreeSet<_>>()
       };
       for dep_name in dep_names {
+        eprintln!("{}: checking removal of {}", package_nv, dep_name);
         let new_api = self.api.clone_with_only_data();
         let mut new_version_info =
           self.api.get_version_info(&package_nv).clone();
@@ -345,6 +359,10 @@ impl NpmRegistryApi for SubsetRegistryApi {
       .borrow_mut()
       .insert(name.to_string(), data.clone());
     Ok(data)
+  }
+
+  fn on_seen_nv(&self, nv: &PackageNv) {
+    self.nvs.borrow_mut().insert(nv.clone());
   }
 }
 

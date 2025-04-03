@@ -10,12 +10,12 @@ authors = ["the Deno authors"]
 license = "MIT"
 
 [features]
-seen_nv_events = []
+internal_minimal_dep_repro = []
 tracing = []
 
 [[example]]
 name = "minimal_dep_repro"
-required-features = ["seen_nv_events"]
+required-features = ["internal_minimal_dep_repro"]
 
 [dependencies]
 async-trait = "0.1.68"

@@ -1099,8 +1099,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .nv
         .clone();
 
-      #[cfg(feature = "seen_nv_events")]
-      self.api.on_seen_nv(&pkg_nv);
+      #[cfg(feature = "internal_minimal_dep_repro")]
+      {
+        self.api.on_seen_nv(&pkg_nv);
+        yield_now().await; // yield so a timeout can cancel this
+      }
 
       let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
         deps.clone()
@@ -1905,6 +1908,31 @@ fn build_trace_graph_snapshot(
       .collect(),
     path: build_path(current_path),
   }
+}
+
+#[cfg(feature = "internal_minimal_dep_repro")]
+fn yield_now() -> impl std::future::Future {
+  struct YieldNow {
+    yielded: bool,
+  }
+
+  impl std::future::Future for YieldNow {
+    type Output = ();
+
+    fn poll(
+      mut self: std::pin::Pin<&mut Self>,
+      cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+      if self.yielded {
+        std::task::Poll::Ready(())
+      } else {
+        self.yielded = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+      }
+    }
+  }
+  YieldNow { yielded: false }
 }
 
 #[cfg(test)]
