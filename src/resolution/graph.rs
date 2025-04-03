@@ -1098,7 +1098,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .unwrap()
         .nv
         .clone();
-
       let deps = if let Some(deps) = self.dep_entry_cache.get(&pkg_nv) {
         deps.clone()
       } else {
