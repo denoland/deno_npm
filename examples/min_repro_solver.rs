@@ -20,16 +20,32 @@ use reqwest::StatusCode;
 ///
 /// 1. Provide your package requirements below.
 /// 2. Update the condition saying what the bug is.
-/// 3. Run `cargo run --example minimal_dep_repro`
+/// 3. Run `cargo run --example min_repro_solver`
 ///
 /// This will output some test code that you can use in order to have
 /// a small reproduction of the bug.
+///
+/// Additionally, it will populate the `.bench-reg` folder which allows
+/// running a custom npm registry locally via:
+///
+/// ```sh
+/// deno run --allow-net --allow-read=. --allow-write=. jsr:@david/bench-registry@0.3.2/cli --cached-only
+/// ```
+///
+/// Then do `deno clean ; pnpm cache delete`, create an `.npmrc` with:
+///
+/// ```ini
+/// registry=http://localhost:8000/npm/
+/// ```
+///
+/// ...then a package.json with the package requirements below, and you can
+/// compare the reproduction in other package managers.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
   let mut solver =
     MinimalReproductionSolver::new(&["@aws-cdk/aws-ecs"], |snapshot| {
       snapshot.all_packages_for_every_system().any(|s| {
-        s.id.as_serialized().chars().filter(|c| *c == '_').count() > 20
+        s.id.as_serialized().chars().filter(|c| *c == '_').count() > 200
       })
     })
     .await;
@@ -45,6 +61,7 @@ async fn main() {
   eprintln!("===========================");
   let test_code = solver.get_test_code();
   println!("{}", test_code);
+  solver.output_bench_registry_folder();
 }
 
 struct MinimalReproductionSolver {
@@ -223,6 +240,41 @@ impl MinimalReproductionSolver {
 
     text
   }
+
+  /// Output a .bench-reg folder so that the output can be compared
+  /// with other package managers when using: https://jsr.io/@david/bench-registry@0.2.0
+  fn output_bench_registry_folder(&self) {
+    let package_infos = self.api.get_all_package_infos();
+    let nvs = self.current_nvs();
+    let bench_reg_folder = PathBuf::from(".bench-reg");
+    std::fs::create_dir_all(&bench_reg_folder).unwrap();
+    // trim down the package infos to only contain the found nvs
+    for mut package_info in package_infos {
+      let keys_to_remove = package_info
+        .versions
+        .keys()
+        .filter(|&v| {
+          let nv = PackageNv {
+            name: package_info.name.clone(),
+            version: (v).clone(),
+          };
+          !nvs.contains(&nv)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+      for key in &keys_to_remove {
+        package_info.versions.remove(key);
+      }
+      let url = packument_url(&package_info.name);
+      let file_path = bench_reg_folder.join(sha256_hex(&url));
+      std::fs::write(
+        &file_path,
+        serde_json::to_string_pretty(&package_info).unwrap(),
+      )
+      .unwrap();
+      std::fs::write(file_path.with_extension("headers"), "{}").unwrap();
+    }
+  }
 }
 
 async fn run_resolver_and_get_snapshot(
@@ -262,6 +314,15 @@ impl Default for SubsetRegistryApi {
 }
 
 impl SubsetRegistryApi {
+  pub fn get_all_package_infos(&self) -> Vec<NpmPackageInfo> {
+    self
+      .data
+      .borrow()
+      .values()
+      .map(|i| i.as_ref().clone())
+      .collect()
+  }
+
   pub fn get_version_info(&self, nv: &PackageNv) -> NpmPackageVersionInfo {
     self
       .data
@@ -337,5 +398,16 @@ fn packument_url(name: &str) -> String {
 }
 
 fn encode_package_name(name: &str) -> String {
-  name.replace("/", "%2F")
+  name.replace("/", "%2f")
+}
+
+fn sha256_hex(input: &str) -> String {
+  use hex;
+  use sha2::Digest;
+  use sha2::Sha256;
+
+  let mut hasher = Sha256::new();
+  hasher.update(input.as_bytes());
+  let result = hasher.finalize();
+  hex::encode(result)
 }
