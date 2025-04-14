@@ -935,7 +935,15 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .iter()
       .find(|(nv, _id)| {
         package_req.name == nv.name
-          && package_req.version_req.matches(&nv.version)
+          && self
+            .version_resolver
+            .version_req_satisfies(
+              &package_req.version_req,
+              &nv.version,
+              package_info,
+            )
+            .ok()
+            .unwrap_or(false)
       })
       .map(|(nv, id)| (nv.clone(), *id));
     let (pkg_nv, node_id) = match existing_root {
@@ -4856,6 +4864,60 @@ mod test {
     assert_eq!(
       package_reqs,
       vec![("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string())]
+    );
+  }
+
+  #[tokio::test]
+  async fn patch_package_tag() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.add_dist_tag("package-a", "next", "1.0.0");
+
+    let patch_packages = HashMap::from([(
+      PackageName::from_static("package-a"),
+      vec![NpmPackageVersionInfo {
+        version: Version::parse_standard("1.0.0").unwrap(),
+        dependencies: HashMap::from([(
+          StackString::from_static("package-b"),
+          StackString::from_static("1"),
+        )]),
+        ..Default::default()
+      }],
+    )]);
+
+    let (packages, package_reqs) =
+      run_resolver_with_patch_packages_and_get_output(
+        api,
+        RunResolverOptions {
+          reqs: vec!["package-a@next"],
+          patch_packages: Some(&patch_packages),
+          ..Default::default()
+        },
+      )
+      .await;
+
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![("package-a@next".to_string(), "package-a@1.0.0".to_string())]
     );
   }
 
