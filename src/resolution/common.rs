@@ -69,7 +69,7 @@ impl NpmVersionResolver<'_> {
       let mut best_version: Option<&'a NpmPackageVersionInfo> = None;
       for version_info in version_infos {
         let version = &version_info.version;
-        if version_req.matches(version) {
+        if self.version_req_satisfies(version_req, version, package_info)? {
           let is_greater =
             best_version.map(|c| *version > c.version).unwrap_or(true);
           if is_greater {
