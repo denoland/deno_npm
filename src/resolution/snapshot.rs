@@ -843,32 +843,8 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
-#[derive(Debug, Clone, Error, JsError)]
-#[class(type)]
-#[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
-is the same as when the lockfile was generated.
-
-Actual: {actual}
-Expected: {expected}
-
-This could be caused by:
-  * the lock file may be corrupt
-  * the source itself may be corrupt
-
-Investigate the lockfile; delete it to regenerate the lockfile at \"{filename}\".",
-)]
-pub struct IntegrityCheckFailedError {
-  pub package_display_id: String,
-  pub actual: String,
-  pub expected: String,
-  pub filename: String,
-}
-
 #[derive(Debug, Error, Clone, JsError)]
 pub enum SnapshotFromLockfileError {
-  #[error(transparent)]
-  #[class(inherit)]
-  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
   #[error("Could not find '{}' specified in the lockfile.", .source.0)]
   #[class(inherit)]
   VersionNotFound {
@@ -880,13 +856,10 @@ pub enum SnapshotFromLockfileError {
   PackageIdNotFound(#[from] PackageIdNotFoundError),
   #[error(transparent)]
   #[class(inherit)]
-  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
-  #[error(transparent)]
-  #[class(inherit)]
   PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
-pub struct SnapshotFromLockfileV5Params<'a> {
+pub struct SnapshotFromLockfileParams<'a> {
   pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub lockfile: &'a Lockfile,
   pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
@@ -929,8 +902,8 @@ pub enum IncompleteSnapshotFromLockfileError {
 
 /// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub fn snapshot_from_lockfile_v5(
-  params: SnapshotFromLockfileV5Params<'_>,
+pub fn snapshot_from_lockfile(
+  params: SnapshotFromLockfileParams<'_>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
   let default_tarball_url = params.default_tarball_url;
   let lockfile = params.lockfile;
@@ -1341,7 +1314,7 @@ mod tests {
     .await
     .unwrap();
 
-    assert!(snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
+    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
       patch_packages: &Default::default(),
       default_tarball_url: &TestDefaultTarballUrlProvider,
@@ -1392,7 +1365,7 @@ mod tests {
     .await
     .unwrap();
 
-    let snapshot = snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
+    let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
       patch_packages: &Default::default(),
       default_tarball_url: &TestDefaultTarballUrlProvider,
