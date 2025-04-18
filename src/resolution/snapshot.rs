@@ -1307,7 +1307,6 @@ mod tests {
         }
       }"#,
         overwrite: false,
-        next_version: true,
       },
       &api,
     )
@@ -1358,7 +1357,6 @@ mod tests {
         }
       }"#,
         overwrite: false,
-        next_version: true,
       },
       &api,
     )
