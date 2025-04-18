@@ -866,11 +866,11 @@ pub struct SnapshotFromLockfileParams<'a> {
 }
 
 pub trait DefaultTarballUrlProvider {
-  fn default_tarball_url(&self, id: &NpmPackageId) -> String;
+  fn default_tarball_url(&self, nv: &PackageNv) -> String;
 }
 
 fn dist_from_incomplete_package_info(
-  id: &NpmPackageId,
+  id: &PackageNv,
   integrity: Option<&str>,
   tarball: Option<&str>,
   default_tarball_url: &dyn DefaultTarballUrlProvider,
@@ -945,7 +945,7 @@ pub fn snapshot_from_lockfile(
 
     packages.push(SerializedNpmResolutionSnapshotPackage {
       dist: Some(dist_from_incomplete_package_info(
-        &id,
+        &id.nv,
         package.integrity.as_deref(),
         package.tarball.as_deref(),
         default_tarball_url,
@@ -1264,8 +1264,8 @@ mod tests {
   struct TestDefaultTarballUrlProvider;
 
   impl DefaultTarballUrlProvider for TestDefaultTarballUrlProvider {
-    fn default_tarball_url(&self, id: &NpmPackageId) -> String {
-      format!("https://example.com/{id}.tar.gz", id = id)
+    fn default_tarball_url(&self, nv: &PackageNv) -> String {
+      format!("https://example.com/{nv}.tar.gz", nv = nv)
     }
   }
 
