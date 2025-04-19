@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -844,32 +843,8 @@ fn name_without_path(name: &str) -> &str {
   }
 }
 
-#[derive(Debug, Clone, Error, JsError)]
-#[class(type)]
-#[error("Integrity check failed for package: \"{package_display_id}\". Unable to verify that the package
-is the same as when the lockfile was generated.
-
-Actual: {actual}
-Expected: {expected}
-
-This could be caused by:
-  * the lock file may be corrupt
-  * the source itself may be corrupt
-
-Investigate the lockfile; delete it to regenerate the lockfile at \"{filename}\".",
-)]
-pub struct IntegrityCheckFailedError {
-  pub package_display_id: String,
-  pub actual: String,
-  pub expected: String,
-  pub filename: String,
-}
-
 #[derive(Debug, Error, Clone, JsError)]
 pub enum SnapshotFromLockfileError {
-  #[error(transparent)]
-  #[class(inherit)]
-  PackageInfoLoad(#[from] NpmRegistryPackageInfoLoadError),
   #[error("Could not find '{}' specified in the lockfile.", .source.0)]
   #[class(inherit)]
   VersionNotFound {
@@ -881,24 +856,21 @@ pub enum SnapshotFromLockfileError {
   PackageIdNotFound(#[from] PackageIdNotFoundError),
   #[error(transparent)]
   #[class(inherit)]
-  IntegrityCheckFailed(#[from] IntegrityCheckFailedError),
-  #[error(transparent)]
-  #[class(inherit)]
   PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
-pub struct SnapshotFromLockfileV5Params<'a> {
+pub struct SnapshotFromLockfileParams<'a> {
   pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub lockfile: &'a Lockfile,
   pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
 }
 
 pub trait DefaultTarballUrlProvider {
-  fn default_tarball_url(&self, id: &NpmPackageId) -> String;
+  fn default_tarball_url(&self, nv: &PackageNv) -> String;
 }
 
 fn dist_from_incomplete_package_info(
-  id: &NpmPackageId,
+  id: &PackageNv,
   integrity: Option<&str>,
   tarball: Option<&str>,
   default_tarball_url: &dyn DefaultTarballUrlProvider,
@@ -928,212 +900,10 @@ pub enum IncompleteSnapshotFromLockfileError {
   PackageIdDeserialization(#[from] NpmPackageIdDeserializationError),
 }
 
-struct IncompletePackageInfo {
-  id: NpmPackageId,
-  integrity: Option<String>,
-  dependencies: HashMap<StackString, NpmPackageId>,
-}
-
-pub struct IncompleteSnapshot {
-  lockfile_file_name: PathBuf,
-  root_packages: HashMap<PackageReq, NpmPackageId>,
-  packages: Vec<IncompletePackageInfo>,
-}
-
-/// Constructs [`IncompleteSnapshot`] from the given [`Lockfile`]. The returned
-/// snapshot will then be passed to [`snapshot_from_lockfile`] to get a completely
-/// resolved snapshot.
-///
-/// The reason why this function is not combined with [`snapshot_from_lockfile`]
-/// is because we want `lockfile` to not live across the `.await` points. This
-/// becomes problematic if `lockfile` is wrapped in [`std::sync::Mutex`] or
-/// similar, which doesn't implement [`Send`].
-pub fn incomplete_snapshot_from_lockfile(
-  lockfile: &Lockfile,
-) -> Result<IncompleteSnapshot, IncompleteSnapshotFromLockfileError> {
-  let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
-    lockfile.content.packages.specifiers.len(),
-  );
-  // collect the specifiers to version mappings
-  for (key, value) in &lockfile.content.packages.specifiers {
-    match key.kind {
-      deno_semver::package::PackageKind::Npm => {
-        let package_id = NpmPackageId::from_serialized(&format!(
-          "{}@{}",
-          key.req.name, value
-        ))?;
-        root_packages.insert(key.req.clone(), package_id);
-      }
-      deno_semver::package::PackageKind::Jsr => {}
-    }
-  }
-
-  // now fill the packages except for the dist information
-  let mut packages = Vec::with_capacity(lockfile.content.packages.npm.len());
-  for (key, package) in &lockfile.content.packages.npm {
-    let id = NpmPackageId::from_serialized(key)?;
-
-    // collect the dependencies
-    let mut dependencies = HashMap::with_capacity(package.dependencies.len());
-    for (name, specifier) in &package.dependencies {
-      let dep_id = NpmPackageId::from_serialized(specifier)?;
-      dependencies.insert(name.clone(), dep_id);
-    }
-
-    packages.push(IncompletePackageInfo {
-      id,
-      integrity: package.integrity.clone(),
-      dependencies,
-    });
-  }
-
-  Ok(IncompleteSnapshot {
-    lockfile_file_name: lockfile.filename.clone(),
-    root_packages,
-    packages,
-  })
-}
-
-pub struct SnapshotFromLockfileParams<'a> {
-  pub api: &'a dyn NpmRegistryApi,
-  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-  pub incomplete_snapshot: IncompleteSnapshot,
-  pub skip_integrity_check: bool,
-}
-
-/// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
-///
-/// You should call [`incomplete_snapshot_from_lockfile`] first to get an
-/// [`IncompleteSnapshot`] instance that's passed as the first argument for this
-/// function.
-#[allow(clippy::needless_lifetimes)] // clippy bug
-pub async fn snapshot_from_lockfile<'a>(
-  params: SnapshotFromLockfileParams<'a>,
-) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
-  let api = params.api;
-  let incomplete_snapshot = params.incomplete_snapshot;
-
-  // fetch the package version information
-  let pkg_nvs = incomplete_snapshot
-    .packages
-    .iter()
-    .map(|p| p.id.nv.clone())
-    .collect::<Vec<_>>();
-  let get_version_infos = || {
-    FuturesOrdered::from_iter(pkg_nvs.iter().map(|nv| async move {
-      let package_info = api
-        .package_info(&nv.name)
-        .await
-        .map_err(SnapshotFromLockfileError::PackageInfoLoad)?;
-      Ok((package_info, nv))
-    }))
-  };
-  let mut version_infos = get_version_infos();
-  let mut i = 0;
-  let mut packages = Vec::with_capacity(incomplete_snapshot.packages.len());
-  while let Some(result) = version_infos.next().await {
-    let result = result
-      .as_ref()
-      .map_err(|e: &SnapshotFromLockfileError| e.clone())
-      .and_then(|(package_info, nv)| {
-        package_info
-          .version_info(nv, params.patch_packages)
-          .map_err(|e| SnapshotFromLockfileError::VersionNotFound { source: e })
-      });
-    match result {
-      Ok(version_info) => {
-        let snapshot_package = &incomplete_snapshot.packages[i];
-
-        if !params.skip_integrity_check {
-          if let Some(dist) = &version_info.dist {
-            let integrity = dist.integrity();
-            let registry_integrity = integrity.for_lockfile();
-            if registry_integrity.as_deref()
-              != snapshot_package.integrity.as_deref()
-            {
-              return Err(
-                IntegrityCheckFailedError {
-                  package_display_id: format!(
-                    "npm:{}",
-                    snapshot_package.id.as_serialized()
-                  ),
-                  expected: snapshot_package
-                    .integrity
-                    .clone()
-                    .unwrap_or_else(|| "<missing>".to_string()),
-                  actual: registry_integrity
-                    .map(|i| i.into_owned())
-                    .unwrap_or_else(|| "<missing>".to_string()),
-                  filename: incomplete_snapshot
-                    .lockfile_file_name
-                    .display()
-                    .to_string(),
-                }
-                .into(),
-              );
-            }
-          }
-        }
-
-        packages.push(SerializedNpmResolutionSnapshotPackage {
-          id: snapshot_package.id.clone(),
-          dependencies: snapshot_package.dependencies.clone(),
-          dist: version_info.dist.clone(),
-          system: NpmResolutionPackageSystemInfo {
-            cpu: version_info.cpu.clone(),
-            os: version_info.os.clone(),
-          },
-          optional_peer_dependencies: version_info
-            .peer_dependencies_meta
-            .iter()
-            .filter(|(_, meta)| meta.optional)
-            .map(|(k, _)| k.clone())
-            .collect(),
-          optional_dependencies: version_info
-            .optional_dependencies
-            .keys()
-            .cloned()
-            .collect(),
-          has_bin: version_info.bin.is_some(),
-          has_scripts: version_info.scripts.contains_key("preinstall")
-            || version_info.scripts.contains_key("install")
-            || version_info.scripts.contains_key("postinstall"),
-          is_deprecated: version_info.deprecated.is_some(),
-          extra: Some(NpmPackageExtraInfo {
-            bin: version_info.bin.clone(),
-            scripts: version_info.scripts.clone(),
-            deprecated: version_info.deprecated.clone(),
-          }),
-        });
-      }
-      Err(err) => {
-        if api.mark_force_reload() {
-          // reset and try again
-          version_infos = get_version_infos();
-          i = 0;
-          packages.clear();
-          continue;
-        } else {
-          return Err(err);
-        }
-      }
-    }
-
-    i += 1;
-  }
-
-  let snapshot = SerializedNpmResolutionSnapshot {
-    packages,
-    root_packages: incomplete_snapshot.root_packages,
-  }
-  .into_valid()?;
-  Ok(snapshot)
-}
-
 /// Constructs [`ValidSerializedNpmResolutionSnapshot`] from the given [`Lockfile`].
 #[allow(clippy::needless_lifetimes)] // clippy bug
-pub fn snapshot_from_lockfile_v5(
-  params: SnapshotFromLockfileV5Params<'_>,
+pub fn snapshot_from_lockfile(
+  params: SnapshotFromLockfileParams<'_>,
 ) -> Result<ValidSerializedNpmResolutionSnapshot, SnapshotFromLockfileError> {
   let default_tarball_url = params.default_tarball_url;
   let lockfile = params.lockfile;
@@ -1175,7 +945,7 @@ pub fn snapshot_from_lockfile_v5(
 
     packages.push(SerializedNpmResolutionSnapshotPackage {
       dist: Some(dist_from_incomplete_package_info(
-        &id,
+        &id.nv,
         package.integrity.as_deref(),
         package.tarball.as_deref(),
         default_tarball_url,
@@ -1494,8 +1264,8 @@ mod tests {
   struct TestDefaultTarballUrlProvider;
 
   impl DefaultTarballUrlProvider for TestDefaultTarballUrlProvider {
-    fn default_tarball_url(&self, id: &NpmPackageId) -> String {
-      format!("https://example.com/{id}.tar.gz", id = id)
+    fn default_tarball_url(&self, nv: &PackageNv) -> String {
+      format!("https://example.com/{nv}.tar.gz", nv = nv)
     }
   }
 
@@ -1537,14 +1307,13 @@ mod tests {
         }
       }"#,
         overwrite: false,
-        next_version: true,
       },
       &api,
     )
     .await
     .unwrap();
 
-    assert!(snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
+    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
       patch_packages: &Default::default(),
       default_tarball_url: &TestDefaultTarballUrlProvider,
@@ -1588,72 +1357,6 @@ mod tests {
         }
       }"#,
         overwrite: false,
-        next_version: true,
-      },
-      &api,
-    )
-    .await
-    .unwrap();
-
-    let snapshot = snapshot_from_lockfile_v5(SnapshotFromLockfileV5Params {
-      lockfile: &lockfile,
-      patch_packages: &Default::default(),
-      default_tarball_url: &TestDefaultTarballUrlProvider,
-    })
-    .unwrap();
-    assert_eq!(
-      snapshot.as_serialized().root_packages,
-      HashMap::from([
-        (
-          PackageReq::from_str("chalk@5").unwrap(),
-          NpmPackageId::from_serialized("chalk@5.3.0").unwrap()
-        ),
-        (
-          PackageReq::from_str("emoji-regex").unwrap(),
-          NpmPackageId::from_serialized("emoji-regex@10.2.1").unwrap()
-        )
-      ])
-    );
-  }
-
-  // TODO(nathanwhit): remove once v5 is default
-  #[tokio::test]
-  async fn test_snapshot_from_lockfile_v4_old() {
-    let api = TestNpmRegistryApi::default();
-    api.ensure_package_version_with_integrity(
-      "chalk",
-      "5.3.0",
-      Some("sha512-integrity1"),
-    );
-    api.ensure_package_version_with_integrity(
-      "emoji-regex",
-      "10.2.1",
-      Some("sha512-integrity2"),
-    );
-
-    let lockfile = Lockfile::new(
-      NewLockfileOptions {
-        file_path: PathBuf::from("/deno.lock"),
-        content: r#"{
-        "version": "4",
-        "specifiers": {
-          "npm:chalk@5": "5.3.0",
-          "npm:emoji-regex": "10.2.1",
-          "jsr:@std/path": "1.0.0"
-        },
-        "npm": {
-          "chalk@5.3.0": {
-            "integrity": "sha512-integrity1",
-            "dependencies": []
-          },
-          "emoji-regex@10.2.1": {
-            "integrity": "sha512-integrity2",
-            "dependencies": []
-          }
-        }
-      }"#,
-        overwrite: false,
-        next_version: false,
       },
       &api,
     )
@@ -1661,13 +1364,10 @@ mod tests {
     .unwrap();
 
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
-      api: &api,
+      lockfile: &lockfile,
       patch_packages: &Default::default(),
-      incomplete_snapshot: incomplete_snapshot_from_lockfile(&lockfile)
-        .unwrap(),
-      skip_integrity_check: true,
+      default_tarball_url: &TestDefaultTarballUrlProvider,
     })
-    .await
     .unwrap();
     assert_eq!(
       snapshot.as_serialized().root_packages,
