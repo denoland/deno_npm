@@ -961,8 +961,8 @@ pub fn snapshot_from_lockfile(
         os: package.os.clone(),
       },
       is_deprecated: package.deprecated,
-      has_bin: package.has_bin,
-      has_scripts: package.has_scripts,
+      has_bin: package.bin,
+      has_scripts: package.scripts,
       optional_peer_dependencies: package
         .optional_peers
         .clone()
