@@ -140,32 +140,34 @@ pub enum NpmPackageVersionBinEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NpmPackageVersionInfo {
   pub version: Version,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub dist: Option<NpmPackageVersionDistInfo>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub bin: Option<NpmPackageVersionBinEntry>,
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub dependencies: HashMap<StackString, StackString>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub optional_dependencies: HashMap<StackString, StackString>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies: HashMap<StackString, StackString>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies_meta: HashMap<StackString, NpmPeerDependencyMeta>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
   #[serde(deserialize_with = "deserializers::vector")]
   pub os: Vec<SmallStackString>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
   #[serde(deserialize_with = "deserializers::vector")]
   pub cpu: Vec<SmallStackString>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<SmallStackString, String>,
-  #[serde(default)]
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   #[serde(deserialize_with = "deserializers::string")]
   pub deprecated: Option<String>,
 }
@@ -335,7 +337,9 @@ impl NpmPackageVersionDistInfoIntegrity<'_> {
 pub struct NpmPackageVersionDistInfo {
   /// URL to the tarball.
   pub tarball: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub(crate) shasum: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub(crate) integrity: Option<String>,
 }
 
@@ -1282,4 +1286,53 @@ mod test {
       }
     }
   }
+<<<<<<< Updated upstream
+=======
+
+  #[test]
+  fn example_deserialization_fail() {
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct SerializedCachedPackageInfo {
+      #[serde(flatten)]
+      pub info: NpmPackageInfo,
+      /// Custom property that includes the etag.
+      pub etag: Option<String>,
+    }
+
+    let text = std::fs::read_to_string("data.json").unwrap();
+    let _ok: NpmPackageInfo = serde_json::from_str(&text).unwrap();
+    let mut de = serde_json::Deserializer::from_reader(
+      std::fs::File::open("data.json").unwrap(),
+    );
+    match serde_path_to_error::deserialize(&mut de) {
+      Ok(v) => {
+        let _v: SerializedCachedPackageInfo = v;
+      }
+      Err(e) => {
+        eprintln!("failed at JSON path {}: {}", e.path(), e);
+      }
+    }
+    let _errors_but_why: SerializedCachedPackageInfo =
+      serde_json::from_str(&text).unwrap();
+  }
+
+  #[test]
+  fn minimize_deserialization() {
+    let data = NpmPackageVersionInfo {
+      version: Version::parse_from_npm("1.0.0").unwrap(),
+      dist: Default::default(),
+      bin: Default::default(),
+      dependencies: Default::default(),
+      optional_dependencies: Default::default(),
+      peer_dependencies: Default::default(),
+      peer_dependencies_meta: Default::default(),
+      os: Default::default(),
+      cpu: Default::default(),
+      scripts: Default::default(),
+      deprecated: Default::default(),
+    };
+    let text = serde_json::to_string(&data).unwrap();
+    assert_eq!(text, r#"{"version":"1.0.0"}"#);
+  }
+>>>>>>> Stashed changes
 }
