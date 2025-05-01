@@ -1998,11 +1998,13 @@ fn build_trace_graph_snapshot(
 #[cfg(test)]
 mod test {
   use std::borrow::Cow;
+  use std::sync::Arc;
 
   use pretty_assertions::assert_eq;
 
   use crate::registry::NpmDependencyEntryErrorSource;
   use crate::registry::TestNpmRegistryApi;
+  use crate::resolution::NpmPackageVersionNotFound;
   use crate::resolution::SerializedNpmResolutionSnapshot;
   use crate::NpmSystemInfo;
 
@@ -4671,7 +4673,8 @@ mod test {
         ..Default::default()
       },
     )
-    .await;
+    .await
+    .unwrap();
     let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
     assert_eq!(
       packages,
@@ -4772,7 +4775,8 @@ mod test {
         ..Default::default()
       },
     )
-    .await;
+    .await
+    .unwrap();
     let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
     assert_eq!(packages, b_c_packages);
     assert_eq!(
@@ -4796,7 +4800,8 @@ mod test {
         ..Default::default()
       },
     )
-    .await;
+    .await
+    .unwrap();
     let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
     let mut d_packages = b_c_packages;
     d_packages.insert(
@@ -5160,7 +5165,8 @@ mod test {
         ..Default::default()
       },
     )
-    .await;
+    .await
+    .unwrap();
     let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
     // not sure if this is exactly correct, but there are no duplicate packages
     let expected_packages = Vec::from([
@@ -5225,7 +5231,8 @@ mod test {
         ..Default::default()
       },
     )
-    .await;
+    .await
+    .unwrap();
     let (packages, package_reqs) = snapshot_to_packages(snapshot);
     assert_eq!(packages, expected_packages);
     assert_eq!(package_reqs, vec![(
@@ -5413,6 +5420,119 @@ mod test {
     ]);
   }
 
+  #[tokio::test]
+  async fn snapshot_version_missing_registry_force_reload() {
+    struct ReloadRegistry(RefCell<Vec<TestNpmRegistryApi>>);
+
+    #[async_trait::async_trait(?Send)]
+    impl NpmRegistryApi for ReloadRegistry {
+      async fn package_info(
+        &self,
+        name: &str,
+      ) -> Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError> {
+        let reg = self.0.borrow()[0].clone();
+        reg.package_info(name).await
+      }
+
+      fn mark_force_reload(&self) -> bool {
+        let mut regs = self.0.borrow_mut();
+        if regs.len() == 2 {
+          regs.remove(0);
+          true
+        } else {
+          false
+        }
+      }
+    }
+
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "0.5.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: Vec::from(["package-a@1"]),
+        ..Default::default()
+      },
+    )
+    .await
+    .unwrap();
+    let missing_api = TestNpmRegistryApi::default();
+    missing_api.ensure_package_version("package-a", "1.0.0");
+    missing_api.ensure_package_version("package-b", "0.5.0");
+    missing_api.ensure_package_version("package-c", "1.0.0");
+
+    let err = run_resolver_with_options_and_get_snapshot(
+      &missing_api,
+      RunResolverOptions {
+        snapshot: snapshot.clone(),
+        reqs: Vec::from(["package-c@1"]),
+        ..Default::default()
+      },
+    )
+    .await
+    .unwrap_err();
+    match err {
+      NpmResolutionError::Resolution(
+        NpmPackageVersionResolutionError::VersionNotFound(
+          NpmPackageVersionNotFound(nv),
+        ),
+      ) => {
+        assert_eq!(nv, PackageNv::from_str("package-b@1.0.0").unwrap());
+      }
+      _ => unreachable!(),
+    }
+
+    let reload_registry =
+      ReloadRegistry(RefCell::new(Vec::from([missing_api, api])));
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &reload_registry,
+      RunResolverOptions {
+        snapshot,
+        reqs: Vec::from(["package-c@1"]),
+        ..Default::default()
+      },
+    )
+    .await
+    .unwrap();
+    assert_eq!(reload_registry.0.borrow().len(), 1); // ensure the reload happened
+    let (packages, package_reqs) = snapshot_to_packages(snapshot);
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![
+        ("package-a@1".to_string(), "package-a@1.0.0".to_string()),
+        ("package-c@1".to_string(), "package-c@1.0.0".to_string()),
+      ]
+    );
+  }
+
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
@@ -5438,8 +5558,9 @@ mod test {
     api: TestNpmRegistryApi,
     options: RunResolverOptions<'_>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    let snapshot =
-      run_resolver_with_options_and_get_snapshot(&api, options).await;
+    let snapshot = run_resolver_with_options_and_get_snapshot(&api, options)
+      .await
+      .unwrap();
     snapshot_to_packages(snapshot)
   }
 
@@ -5523,6 +5644,7 @@ mod test {
       },
     )
     .await
+    .unwrap()
   }
 
   #[derive(Default)]
@@ -5535,9 +5657,9 @@ mod test {
   }
 
   async fn run_resolver_with_options_and_get_snapshot(
-    api: &TestNpmRegistryApi,
+    api: &impl NpmRegistryApi,
     options: RunResolverOptions<'_>,
-  ) -> NpmResolutionSnapshot {
+  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     fn snapshot_to_serialized(
       snapshot: &NpmResolutionSnapshot,
     ) -> SerializedNpmResolutionSnapshot {
@@ -5562,11 +5684,10 @@ mod test {
     for req in options.reqs {
       let req = PackageReq::from_str(req).unwrap();
       resolver
-        .add_package_req(&req, &api.package_info(&req.name).await.unwrap())
-        .unwrap();
+        .add_package_req(&req, &api.package_info(&req.name).await.unwrap())?;
     }
 
-    resolver.resolve_pending().await.unwrap();
+    resolver.resolve_pending().await?;
     {
       let diagnostics = resolver.take_unmet_peer_diagnostics();
       let diagnostics = diagnostics
@@ -5587,12 +5708,11 @@ mod test {
         .collect::<Vec<_>>();
       assert_eq!(diagnostics, options.expected_diagnostics);
     }
-    let snapshot = graph.into_snapshot(api, &patch_packages).await.unwrap();
+    let snapshot = graph.into_snapshot(api, &patch_packages).await?;
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
-      let new_snapshot =
-        graph.into_snapshot(api, &patch_packages).await.unwrap();
+      let new_snapshot = graph.into_snapshot(api, &patch_packages).await?;
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -5600,8 +5720,7 @@ mod test {
       );
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
-      let new_snapshot2 =
-        graph.into_snapshot(api, &patch_packages).await.unwrap();
+      let new_snapshot2 = graph.into_snapshot(api, &patch_packages).await?;
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
@@ -5609,7 +5728,7 @@ mod test {
       );
     }
 
-    snapshot
+    Ok(snapshot)
   }
 
   async fn run_resolver_and_get_error(
