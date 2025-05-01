@@ -1288,7 +1288,7 @@ mod test {
   }
 
   #[test]
-  fn minimize_deserialization() {
+  fn minimize_serialization_version_info() {
     let data = NpmPackageVersionInfo {
       version: Version::parse_from_npm("1.0.0").unwrap(),
       dist: Default::default(),
@@ -1304,5 +1304,16 @@ mod test {
     };
     let text = serde_json::to_string(&data).unwrap();
     assert_eq!(text, r#"{"version":"1.0.0"}"#);
+  }
+
+  #[test]
+  fn minimize_serialization_dist() {
+    let data = NpmPackageVersionDistInfo {
+      tarball: "test".to_string(),
+      shasum: None,
+      integrity: None,
+    };
+    let text = serde_json::to_string(&data).unwrap();
+    assert_eq!(text, r#"{"tarball":"test"}"#);
   }
 }
