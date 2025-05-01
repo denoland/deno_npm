@@ -1332,7 +1332,7 @@ mod test {
       },
       "dist-tags": { "rc": "2.0.4-rc", "latest": "25.0.1" }
     }"#;
-    let result = serde_json::from_str::<SerializedCachedPackageInfo>(&text);
+    let result = serde_json::from_str::<SerializedCachedPackageInfo>(text);
     assert!(result.is_ok());
   }
 }
