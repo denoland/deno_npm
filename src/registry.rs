@@ -853,6 +853,13 @@ mod deserializers {
     {
       Ok(Some(v.to_string()))
     }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
   }
 
   struct VectorVisitor<T> {
@@ -945,6 +952,13 @@ mod deserializers {
     }
 
     fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
     where
       E: de::Error,
     {
@@ -1285,6 +1299,45 @@ mod test {
         _ => unreachable!(),
       }
     }
+  }
+
+  #[test]
+  fn example_deserialization_fail() {
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct SerializedCachedPackageInfo {
+      #[serde(flatten)]
+      pub info: NpmPackageInfo,
+      /// Custom property that includes the etag.
+      #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "_denoETag"
+      )]
+      pub etag: Option<String>,
+    }
+
+    let text = r#"{
+      "name": "ts-morph",
+      "versions": {
+        "10.0.2": {
+          "version": "10.0.2",
+          "dist": {
+            "tarball": "https://registry.npmjs.org/ts-morph/-/ts-morph-10.0.2.tgz",
+            "shasum": "292418207db467326231b2be92828b5e295e7946",
+            "integrity": "sha512-TVuIfEqtr9dW25K3Jajqpqx7t/zLRFxKu2rXQZSDjTm4MO4lfmuj1hn8WEryjeDDBFcNOCi+yOmYUYR4HucrAg=="
+          },
+          "bin": null,
+          "dependencies": {
+            "code-block-writer": "^10.1.1",
+            "@ts-morph/common": "~0.9.0"
+          },
+          "deprecated": null
+        }
+      },
+      "dist-tags": { "rc": "2.0.4-rc", "latest": "25.0.1" }
+    }"#;
+    let result = serde_json::from_str::<SerializedCachedPackageInfo>(text);
+    assert!(result.is_ok());
   }
 
   #[test]
