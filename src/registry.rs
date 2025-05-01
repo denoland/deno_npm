@@ -1286,35 +1286,6 @@ mod test {
       }
     }
   }
-<<<<<<< Updated upstream
-=======
-
-  #[test]
-  fn example_deserialization_fail() {
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct SerializedCachedPackageInfo {
-      #[serde(flatten)]
-      pub info: NpmPackageInfo,
-      /// Custom property that includes the etag.
-      pub etag: Option<String>,
-    }
-
-    let text = std::fs::read_to_string("data.json").unwrap();
-    let _ok: NpmPackageInfo = serde_json::from_str(&text).unwrap();
-    let mut de = serde_json::Deserializer::from_reader(
-      std::fs::File::open("data.json").unwrap(),
-    );
-    match serde_path_to_error::deserialize(&mut de) {
-      Ok(v) => {
-        let _v: SerializedCachedPackageInfo = v;
-      }
-      Err(e) => {
-        eprintln!("failed at JSON path {}: {}", e.path(), e);
-      }
-    }
-    let _errors_but_why: SerializedCachedPackageInfo =
-      serde_json::from_str(&text).unwrap();
-  }
 
   #[test]
   fn minimize_deserialization() {
@@ -1334,5 +1305,4 @@ mod test {
     let text = serde_json::to_string(&data).unwrap();
     assert_eq!(text, r#"{"version":"1.0.0"}"#);
   }
->>>>>>> Stashed changes
 }
