@@ -953,6 +953,13 @@ mod deserializers {
     {
       Ok(Vec::new())
     }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(Vec::new())
+    }
   }
 }
 
@@ -1319,13 +1326,6 @@ mod test {
           "dependencies": {
             "code-block-writer": "^10.1.1",
             "@ts-morph/common": "~0.9.0"
-          },
-          "optionalDependencies": {},
-          "peerDependencies": {},
-          "peerDependenciesMeta": {},
-          "os": [],
-          "cpu": [],
-          "scripts": {
           },
           "deprecated": null
         }
