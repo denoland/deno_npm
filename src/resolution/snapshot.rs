@@ -371,7 +371,6 @@ impl NpmResolutionSnapshot {
           graph
             .into_snapshot(api, version_resolver.patch_packages)
             .await
-            .map_err(NpmResolutionError::Registry)
         }
         Err(err) => Err(err),
       },
