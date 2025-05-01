@@ -1282,4 +1282,36 @@ mod test {
       }
     }
   }
+
+  #[test]
+  fn example_deserialization_fail() {
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct SerializedCachedPackageInfo {
+      #[serde(flatten)]
+      pub info: NpmPackageInfo,
+      /// Custom property that includes the etag.
+      #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "_denoETag"
+      )]
+      pub etag: Option<String>,
+    }
+
+    let text = std::fs::read_to_string("data.json").unwrap();
+    let _ok: NpmPackageInfo = serde_json::from_str(&text).unwrap();
+    let mut de = serde_json::Deserializer::from_reader(
+      std::fs::File::open("data.json").unwrap(),
+    );
+    match serde_path_to_error::deserialize(&mut de) {
+      Ok(v) => {
+        let _v: SerializedCachedPackageInfo = v;
+      }
+      Err(e) => {
+        eprintln!("failed at JSON path {}: {}", e.path(), e);
+      }
+    }
+    let _errors_but_why: SerializedCachedPackageInfo =
+      serde_json::from_str(&text).unwrap();
+  }
 }
