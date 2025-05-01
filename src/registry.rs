@@ -849,6 +849,13 @@ mod deserializers {
     {
       Ok(Some(v.to_string()))
     }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+      E: de::Error,
+    {
+      Ok(None)
+    }
   }
 
   struct VectorVisitor<T> {
@@ -1298,20 +1305,34 @@ mod test {
       pub etag: Option<String>,
     }
 
-    let text = std::fs::read_to_string("data.json").unwrap();
-    let _ok: NpmPackageInfo = serde_json::from_str(&text).unwrap();
-    let mut de = serde_json::Deserializer::from_reader(
-      std::fs::File::open("data.json").unwrap(),
-    );
-    match serde_path_to_error::deserialize(&mut de) {
-      Ok(v) => {
-        let _v: SerializedCachedPackageInfo = v;
-      }
-      Err(e) => {
-        eprintln!("failed at JSON path {}: {}", e.path(), e);
-      }
-    }
-    let _errors_but_why: SerializedCachedPackageInfo =
-      serde_json::from_str(&text).unwrap();
+    let text = r#"{
+      "name": "ts-morph",
+      "versions": {
+        "10.0.2": {
+          "version": "10.0.2",
+          "dist": {
+            "tarball": "https://registry.npmjs.org/ts-morph/-/ts-morph-10.0.2.tgz",
+            "shasum": "292418207db467326231b2be92828b5e295e7946",
+            "integrity": "sha512-TVuIfEqtr9dW25K3Jajqpqx7t/zLRFxKu2rXQZSDjTm4MO4lfmuj1hn8WEryjeDDBFcNOCi+yOmYUYR4HucrAg=="
+          },
+          "bin": null,
+          "dependencies": {
+            "code-block-writer": "^10.1.1",
+            "@ts-morph/common": "~0.9.0"
+          },
+          "optionalDependencies": {},
+          "peerDependencies": {},
+          "peerDependenciesMeta": {},
+          "os": [],
+          "cpu": [],
+          "scripts": {
+          },
+          "deprecated": null
+        }
+      },
+      "dist-tags": { "rc": "2.0.4-rc", "latest": "25.0.1" }
+    }"#;
+    let result = serde_json::from_str::<SerializedCachedPackageInfo>(&text);
+    assert!(result.is_ok());
   }
 }
