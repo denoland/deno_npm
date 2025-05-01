@@ -328,6 +328,12 @@ impl<'a> Iterator for GraphPathAncestorIterator<'a> {
   }
 }
 
+struct PackagesForSnapshot<'a> {
+  packages: Vec<NpmResolutionPackage>,
+  packages_by_name: HashMap<PackageName, Vec<NpmPackageId>>,
+  traversed_ids: HashSet<&'a NpmPackageId>,
+}
+
 pub struct Graph {
   /// Each requirement is mapped to a specific name and version.
   package_reqs: HashMap<PackageReq, Rc<PackageNv>>,
@@ -630,10 +636,10 @@ impl Graph {
   }
 
   pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
-    mut self,
+    self,
     api: &TNpmRegistryApi,
     patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-  ) -> Result<NpmResolutionSnapshot, NpmRegistryPackageInfoLoadError> {
+  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     #[cfg(feature = "tracing")]
     if !self.traces.is_empty() {
       super::tracing::output(&self.traces);
@@ -644,13 +650,43 @@ impl Graph {
       .keys()
       .map(|node_id| (*node_id, self.get_npm_pkg_id(*node_id)))
       .collect::<HashMap<_, _>>();
-    let mut packages: Vec<NpmResolutionPackage> =
-      Vec::with_capacity(self.nodes.len());
-    let mut packages_by_name: HashMap<PackageName, Vec<_>> =
-      HashMap::with_capacity(self.nodes.len());
-    let mut traversed_ids = HashSet::with_capacity(self.nodes.len());
-    let mut pending = VecDeque::new();
 
+    let pkgs = match self
+      .resolve_packages_for_snapshot_with_maybe_restart(
+        api,
+        patch_packages,
+        &packages_to_pkg_ids,
+      )
+      .await?
+    {
+      Some(pkgs) => pkgs,
+      None => self
+        .resolve_packages_for_snapshot_with_maybe_restart(
+          api,
+          patch_packages,
+          &packages_to_pkg_ids,
+        )
+        .await?
+        // a panic here means the api is doing multiple reloads of data
+        // from the npm registry, which it shouldn't be doing and is considered
+        // a bug in that implementation
+        .unwrap(),
+    };
+
+    self.into_snapshot_from_packages(&packages_to_pkg_ids, pkgs)
+  }
+
+  async fn resolve_packages_for_snapshot_with_maybe_restart<
+    'ids,
+    TNpmRegistryApi: NpmRegistryApi,
+  >(
+    &self,
+    api: &TNpmRegistryApi,
+    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    packages_to_pkg_ids: &'ids HashMap<NodeId, NpmPackageId>,
+  ) -> Result<Option<PackagesForSnapshot<'ids>>, NpmResolutionError> {
+    let mut traversed_ids = HashSet::with_capacity(self.nodes.len());
+    let mut pending = VecDeque::with_capacity(self.nodes.len());
     for root_id in self.root_packages.values().copied() {
       let pkg_id = packages_to_pkg_ids.get(&root_id).unwrap();
       if traversed_ids.insert(pkg_id) {
@@ -658,20 +694,9 @@ impl Graph {
       }
     }
 
+    let mut pending_futures = futures::stream::FuturesOrdered::new();
     while let Some((node_id, pkg_id)) = pending.pop_front() {
       let node = self.nodes.get(&node_id).unwrap();
-
-      packages_by_name
-        .entry(pkg_id.nv.name.clone())
-        .or_default()
-        .push(pkg_id.clone());
-
-      // at this point the api should have this cached
-      let package_info = api.package_info(&pkg_id.nv.name).await?;
-      let version_info = package_info
-        .version_info(&pkg_id.nv, patch_packages)
-        .unwrap();
-
       let mut dependencies = HashMap::with_capacity(node.children.len());
       for (specifier, child_id) in &node.children {
         let child_id = *child_id;
@@ -681,6 +706,40 @@ impl Graph {
         }
         dependencies.insert(specifier.clone(), child_pkg_id.clone());
       }
+
+      pending_futures.push_back(async move {
+        let package_info = api.package_info(&pkg_id.nv.name).await?;
+        Ok::<_, NpmRegistryPackageInfoLoadError>((
+          pkg_id,
+          dependencies,
+          package_info,
+        ))
+      });
+    }
+
+    let mut packages_by_name: HashMap<PackageName, Vec<_>> =
+      HashMap::with_capacity(self.nodes.len());
+    let mut packages: Vec<NpmResolutionPackage> =
+      Vec::with_capacity(self.nodes.len());
+    while let Some(result) = pending_futures.next().await {
+      let (pkg_id, dependencies, package_info) = result?;
+      let version_info =
+        match package_info.version_info(&pkg_id.nv, patch_packages) {
+          Ok(info) => info,
+          Err(err) => {
+            if api.mark_force_reload() {
+              return Ok(None);
+            }
+            return Err(NpmResolutionError::Resolution(
+              NpmPackageVersionResolutionError::VersionNotFound(err),
+            ));
+          }
+        };
+
+      packages_by_name
+        .entry(pkg_id.nv.name.clone())
+        .or_default()
+        .push(pkg_id.clone());
 
       packages.push(NpmResolutionPackage {
         copy_index: 0, // this is set below at the end
@@ -714,6 +773,24 @@ impl Graph {
         dependencies,
       });
     }
+
+    Ok(Some(PackagesForSnapshot {
+      packages,
+      packages_by_name,
+      traversed_ids,
+    }))
+  }
+
+  fn into_snapshot_from_packages(
+    mut self,
+    packages_to_pkg_ids: &HashMap<NodeId, NpmPackageId>,
+    pkgs_for_snapshot: PackagesForSnapshot<'_>,
+  ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
+    let PackagesForSnapshot {
+      traversed_ids,
+      packages,
+      packages_by_name,
+    } = pkgs_for_snapshot;
 
     // after traversing, see if there are any copy indexes that
     // need to be updated to a new location based on an id
