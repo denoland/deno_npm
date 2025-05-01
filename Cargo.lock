@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "deno_npm"
-version = "0.33.0"
+version = "0.33.1"
 dependencies = [
  "async-trait",
  "capacity_builder",
