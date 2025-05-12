@@ -539,7 +539,7 @@ impl NpmResolutionSnapshot {
     req: &PackageReq,
   ) -> Result<&NpmResolutionPackage, PackageReqNotFoundError> {
     let package_nv = self.package_reqs.get(req).or_else(|| {
-      // fall back to iterating over the names
+      // fallback to iterating over the versions
       req
         .version_req
         .tag()
