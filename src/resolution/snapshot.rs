@@ -538,7 +538,23 @@ impl NpmResolutionSnapshot {
     &self,
     req: &PackageReq,
   ) -> Result<&NpmResolutionPackage, PackageReqNotFoundError> {
-    match self.package_reqs.get(req) {
+    let package_nv = self.package_reqs.get(req).or_else(|| {
+      // fall back to iterating over the names
+      req
+        .version_req
+        .tag()
+        .is_none()
+        .then(|| self.packages_by_name.get(&req.name))
+        .flatten()
+        .and_then(|ids| {
+          ids
+            .iter()
+            .filter(|id| req.version_req.matches(&id.nv.version))
+            .map(|id| &id.nv)
+            .max_by_key(|nv| &nv.version)
+        })
+    });
+    match package_nv {
       Some(nv) => self
         .resolve_package_from_deno_module(nv)
         // ignore the nv not found error and return a req not found
@@ -1460,5 +1476,31 @@ mod tests {
         packages: Default::default(),
       },
     );
+  }
+
+  #[test]
+  fn resolve_pkg_from_pkg_req_types_node_broad() {
+    let types_a = package("@types/a@1.0.0", &[]);
+    let types_node = package("@types/node@1.0.0", &[]);
+    let serialized = SerializedNpmResolutionSnapshot {
+      root_packages: root_pkgs(&[
+        ("@types/a@1", "@types/a@1.0.0"),
+        ("@types/node@1", "@types/node@1.0.0"),
+      ]),
+      packages: vec![types_a, types_node],
+    };
+    let snapshot = NpmResolutionSnapshot::new(serialized.into_valid().unwrap());
+    // the cli will look up a broad @types/node package in the snapshot, so
+    // support doing that even if it's not in one of the reqs.
+    let pkg = snapshot
+      .resolve_pkg_from_pkg_req(&PackageReq::from_str("@types/node@*").unwrap())
+      .unwrap();
+    assert_eq!(pkg.id.nv.version.to_string(), "1.0.0");
+    assert!(snapshot
+      .resolve_pkg_from_pkg_req(
+        &PackageReq::from_str("@types/node@next").unwrap()
+      )
+      // shouldn't panic
+      .is_err());
   }
 }
