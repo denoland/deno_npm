@@ -884,6 +884,36 @@ pub trait DefaultTarballUrlProvider {
   fn default_tarball_url(&self, nv: &PackageNv) -> String;
 }
 
+impl<'a> Default for &'a dyn DefaultTarballUrlProvider {
+  fn default() -> Self {
+    &NpmRegistryDefaultTarballUrlProvider
+  }
+}
+
+/// `DefaultTarballUrlProvider` that uses the url of the real npm registry.
+pub struct NpmRegistryDefaultTarballUrlProvider;
+
+impl DefaultTarballUrlProvider for NpmRegistryDefaultTarballUrlProvider {
+  fn default_tarball_url(
+    &self,
+    nv: &deno_semver::package::PackageNv,
+  ) -> String {
+    let scope = nv.scope();
+    let package_name = if let Some(scope) = scope {
+      nv.name
+        .strip_prefix(scope)
+        .unwrap_or(&nv.name)
+        .trim_start_matches('/')
+    } else {
+      &nv.name
+    };
+    format!(
+      "https://registry.npmjs.org/{}/-/{}-{}.tgz",
+      nv.name, package_name, nv.version
+    )
+  }
+}
+
 fn dist_from_incomplete_package_info(
   id: &PackageNv,
   integrity: Option<&str>,

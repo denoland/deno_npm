@@ -17,6 +17,7 @@ pub use snapshot::AddPkgReqsResult;
 pub use snapshot::DefaultTarballUrlProvider;
 pub use snapshot::IncompleteSnapshotFromLockfileError;
 pub use snapshot::NpmPackagesPartitioned;
+pub use snapshot::NpmRegistryDefaultTarballUrlProvider;
 pub use snapshot::NpmResolutionSnapshot;
 pub use snapshot::PackageCacheFolderIdNotFoundError;
 pub use snapshot::PackageIdNotFoundError;
