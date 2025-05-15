@@ -891,6 +891,7 @@ impl Default for &dyn DefaultTarballUrlProvider {
 }
 
 /// `DefaultTarballUrlProvider` that uses the url of the real npm registry.
+#[derive(Debug, Default, Clone)]
 pub struct NpmRegistryDefaultTarballUrlProvider;
 
 impl DefaultTarballUrlProvider for NpmRegistryDefaultTarballUrlProvider {
