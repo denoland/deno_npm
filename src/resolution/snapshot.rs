@@ -884,7 +884,7 @@ pub trait DefaultTarballUrlProvider {
   fn default_tarball_url(&self, nv: &PackageNv) -> String;
 }
 
-impl<'a> Default for &'a dyn DefaultTarballUrlProvider {
+impl Default for &dyn DefaultTarballUrlProvider {
   fn default() -> Self {
     &NpmRegistryDefaultTarballUrlProvider
   }
