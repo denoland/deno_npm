@@ -15,9 +15,9 @@ tracing = []
 [dependencies]
 async-trait = "0.1.68"
 capacity_builder = "0.5.0"
-deno_semver = "0.7.0"
-deno_error = "0.5.2"
-deno_lockfile = "0.28.0"
+deno_semver = "0.8.0"
+deno_error = "0.6.0"
+deno_lockfile = "0.29.0"
 indexmap = "2"
 monch = "0.5.0"
 log = "0.4"
