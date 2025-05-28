@@ -1,6 +1,6 @@
 [package]
 name = "deno_npm"
-version = "0.33.4"
+version = "0.34.0"
 edition = "2021"
 description = "npm registry client and dependency resolver used in the Deno CLI"
 homepage = "https://deno.land/"
