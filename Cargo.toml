@@ -42,3 +42,6 @@ debug = true
 [[bench]]
 name = "bench"
 harness = false
+
+[patch.crates-io]
+deno_lockfile = { path = "../deno_lockfile" }
