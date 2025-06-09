@@ -17,7 +17,7 @@ async-trait = "0.1.68"
 capacity_builder = "0.5.0"
 deno_semver = "0.8.0"
 deno_error = "0.6.0"
-deno_lockfile = "0.29.0"
+deno_lockfile = "0.30.0"
 indexmap = "2"
 monch = "0.5.0"
 log = "0.4"
@@ -42,6 +42,3 @@ debug = true
 [[bench]]
 name = "bench"
 harness = false
-
-[patch.crates-io]
-deno_lockfile = { path = "../deno_lockfile" }
