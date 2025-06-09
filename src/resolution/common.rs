@@ -52,9 +52,9 @@ pub enum NpmPackageVersionResolutionError {
 }
 
 #[derive(Debug, Clone)]
-pub struct NpmVersionResolver<'patch> {
+pub struct NpmVersionResolver<'link> {
   pub types_node_version_req: Option<VersionReq>,
-  pub patch_packages: &'patch HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
 }
 
 impl NpmVersionResolver<'_> {
@@ -64,8 +64,8 @@ impl NpmVersionResolver<'_> {
     package_info: &'a NpmPackageInfo,
     existing_versions: impl Iterator<Item = &'version Version>,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
-    // always attempt to resolve from the patched packages first
-    if let Some(version_infos) = self.patch_packages.get(&package_info.name) {
+    // always attempt to resolve from the linked packages first
+    if let Some(version_infos) = self.link_packages.get(&package_info.name) {
       let mut best_version: Option<&'a NpmPackageVersionInfo> = None;
       for version_info in version_infos {
         let version = &version_info.version;
@@ -255,7 +255,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -327,7 +327,7 @@ mod test {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -364,7 +364,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -420,7 +420,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
     };
 
     // check for when matches dist tag

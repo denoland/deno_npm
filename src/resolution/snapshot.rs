@@ -196,8 +196,8 @@ pub struct AddPkgReqsOptions<'a> {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
-  /// Packages that are marked as "patch" in the config file.
-  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  /// Packages that are marked as "links" in the config file.
+  pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
 }
 
 #[derive(Debug)]
@@ -325,7 +325,7 @@ impl NpmResolutionSnapshot {
 
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
-      patch_packages: options.patch_packages,
+      link_packages: options.link_packages,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
@@ -369,7 +369,7 @@ impl NpmResolutionSnapshot {
         Ok(()) => {
           unmet_peer_diagnostics = resolver.take_unmet_peer_diagnostics();
           graph
-            .into_snapshot(api, version_resolver.patch_packages)
+            .into_snapshot(api, version_resolver.link_packages)
             .await
         }
         Err(err) => Err(err),
@@ -875,7 +875,7 @@ pub enum SnapshotFromLockfileError {
 }
 
 pub struct SnapshotFromLockfileParams<'a> {
-  pub patch_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   pub lockfile: &'a Lockfile,
   pub default_tarball_url: &'a dyn DefaultTarballUrlProvider,
 }
@@ -1361,7 +1361,7 @@ mod tests {
 
     assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
       default_tarball_url: &TestDefaultTarballUrlProvider,
     })
     .is_ok());
@@ -1411,7 +1411,7 @@ mod tests {
 
     let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
       lockfile: &lockfile,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
       default_tarball_url: &TestDefaultTarballUrlProvider,
     })
     .unwrap();

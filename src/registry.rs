@@ -35,9 +35,9 @@ impl NpmPackageInfo {
   pub fn version_info<'a>(
     &'a self,
     nv: &PackageNv,
-    patched_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionNotFound> {
-    if let Some(packages) = patched_packages.get(&nv.name) {
+    if let Some(packages) = link_packages.get(&nv.name) {
       for pkg in packages {
         if pkg.version == nv.version {
           return Ok(pkg);
@@ -426,13 +426,13 @@ impl deno_lockfile::NpmPackageInfoProvider for TestNpmRegistryApi {
     Box<dyn std::error::Error + Send + Sync>,
   > {
     let mut infos = Vec::new();
-    let patched_packages = HashMap::new();
+    let linked_packages = HashMap::new();
     for nv in values {
       let info = self
         .package_info(nv.name.as_str())
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-      let version_info = info.version_info(nv, &patched_packages).unwrap();
+      let version_info = info.version_info(nv, &linked_packages).unwrap();
       let lockfile_info = deno_lockfile::Lockfile5NpmInfo {
         tarball_url: version_info
           .dist

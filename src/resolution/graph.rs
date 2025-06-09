@@ -638,7 +638,7 @@ impl Graph {
   pub async fn into_snapshot<TNpmRegistryApi: NpmRegistryApi>(
     self,
     api: &TNpmRegistryApi,
-    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    link_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   ) -> Result<NpmResolutionSnapshot, NpmResolutionError> {
     #[cfg(feature = "tracing")]
     if !self.traces.is_empty() {
@@ -654,7 +654,7 @@ impl Graph {
     let pkgs = match self
       .resolve_packages_for_snapshot_with_maybe_restart(
         api,
-        patch_packages,
+        link_packages,
         &packages_to_pkg_ids,
       )
       .await?
@@ -663,7 +663,7 @@ impl Graph {
       None => self
         .resolve_packages_for_snapshot_with_maybe_restart(
           api,
-          patch_packages,
+          link_packages,
           &packages_to_pkg_ids,
         )
         .await?
@@ -682,7 +682,7 @@ impl Graph {
   >(
     &self,
     api: &TNpmRegistryApi,
-    patch_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    link_packages: &HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
     packages_to_pkg_ids: &'ids HashMap<NodeId, NpmPackageId>,
   ) -> Result<Option<PackagesForSnapshot<'ids>>, NpmResolutionError> {
     let mut traversed_ids = HashSet::with_capacity(self.nodes.len());
@@ -724,7 +724,7 @@ impl Graph {
     while let Some(result) = pending_futures.next().await {
       let (pkg_id, dependencies, package_info) = result?;
       let version_info =
-        match package_info.version_info(&pkg_id.nv, patch_packages) {
+        match package_info.version_info(&pkg_id.nv, link_packages) {
           Ok(info) => info,
           Err(err) => {
             if api.mark_force_reload() {
@@ -1197,7 +1197,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         // need to parallelize
         let package_info = self.api.package_info(&pkg_nv.name).await?;
         let version_info = package_info
-          .version_info(&pkg_nv, self.version_resolver.patch_packages)
+          .version_info(&pkg_nv, self.version_resolver.link_packages)
           .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
         self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
       };
@@ -2473,7 +2473,7 @@ mod test {
     api.add_peer_dependency(("package-c", "3.0.0"), ("package-peer", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_with_patch_packages_and_get_output(
+      run_resolver_with_link_packages_and_get_output(
         api,
         RunResolverOptions {
           reqs: vec!["package-0@1.1.1"],
@@ -4868,7 +4868,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn patch_packages() {
+  async fn link_packages() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b1", "1.0.0");
@@ -4879,7 +4879,7 @@ mod test {
     api.add_dependency(("package-b1", "1.0.0"), ("package-b2", "1"));
     api.add_dependency(("package-c", "1.0.0"), ("package-d", "1"));
 
-    let patch_packages = HashMap::from([(
+    let link_packages = HashMap::from([(
       PackageName::from_static("package-b1"),
       vec![
         NpmPackageVersionInfo {
@@ -4899,11 +4899,11 @@ mod test {
     )]);
 
     let (packages, package_reqs) =
-      run_resolver_with_patch_packages_and_get_output(
+      run_resolver_with_link_packages_and_get_output(
         api,
         RunResolverOptions {
           reqs: vec!["package-a@1.0.0"],
-          patch_packages: Some(&patch_packages),
+          link_packages: Some(&link_packages),
           ..Default::default()
         },
       )
@@ -4950,13 +4950,13 @@ mod test {
   }
 
   #[tokio::test]
-  async fn patch_package_tag() {
+  async fn link_package_tag() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b", "1.0.0");
     api.add_dist_tag("package-a", "next", "1.0.0");
 
-    let patch_packages = HashMap::from([(
+    let link_packages = HashMap::from([(
       PackageName::from_static("package-a"),
       vec![NpmPackageVersionInfo {
         version: Version::parse_standard("1.0.0").unwrap(),
@@ -4969,11 +4969,11 @@ mod test {
     )]);
 
     let (packages, package_reqs) =
-      run_resolver_with_patch_packages_and_get_output(
+      run_resolver_with_link_packages_and_get_output(
         api,
         RunResolverOptions {
           reqs: vec!["package-a@next"],
-          patch_packages: Some(&patch_packages),
+          link_packages: Some(&link_packages),
           ..Default::default()
         },
       )
@@ -5004,7 +5004,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn resolve_patch_copy_index() {
+  async fn resolve_link_copy_index() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b", "1.0.0");
@@ -5015,7 +5015,7 @@ mod test {
     api.add_dependency(("package-b", "1.0.0"), ("package-peer", "=1.1.0"));
     api.add_dependency(("package-c", "1.0.0"), ("package-a", "1"));
 
-    let patch_packages = HashMap::from([(
+    let link_packages = HashMap::from([(
       PackageName::from_static("package-a"),
       vec![NpmPackageVersionInfo {
         version: Version::parse_standard("1.0.0").unwrap(),
@@ -5028,11 +5028,11 @@ mod test {
     )]);
 
     let (packages, package_reqs) =
-      run_resolver_with_patch_packages_and_get_output(
+      run_resolver_with_link_packages_and_get_output(
         api,
         RunResolverOptions {
           reqs: vec!["package-a@1.0", "package-b@1.0"],
-          patch_packages: Some(&patch_packages),
+          link_packages: Some(&link_packages),
           ..Default::default()
         },
       )
@@ -5544,7 +5544,7 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    run_resolver_with_patch_packages_and_get_output(
+    run_resolver_with_link_packages_and_get_output(
       api,
       RunResolverOptions {
         reqs,
@@ -5554,7 +5554,7 @@ mod test {
     .await
   }
 
-  async fn run_resolver_with_patch_packages_and_get_output(
+  async fn run_resolver_with_link_packages_and_get_output(
     api: TestNpmRegistryApi,
     options: RunResolverOptions<'_>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
@@ -5638,7 +5638,7 @@ mod test {
       &api,
       RunResolverOptions {
         reqs,
-        patch_packages: None,
+        link_packages: None,
         snapshot: Default::default(),
         expected_diagnostics: Default::default(),
       },
@@ -5651,8 +5651,7 @@ mod test {
   struct RunResolverOptions<'a> {
     snapshot: NpmResolutionSnapshot,
     reqs: Vec<&'a str>,
-    patch_packages:
-      Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
+    link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
   }
 
@@ -5670,13 +5669,13 @@ mod test {
 
     let snapshot = options.snapshot;
     let mut graph = Graph::from_snapshot(snapshot);
-    let patch_packages = options
-      .patch_packages
+    let link_packages = options
+      .link_packages
       .map(Cow::Borrowed)
       .unwrap_or(Cow::Owned(HashMap::default()));
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &patch_packages,
+      link_packages: &link_packages,
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, api, &npm_version_resolver);
@@ -5708,11 +5707,11 @@ mod test {
         .collect::<Vec<_>>();
       assert_eq!(diagnostics, options.expected_diagnostics);
     }
-    let snapshot = graph.into_snapshot(api, &patch_packages).await?;
+    let snapshot = graph.into_snapshot(api, &link_packages).await?;
 
     {
       let graph = Graph::from_snapshot(snapshot.clone());
-      let new_snapshot = graph.into_snapshot(api, &patch_packages).await?;
+      let new_snapshot = graph.into_snapshot(api, &link_packages).await?;
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot),
@@ -5720,7 +5719,7 @@ mod test {
       );
       // create one again from the new snapshot
       let graph = Graph::from_snapshot(new_snapshot.clone());
-      let new_snapshot2 = graph.into_snapshot(api, &patch_packages).await?;
+      let new_snapshot2 = graph.into_snapshot(api, &link_packages).await?;
       assert_eq!(
         snapshot_to_serialized(&snapshot),
         snapshot_to_serialized(&new_snapshot2),
@@ -5739,7 +5738,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      patch_packages: &Default::default(),
+      link_packages: &Default::default(),
     };
     let mut resolver =
       GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);

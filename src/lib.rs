@@ -324,7 +324,7 @@ pub struct NpmResolutionPackage {
   #[serde(flatten)]
   pub system: NpmResolutionPackageSystemInfo,
   /// The information used for installing the package. When `None`,
-  /// it means the package was a workspace patched package and
+  /// it means the package was a workspace linked package and
   /// the local copy should be used instead.
   pub dist: Option<NpmPackageVersionDistInfo>,
   /// Key is what the package refers to the other package as,
