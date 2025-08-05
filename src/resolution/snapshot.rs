@@ -31,6 +31,7 @@ use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
+use crate::resolution::Reporter;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageExtraInfo;
 use crate::NpmPackageId;
@@ -300,6 +301,7 @@ impl NpmResolutionSnapshot {
     self,
     api: &impl NpmRegistryApi,
     options: AddPkgReqsOptions<'_>,
+    reporter: Option<&dyn Reporter>,
   ) -> AddPkgReqsResult {
     enum InfoOrNv {
       InfoResult(Result<Arc<NpmPackageInfo>, NpmRegistryPackageInfoLoadError>),
@@ -329,8 +331,12 @@ impl NpmResolutionSnapshot {
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
-    let mut resolver =
-      GraphDependencyResolver::new(&mut graph, api, &version_resolver);
+    let mut resolver = GraphDependencyResolver::new(
+      &mut graph,
+      api,
+      &version_resolver,
+      reporter,
+    );
 
     // The package reqs and ids should already be sorted
     // in the order they should be resolved in.

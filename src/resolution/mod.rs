@@ -10,6 +10,7 @@ mod tracing;
 pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;
 pub use graph::NpmResolutionError;
+pub use graph::Reporter;
 pub use graph::UnmetPeerDepDiagnostic;
 pub use snapshot::snapshot_from_lockfile;
 pub use snapshot::AddPkgReqsOptions;

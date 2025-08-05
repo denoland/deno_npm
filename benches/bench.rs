@@ -197,6 +197,7 @@ async fn run_resolver_and_get_snapshot(
         types_node_version_req: None,
         link_packages: &Default::default(),
       },
+      None,
     )
     .await;
   result.dep_graph_result.unwrap()
