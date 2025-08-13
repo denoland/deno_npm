@@ -40,6 +40,11 @@ use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
 
+pub trait Reporter: std::fmt::Debug + Send + Sync {
+  #[allow(unused_variables)]
+  fn on_resolved(&self, package_req: &PackageReq, nv: &PackageNv) {}
+}
+
 // todo(dsherret): for perf we should use an arena/bump allocator for
 // creating the nodes and paths since this is done in a phase
 
@@ -976,6 +981,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   version_resolver: &'a NpmVersionResolver<'a>,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
+  reporter: Option<&'a dyn Reporter>,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -985,6 +991,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     graph: &'a mut Graph,
     api: &'a TNpmRegistryApi,
     version_resolver: &'a NpmVersionResolver,
+    reporter: Option<&'a dyn Reporter>,
   ) -> Self {
     Self {
       unmet_peer_diagnostics: Default::default(),
@@ -993,6 +1000,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_resolver,
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
+      reporter,
     }
   }
 
@@ -1062,6 +1070,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       package_info,
       Some(parent_id),
     )?;
+
+    if let Some(reporter) = &self.reporter {
+      let package_req = PackageReq {
+        name: entry.name.clone(),
+        version_req: entry.version_req.clone(),
+      };
+      reporter.on_resolved(&package_req, &child_nv);
+    }
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
@@ -5677,8 +5693,12 @@ mod test {
       types_node_version_req: None,
       link_packages: &link_packages,
     };
-    let mut resolver =
-      GraphDependencyResolver::new(&mut graph, api, &npm_version_resolver);
+    let mut resolver = GraphDependencyResolver::new(
+      &mut graph,
+      api,
+      &npm_version_resolver,
+      None,
+    );
 
     for req in options.reqs {
       let req = PackageReq::from_str(req).unwrap();
@@ -5740,8 +5760,12 @@ mod test {
       types_node_version_req: None,
       link_packages: &Default::default(),
     };
-    let mut resolver =
-      GraphDependencyResolver::new(&mut graph, &api, &npm_version_resolver);
+    let mut resolver = GraphDependencyResolver::new(
+      &mut graph,
+      &api,
+      &npm_version_resolver,
+      None,
+    );
 
     for req in reqs {
       let req = PackageReq::from_str(req).unwrap();
