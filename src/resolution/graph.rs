@@ -308,7 +308,7 @@ impl GraphPath {
     path
   }
 
-  pub fn ancestors(&self) -> GraphPathAncestorIterator {
+  pub fn ancestors(&self) -> GraphPathAncestorIterator<'_> {
     GraphPathAncestorIterator {
       next: self.previous_node.as_ref(),
     }

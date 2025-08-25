@@ -145,7 +145,7 @@ impl NpmPackageId {
   ) -> Result<Self, NpmPackageIdDeserializationError> {
     use monch::*;
 
-    fn parse_name(input: &str) -> ParseResult<&str> {
+    fn parse_name(input: &str) -> ParseResult<'_, &str> {
       if_not_empty(substring(move |input| {
         for (pos, c) in input.char_indices() {
           // first character might be a scope, so skip it
@@ -157,11 +157,11 @@ impl NpmPackageId {
       }))(input)
     }
 
-    fn parse_version(input: &str) -> ParseResult<&str> {
+    fn parse_version(input: &str) -> ParseResult<'_, &str> {
       if_not_empty(substring(skip_while(|c| c != '_')))(input)
     }
 
-    fn parse_name_and_version(input: &str) -> ParseResult<(&str, Version)> {
+    fn parse_name_and_version(input: &str) -> ParseResult<'_, (&str, Version)> {
       let (input, name) = parse_name(input)?;
       let (input, _) = ch('@')(input)?;
       let at_version_input = input;
@@ -179,7 +179,7 @@ impl NpmPackageId {
     fn parse_level_at_level<'a>(
       level: usize,
     ) -> impl Fn(&'a str) -> ParseResult<'a, ()> {
-      fn parse_level(input: &str) -> ParseResult<usize> {
+      fn parse_level(input: &str) -> ParseResult<'_, usize> {
         let level = input.chars().take_while(|c| *c == '_').count();
         Ok((&input[level..], level))
       }

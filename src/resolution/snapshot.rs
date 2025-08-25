@@ -610,7 +610,7 @@ impl NpmResolutionSnapshot {
 
   pub fn top_level_packages(
     &self,
-  ) -> hash_map::Values<PackageNv, NpmPackageId> {
+  ) -> hash_map::Values<'_, PackageNv, NpmPackageId> {
     self.root_packages.values()
   }
 

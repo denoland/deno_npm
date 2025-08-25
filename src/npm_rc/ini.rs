@@ -41,7 +41,7 @@ pub enum Value<'a> {
 
 pub fn parse_ini(
   input: &str,
-) -> Result<Vec<KeyValueOrSection>, ParseErrorFailureError> {
+) -> Result<Vec<KeyValueOrSection<'_>>, ParseErrorFailureError> {
   with_failure_handling(|input| {
     let (input, _) = skip_trivia(input)?;
     let (input, items) = many0(|input| {
@@ -53,14 +53,14 @@ pub fn parse_ini(
   })(input)
 }
 
-fn parse_kv_or_section(input: &str) -> ParseResult<KeyValueOrSection> {
+fn parse_kv_or_section(input: &str) -> ParseResult<'_, KeyValueOrSection<'_>> {
   or(
     map(parse_section, KeyValueOrSection::Section),
     map(parse_key_value, KeyValueOrSection::KeyValue),
   )(input)
 }
 
-fn parse_section(input: &str) -> ParseResult<Section> {
+fn parse_section(input: &str) -> ParseResult<'_, Section<'_>> {
   let (input, _) = skip_non_newline_whitespace(input)?;
   let (input, header) = parse_section_header(input)?;
   let (input, _) = skip_non_newline_whitespace(input)?;
@@ -73,7 +73,7 @@ fn parse_section(input: &str) -> ParseResult<Section> {
   Ok((input, Section { header, items }))
 }
 
-fn parse_section_header(input: &str) -> ParseResult<&str> {
+fn parse_section_header(input: &str) -> ParseResult<'_, &str> {
   let (input, _) = ch('[')(input)?;
   let (input, header_text) = take_while(|c| c != ']' && c != '\n')(input)?;
   let (input, _) = ch(']')(input)?;
@@ -81,8 +81,8 @@ fn parse_section_header(input: &str) -> ParseResult<&str> {
   Ok((input, header_text))
 }
 
-fn parse_key_value(input: &str) -> ParseResult<KeyValue> {
-  fn parse_empty_value(input: &str) -> ParseResult<()> {
+fn parse_key_value(input: &str) -> ParseResult<'_, KeyValue<'_>> {
+  fn parse_empty_value(input: &str) -> ParseResult<'_, ()> {
     let (input, _) = skip_non_newline_whitespace(input)?;
     let (input, _) = skip_comment(input)?;
     if input.is_empty() || input.starts_with('\n') || input.starts_with("\r\n")
@@ -105,8 +105,8 @@ fn parse_key_value(input: &str) -> ParseResult<KeyValue> {
   Ok((input, KeyValue { key, value }))
 }
 
-fn parse_key(input: &str) -> ParseResult<Key> {
-  fn parse_unquoted(input: &str) -> ParseResult<Key> {
+fn parse_key(input: &str) -> ParseResult<'_, Key<'_>> {
+  fn parse_unquoted(input: &str) -> ParseResult<'_, Key<'_>> {
     let (input, key) =
       take_while_not_comment_and(|c| c != '=' && c != '\n')(input)?;
     let key = trim_cow_str(key);
@@ -122,8 +122,8 @@ fn parse_key(input: &str) -> ParseResult<Key> {
   )(input)
 }
 
-fn parse_value(input: &str) -> ParseResult<Value> {
-  fn parse_unquoted(input: &str) -> ParseResult<Value> {
+fn parse_value(input: &str) -> ParseResult<'_, Value<'_>> {
+  fn parse_unquoted(input: &str) -> ParseResult<'_, Value<'_>> {
     let (input, value) = take_until_comment_or_newline(input)?;
     let value = trim_cow_str(value);
     Ok((
@@ -163,7 +163,7 @@ fn strip_cow_str_suffix<'a>(
   }
 }
 
-fn trim_cow_str(cow: Cow<str>) -> Cow<str> {
+fn trim_cow_str(cow: Cow<'_, str>) -> Cow<'_, str> {
   match cow {
     Cow::Borrowed(s) => Cow::Borrowed(s.trim()),
     Cow::Owned(s) => Cow::Owned({
@@ -177,7 +177,7 @@ fn trim_cow_str(cow: Cow<str>) -> Cow<str> {
   }
 }
 
-fn skip_trivia(input: &str) -> ParseResult<()> {
+fn skip_trivia(input: &str) -> ParseResult<'_, ()> {
   let mut input = input;
   let mut length = 0;
 
@@ -189,17 +189,17 @@ fn skip_trivia(input: &str) -> ParseResult<()> {
   Ok((input, ()))
 }
 
-fn parse_quoted_skipping_spaces(input: &str) -> ParseResult<Cow<str>> {
+fn parse_quoted_skipping_spaces(input: &str) -> ParseResult<'_, Cow<'_, str>> {
   let (input, _) = skip_non_newline_whitespace(input)?;
   let (input, value) = parse_quoted_string(input)?;
   let (input, _) = skip_non_newline_whitespace(input)?;
   Ok((input, value))
 }
 
-fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
+fn parse_quoted_string(input: &str) -> ParseResult<'_, Cow<'_, str>> {
   fn take_inner_text(
     quote_start_char: char,
-  ) -> impl Fn(&str) -> ParseResult<Cow<str>> {
+  ) -> impl Fn(&str) -> ParseResult<'_, Cow<str>> {
     move |input| {
       let mut last_char = None;
       let mut texts = Vec::new();
@@ -241,11 +241,11 @@ fn parse_quoted_string(input: &str) -> ParseResult<Cow<str>> {
   Ok((input, quoted_text))
 }
 
-fn skip_non_newline_whitespace(input: &str) -> ParseResult<()> {
+fn skip_non_newline_whitespace(input: &str) -> ParseResult<'_, ()> {
   skip_while(|c| c == ' ' || c == '\t')(input)
 }
 
-fn skip_comment(input: &str) -> ParseResult<()> {
+fn skip_comment(input: &str) -> ParseResult<'_, ()> {
   let (input, maybe_found) =
     maybe(or(map(ch('#'), |_| ()), map(ch(';'), |_| ())))(input)?;
   if maybe_found.is_none() {
@@ -256,7 +256,7 @@ fn skip_comment(input: &str) -> ParseResult<()> {
   Ok((input, ()))
 }
 
-fn take_until_comment_or_newline(input: &str) -> ParseResult<Cow<str>> {
+fn take_until_comment_or_newline(input: &str) -> ParseResult<'_, Cow<'_, str>> {
   take_while_not_comment_and(|c| c != '\n')(input)
 }
 

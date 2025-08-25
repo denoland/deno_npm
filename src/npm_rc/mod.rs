@@ -294,11 +294,11 @@ fn expand_vars(
   input: &str,
   get_env_var: &impl Fn(&str) -> Option<String>,
 ) -> String {
-  fn escaped_char(input: &str) -> ParseResult<char> {
+  fn escaped_char(input: &str) -> ParseResult<'_, char> {
     preceded(ch('\\'), next_char)(input)
   }
 
-  fn env_var(input: &str) -> ParseResult<&str> {
+  fn env_var(input: &str) -> ParseResult<'_, &str> {
     let (input, _) = tag("${")(input)?;
     let (input, var_name) = take_while(|c| c != '}')(input)?;
     if var_name.chars().any(|c| matches!(c, '$' | '{' | '\\')) {

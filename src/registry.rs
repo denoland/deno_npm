@@ -325,7 +325,7 @@ pub enum NpmPackageVersionDistInfoIntegrity<'a> {
 }
 
 impl NpmPackageVersionDistInfoIntegrity<'_> {
-  pub fn for_lockfile(&self) -> Option<Cow<str>> {
+  pub fn for_lockfile(&self) -> Option<Cow<'_, str>> {
     match self {
       NpmPackageVersionDistInfoIntegrity::Integrity {
         algorithm,
@@ -353,7 +353,7 @@ pub struct NpmPackageVersionDistInfo {
 }
 
 impl NpmPackageVersionDistInfo {
-  pub fn integrity(&self) -> NpmPackageVersionDistInfoIntegrity {
+  pub fn integrity(&self) -> NpmPackageVersionDistInfoIntegrity<'_> {
     match &self.integrity {
       Some(integrity) => match integrity.split_once('-') {
         Some((algorithm, base64_hash)) => {
