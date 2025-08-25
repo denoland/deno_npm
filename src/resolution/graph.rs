@@ -2139,6 +2139,25 @@ mod test {
   }
 
   #[tokio::test]
+  async fn skips_bundle_dependencies() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.add_bundle_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+
+    let (packages, _package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0"]).await;
+    assert_eq!(
+      packages,
+      vec![TestNpmResolutionPackage {
+        pkg_id: "package-a@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::new(),
+      },]
+    );
+  }
+
+  #[tokio::test]
   async fn peer_deps_simple_top_tree() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
