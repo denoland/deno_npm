@@ -149,6 +149,12 @@ pub struct NpmPackageVersionInfo {
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub dependencies: HashMap<StackString, StackString>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(
+    deserialize_with = "deserializers::vector",
+    alias = "bundledDependencies"
+  )]
+  pub bundle_dependencies: Vec<StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub optional_dependencies: HashMap<StackString, StackString>,
@@ -216,6 +222,7 @@ impl NpmPackageVersionInfo {
       .optional_dependencies
       .keys()
       .all(|k| self.dependencies.contains_key(k))
+      && self.bundle_dependencies.is_empty()
     {
       Cow::Borrowed(&self.dependencies)
     } else {
@@ -228,6 +235,8 @@ impl NpmPackageVersionInfo {
           .iter()
           // prefer what's in the dependencies map
           .chain(self.dependencies.iter())
+          // exclude bundle dependencies
+          .filter(|(k, _)| !self.bundle_dependencies.contains(k))
           .map(|(k, v)| (k.clone(), v.clone()))
           .collect(),
       )
@@ -551,6 +560,17 @@ impl TestNpmRegistryApi {
   pub fn add_dependency(&self, package: (&str, &str), entry: (&str, &str)) {
     self.with_version_info(package, |version| {
       version.dependencies.insert(entry.0.into(), entry.1.into());
+    })
+  }
+
+  pub fn add_bundle_dependency(
+    &self,
+    package: (&str, &str),
+    entry: (&str, &str),
+  ) {
+    self.with_version_info(package, |version| {
+      version.dependencies.insert(entry.0.into(), entry.1.into());
+      version.bundle_dependencies.push(entry.0.into());
     })
   }
 
@@ -1347,6 +1367,7 @@ mod test {
       dist: Default::default(),
       bin: Default::default(),
       dependencies: Default::default(),
+      bundle_dependencies: Default::default(),
       optional_dependencies: Default::default(),
       peer_dependencies: Default::default(),
       peer_dependencies_meta: Default::default(),
