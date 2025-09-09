@@ -1,11 +1,11 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use deno_semver::package::PackageName;
-use deno_semver::package::PackageNv;
-use deno_semver::package::PackageReq;
 use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
+use deno_semver::package::PackageName;
+use deno_semver::package::PackageNv;
+use deno_semver::package::PackageReq;
 use futures::StreamExt;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
@@ -13,17 +13,18 @@ use log::debug;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::rc::Rc;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
+use crate::NpmResolutionPackageSystemInfo;
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
 use crate::registry::NpmDependencyEntryKind;
@@ -33,7 +34,6 @@ use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
-use crate::NpmResolutionPackageSystemInfo;
 
 use super::common::NpmVersionResolver;
 use super::snapshot::NpmResolutionSnapshot;
@@ -1239,7 +1239,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         Err(NpmRegistryPackageInfoLoadError::PackageNotExists { .. })
           if matches!(dep.kind, NpmDependencyEntryKind::OptionalPeer) =>
         {
-          continue
+          continue;
         }
         Err(e) => return Err(e.into()),
       };
@@ -1395,21 +1395,20 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     if !peer_dep.kind.is_optional()
       && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalPeers)
+      && let Some(previous_nv) = previous_nv.cloned()
     {
-      if let Some(previous_nv) = previous_nv.cloned() {
-        // don't re-resolve a peer dependency when only going through the graph
-        // resolving optional peers
-        let node = self.graph.nodes.get(&ancestor_path.node_id()).unwrap();
-        let previous_id = node.children.get(&peer_dep.bare_specifier).unwrap();
-        let new_path = ancestor_path.with_id(
-          *previous_id,
-          peer_dep.bare_specifier.clone(),
-          previous_nv,
-          GraphPathResolutionMode::OptionalPeers,
-        );
-        self.pending_unresolved_nodes.push_back(new_path);
-        return Ok(None);
-      }
+      // don't re-resolve a peer dependency when only going through the graph
+      // resolving optional peers
+      let node = self.graph.nodes.get(&ancestor_path.node_id()).unwrap();
+      let previous_id = node.children.get(&peer_dep.bare_specifier).unwrap();
+      let new_path = ancestor_path.with_id(
+        *previous_id,
+        peer_dep.bare_specifier.clone(),
+        previous_nv,
+        GraphPathResolutionMode::OptionalPeers,
+      );
+      self.pending_unresolved_nodes.push_back(new_path);
+      return Ok(None);
     }
 
     // the current dependency might have had the peer dependency
@@ -1527,20 +1526,18 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             continue;
           };
 
-          if let Some(id) = self.graph.resolved_node_ids.get(node_id) {
-            if id.nv == ancestor_path.nv {
-              if let Some(node_id) = node.children.get(specifier).copied() {
-                let peer_parent =
-                  GraphPathNodeOrRoot::Node(ancestor_path.clone());
-                self.set_new_peer_dep(
-                  &[ancestor_path],
-                  peer_parent,
-                  specifier,
-                  node_id,
-                );
-                return Ok(Some(node_id));
-              }
-            }
+          if let Some(id) = self.graph.resolved_node_ids.get(node_id)
+            && id.nv == ancestor_path.nv
+            && let Some(node_id) = node.children.get(specifier).copied()
+          {
+            let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
+            self.set_new_peer_dep(
+              &[ancestor_path],
+              peer_parent,
+              specifier,
+              node_id,
+            );
+            return Ok(Some(node_id));
           }
 
           for child_id in node.children.values().copied() {
@@ -2018,11 +2015,11 @@ mod test {
 
   use pretty_assertions::assert_eq;
 
+  use crate::NpmSystemInfo;
   use crate::registry::NpmDependencyEntryErrorSource;
   use crate::registry::TestNpmRegistryApi;
   use crate::resolution::NpmPackageVersionNotFound;
   use crate::resolution::SerializedNpmResolutionSnapshot;
-  use crate::NpmSystemInfo;
 
   use super::*;
 

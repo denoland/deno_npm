@@ -8,13 +8,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deno_semver::npm::NpmVersionReqParseError;
-use deno_semver::package::PackageName;
-use deno_semver::package::PackageNv;
 use deno_semver::SmallStackString;
 use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
+use deno_semver::npm::NpmVersionReqParseError;
+use deno_semver::package::PackageName;
+use deno_semver::package::PackageNv;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -642,13 +642,13 @@ mod deserializers {
   use std::collections::HashMap;
   use std::fmt;
 
+  use serde::Deserialize;
+  use serde::Deserializer;
   use serde::de;
   use serde::de::DeserializeOwned;
   use serde::de::MapAccess;
   use serde::de::SeqAccess;
   use serde::de::Visitor;
-  use serde::Deserialize;
-  use serde::Deserializer;
 
   /// Deserializes empty or null values to the default value (npm allows uploading
   /// `null` for values and serde doesn't automatically make that the default).

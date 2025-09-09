@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use deno_semver::package::PackageName;
-use deno_semver::package::PackageNv;
 use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use deno_semver::WILDCARD_VERSION_REQ;
+use deno_semver::package::PackageName;
+use deno_semver::package::PackageNv;
 use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
@@ -178,10 +178,9 @@ impl NpmVersionResolver<'_> {
         // explicit version.
         if package_info.name == "@types/node"
           && *version_req == *WILDCARD_VERSION_REQ
+          && let Some(version_req) = &self.types_node_version_req
         {
-          if let Some(version_req) = &self.types_node_version_req {
-            return Ok(version_req.matches(version));
-          }
+          return Ok(version_req.matches(version));
         }
 
         Ok(version_req.matches(version))

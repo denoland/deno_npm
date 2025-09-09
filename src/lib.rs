@@ -13,11 +13,11 @@ use capacity_builder::CapacityDisplay;
 use capacity_builder::StringAppendable;
 use capacity_builder::StringBuilder;
 use deno_error::JsError;
-use deno_semver::package::PackageNv;
 use deno_semver::CowVec;
 use deno_semver::SmallStackString;
 use deno_semver::StackString;
 use deno_semver::Version;
+use deno_semver::package::PackageNv;
 use registry::NpmPackageVersionBinEntry;
 use registry::NpmPackageVersionDistInfo;
 use resolution::SerializedNpmResolutionSnapshotPackage;
@@ -501,7 +501,10 @@ mod test {
 
     // this shouldn't change because it's used in the lockfile
     let serialized = id.as_serialized();
-    assert_eq!(serialized, "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1");
+    assert_eq!(
+      serialized,
+      "pkg-a@1.2.3_pkg-b@3.2.1__pkg-c@1.3.2__pkg-d@2.3.4_pkg-e@2.3.1__pkg-f@2.3.1"
+    );
     assert_eq!(NpmPackageId::from_serialized(&serialized).unwrap(), id);
   }
 

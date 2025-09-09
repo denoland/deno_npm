@@ -74,6 +74,9 @@ const rawTraces = {json};
   );
   #[allow(clippy::print_stderr)]
   {
-    eprintln!("\n==============\nTrace output ready! Please open your browser to: {}\n==============\n", url);
+    eprintln!(
+      "\n==============\nTrace output ready! Please open your browser to: {}\n==============\n",
+      url
+    );
   }
 }
