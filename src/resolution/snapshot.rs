@@ -2,36 +2,30 @@
 
 use deno_error::JsError;
 use deno_lockfile::Lockfile;
+use deno_semver::StackString;
+use deno_semver::VersionReq;
 use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
-use deno_semver::StackString;
-use deno_semver::VersionReq;
-use futures::stream::FuturesOrdered;
 use futures::StreamExt;
+use futures::stream::FuturesOrdered;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::collections::hash_map;
 use std::sync::Arc;
 use thiserror::Error;
 
+use super::NpmPackageVersionNotFound;
+use super::UnmetPeerDepDiagnostic;
 use super::common::NpmVersionResolver;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
-use super::NpmPackageVersionNotFound;
-use super::UnmetPeerDepDiagnostic;
 
-use crate::registry::NpmPackageInfo;
-use crate::registry::NpmPackageVersionDistInfo;
-use crate::registry::NpmPackageVersionInfo;
-use crate::registry::NpmRegistryApi;
-use crate::registry::NpmRegistryPackageInfoLoadError;
-use crate::resolution::Reporter;
 use crate::NpmPackageCacheFolderId;
 use crate::NpmPackageExtraInfo;
 use crate::NpmPackageId;
@@ -39,6 +33,12 @@ use crate::NpmPackageIdDeserializationError;
 use crate::NpmResolutionPackage;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::NpmSystemInfo;
+use crate::registry::NpmPackageInfo;
+use crate::registry::NpmPackageVersionDistInfo;
+use crate::registry::NpmPackageVersionInfo;
+use crate::registry::NpmRegistryApi;
+use crate::registry::NpmRegistryPackageInfoLoadError;
+use crate::resolution::Reporter;
 
 #[derive(Debug, Error, Clone, JsError)]
 #[class(type)]
@@ -579,12 +579,11 @@ impl NpmResolutionSnapshot {
       .get(&pkg_cache_folder_id.nv.name)
       .and_then(|ids| {
         for id in ids {
-          if id.nv == pkg_cache_folder_id.nv {
-            if let Some(pkg) = self.packages.get(id) {
-              if pkg.copy_index == pkg_cache_folder_id.copy_index {
-                return Some(pkg);
-              }
-            }
+          if id.nv == pkg_cache_folder_id.nv
+            && let Some(pkg) = self.packages.get(id)
+            && pkg.copy_index == pkg_cache_folder_id.copy_index
+          {
+            return Some(pkg);
           }
         }
         None
@@ -664,10 +663,10 @@ impl NpmResolutionSnapshot {
     // TODO(bartlomieju): this should use a reverse lookup table in the
     // snapshot instead of resolving best version again.
     let any_version_req = VersionReq::parse_from_npm("*").unwrap();
-    if let Some(id) = self.resolve_best_package_id(name, &any_version_req) {
-      if let Some(pkg) = self.packages.get(&id) {
-        return Ok(pkg);
-      }
+    if let Some(id) = self.resolve_best_package_id(name, &any_version_req)
+      && let Some(pkg) = self.packages.get(&id)
+    {
+      return Ok(pkg);
     }
 
     Err(Box::new(PackageNotFoundFromReferrerError::Package {
@@ -851,10 +850,10 @@ impl SnapshotPackageCopyIndexResolver {
 
 fn name_without_path(name: &str) -> &str {
   let mut search_start_index = 0;
-  if name.starts_with('@') {
-    if let Some(slash_index) = name.find('/') {
-      search_start_index = slash_index + 1;
-    }
+  if name.starts_with('@')
+    && let Some(slash_index) = name.find('/')
+  {
+    search_start_index = slash_index + 1;
   }
   if let Some(slash_index) = &name[search_start_index..].find('/') {
     // get the name up until the path slash
@@ -1244,16 +1243,20 @@ mod tests {
       .unwrap();
     assert_eq!(pkg.id.as_serialized(), "a@1.0.0_b@1.0.0");
     assert_eq!(pkg.copy_index, 1);
-    assert!(snapshot
-      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
-        "a", "1.0.0", 2,
-      ))
-      .is_err());
-    assert!(snapshot
-      .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
-        "b", "1.0.0", 2,
-      ))
-      .is_err());
+    assert!(
+      snapshot
+        .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+          "a", "1.0.0", 2,
+        ))
+        .is_err()
+    );
+    assert!(
+      snapshot
+        .resolve_pkg_from_pkg_cache_folder_id(&npm_cache_folder_id(
+          "b", "1.0.0", 2,
+        ))
+        .is_err()
+    );
   }
 
   fn npm_cache_folder_id(
@@ -1365,12 +1368,14 @@ mod tests {
     .await
     .unwrap();
 
-    assert!(snapshot_from_lockfile(SnapshotFromLockfileParams {
-      lockfile: &lockfile,
-      link_packages: &Default::default(),
-      default_tarball_url: &TestDefaultTarballUrlProvider,
-    })
-    .is_ok());
+    assert!(
+      snapshot_from_lockfile(SnapshotFromLockfileParams {
+        lockfile: &lockfile,
+        link_packages: &Default::default(),
+        default_tarball_url: &TestDefaultTarballUrlProvider,
+      })
+      .is_ok()
+    );
   }
 
   #[tokio::test]
@@ -1533,11 +1538,13 @@ mod tests {
       .resolve_pkg_from_pkg_req(&PackageReq::from_str("@types/node@*").unwrap())
       .unwrap();
     assert_eq!(pkg.id.nv.version.to_string(), "1.0.0");
-    assert!(snapshot
-      .resolve_pkg_from_pkg_req(
-        &PackageReq::from_str("@types/node@next").unwrap()
-      )
-      // shouldn't panic
-      .is_err());
+    assert!(
+      snapshot
+        .resolve_pkg_from_pkg_req(
+          &PackageReq::from_str("@types/node@next").unwrap()
+        )
+        // shouldn't panic
+        .is_err()
+    );
   }
 }
