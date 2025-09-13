@@ -172,6 +172,9 @@ pub struct NpmPackageVersionInfo {
   pub cpu: Vec<SmallStackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
+  pub directories: HashMap<SmallStackString, String>,
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<SmallStackString, String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   #[serde(deserialize_with = "deserializers::string")]
@@ -1137,7 +1140,8 @@ mod test {
         "peerDependenciesMeta": [],
         "os": {},
         "cpu": {},
-        "scripts": []
+        "scripts": [],
+        "directories": []
       }"#,
     );
 
@@ -1152,7 +1156,8 @@ mod test {
         "peerDependenciesMeta": true,
         "os": false,
         "cpu": true,
-        "scripts": false
+        "scripts": false,
+        "directories": false
       }"#,
     );
 
@@ -1167,7 +1172,8 @@ mod test {
         "peerDependenciesMeta": "",
         "os": "",
         "cpu": "",
-        "scripts": ""
+        "scripts": "",
+        "directories": ""
       }"#,
     );
 
@@ -1182,7 +1188,8 @@ mod test {
         "peerDependenciesMeta": -2.23,
         "os": -63.34,
         "cpu": 12,
-        "scripts": -1234.34
+        "scripts": -1234.34,
+        "directories": 10
       }"#,
     );
   }
@@ -1225,7 +1232,11 @@ mod test {
           "prop": 2
         },
         "valid"
-      ]
+      ],
+      "directories": {
+        "bin": "good",
+        "bad": 5
+      }
     }"#;
     let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
     assert_eq!(
@@ -1233,6 +1244,10 @@ mod test {
       HashMap::from([("value10".into(), "valid".into())])
     );
     assert_eq!(info.os, Vec::from(["valid".to_string()]));
+    assert_eq!(
+      info.directories,
+      HashMap::from([("bin".into(), "good".into())])
+    );
   }
 
   #[test]
@@ -1374,6 +1389,7 @@ mod test {
       os: Default::default(),
       cpu: Default::default(),
       scripts: Default::default(),
+      directories: Default::default(),
       deprecated: Default::default(),
     };
     let text = serde_json::to_string(&data).unwrap();
