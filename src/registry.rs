@@ -122,6 +122,13 @@ impl Ord for NpmDependencyEntry {
   }
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct NpmPackageVersionInfoDirectories {
+  #[serde(deserialize_with = "deserializers::string")]
+  pub bin: Option<String>,
+}
+
+
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct NpmPeerDependencyMeta {
   #[serde(default)]
@@ -170,6 +177,8 @@ pub struct NpmPackageVersionInfo {
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   #[serde(deserialize_with = "deserializers::vector")]
   pub cpu: Vec<SmallStackString>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub directories: Option<NpmPackageVersionInfoDirectories>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<SmallStackString, String>,
@@ -1374,6 +1383,7 @@ mod test {
       os: Default::default(),
       cpu: Default::default(),
       scripts: Default::default(),
+      directories: Default::default(),
       deprecated: Default::default(),
     };
     let text = serde_json::to_string(&data).unwrap();
