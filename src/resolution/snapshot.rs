@@ -469,42 +469,45 @@ impl NpmResolutionSnapshot {
   ) -> ValidSerializedNpmResolutionSnapshot {
     let mut final_packages = Vec::with_capacity(self.packages.len());
     let mut pending = VecDeque::with_capacity(self.packages.len());
-    let mut visited_ids = HashSet::with_capacity(self.packages.len());
+    let mut visited_nvs = HashSet::with_capacity(self.packages.len());
 
     // add the root packages
     for pkg_id in self.root_packages.values() {
-      if visited_ids.insert(pkg_id) {
-        pending.push_back(self.packages.get(pkg_id).unwrap());
+      if visited_nvs.insert(&pkg_id.nv) {
+        pending.push_back(&pkg_id.nv);
       }
     }
 
-    while let Some(pkg) = pending.pop_front() {
-      let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
-        id: pkg.id.clone(),
-        dependencies: HashMap::with_capacity(pkg.dependencies.len()),
-        optional_peer_dependencies: pkg.optional_peer_dependencies.clone(),
-        // the fields below are stripped from the output
-        system: Default::default(),
-        optional_dependencies: Default::default(),
-        extra: pkg.extra.clone(),
-        dist: pkg.dist.clone(),
-        is_deprecated: pkg.is_deprecated,
-        has_bin: pkg.has_bin,
-        has_scripts: pkg.has_scripts,
-      };
-      for (key, dep_id) in &pkg.dependencies {
-        let dep = self.packages.get(dep_id).unwrap();
+    while let Some(nv) = pending.pop_front() {
+      for id in self.package_ids_for_nv(nv) {
+        let pkg = self.packages.get(id).unwrap();
+        let mut new_pkg = SerializedNpmResolutionSnapshotPackage {
+          id: pkg.id.clone(),
+          dependencies: HashMap::with_capacity(pkg.dependencies.len()),
+          optional_peer_dependencies: pkg.optional_peer_dependencies.clone(),
+          // the fields below are stripped from the output
+          system: Default::default(),
+          optional_dependencies: Default::default(),
+          extra: pkg.extra.clone(),
+          dist: pkg.dist.clone(),
+          is_deprecated: pkg.is_deprecated,
+          has_bin: pkg.has_bin,
+          has_scripts: pkg.has_scripts,
+        };
+        for (key, dep_id) in &pkg.dependencies {
+          let dep = self.packages.get(dep_id).unwrap();
 
-        let matches_system = !pkg.optional_dependencies.contains(key)
-          || dep.system.matches_system(system_info);
-        if matches_system {
-          new_pkg.dependencies.insert(key.clone(), dep_id.clone());
-          if visited_ids.insert(dep_id) {
-            pending.push_back(dep);
+          let matches_system = !pkg.optional_dependencies.contains(key)
+            || dep.system.matches_system(system_info);
+          if matches_system {
+            new_pkg.dependencies.insert(key.clone(), dep_id.clone());
+            if visited_nvs.insert(&dep_id.nv) {
+              pending.push_back(&dep_id.nv);
+            }
           }
         }
+        final_packages.push(new_pkg);
       }
-      final_packages.push(new_pkg);
     }
 
     ValidSerializedNpmResolutionSnapshot(SerializedNpmResolutionSnapshot {
@@ -691,28 +694,27 @@ impl NpmResolutionSnapshot {
   ) -> Vec<NpmResolutionPackage> {
     let mut packages = Vec::with_capacity(self.packages.len());
     let mut pending = VecDeque::with_capacity(self.packages.len());
-    let mut visited_ids = HashSet::with_capacity(self.packages.len());
+    let mut visited_nvs = HashSet::with_capacity(self.packages.len());
 
     for pkg_id in self.root_packages.values() {
-      if visited_ids.insert(pkg_id) {
-        pending.push_back(self.packages.get(pkg_id).unwrap());
+      if visited_nvs.insert(&pkg_id.nv) {
+        pending.push_back(&pkg_id.nv);
       }
     }
 
-    while let Some(pkg) = pending.pop_front() {
-      packages.push(pkg.clone());
+    while let Some(nv) = pending.pop_front() {
+      for pkg_id in self.package_ids_for_nv(nv) {
+        let pkg = self.packages.get(pkg_id).unwrap();
+        packages.push(pkg.clone());
 
-      for (key, dep_id) in &pkg.dependencies {
-        if visited_ids.contains(&dep_id) {
-          continue;
-        }
-        let dep = self.packages.get(dep_id).unwrap();
+        for (key, dep_id) in &pkg.dependencies {
+          let dep = self.packages.get(dep_id).unwrap();
 
-        let matches_system = !pkg.optional_dependencies.contains(key)
-          || dep.system.matches_system(system_info);
-        if matches_system {
-          pending.push_back(dep);
-          visited_ids.insert(dep_id);
+          let matches_system = !pkg.optional_dependencies.contains(key)
+            || dep.system.matches_system(system_info);
+          if matches_system && visited_nvs.insert(&dep_id.nv) {
+            pending.push_back(&dep.id.nv);
+          }
         }
       }
     }
