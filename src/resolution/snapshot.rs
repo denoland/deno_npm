@@ -38,6 +38,7 @@ use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
+use crate::registry::PackageDate;
 use crate::resolution::Reporter;
 
 #[derive(Debug, Error, Clone, JsError)]
@@ -199,6 +200,8 @@ pub struct AddPkgReqsOptions<'a> {
   pub types_node_version_req: Option<VersionReq>,
   /// Packages that are marked as "links" in the config file.
   pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  /// Minimum date to accept packages for.
+  pub minimum_release_cutoff_date: Option<PackageDate>,
 }
 
 #[derive(Debug)]
@@ -328,6 +331,7 @@ impl NpmResolutionSnapshot {
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
       link_packages: options.link_packages,
+      minimum_release_cutoff_date: options.minimum_release_cutoff_date,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches

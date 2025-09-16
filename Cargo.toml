@@ -26,6 +26,7 @@ serde_json = { version = "1.0.67", features = ["preserve_order"] }
 thiserror = "2.0.3"
 futures = "0.3.28"
 url = "2"
+time = { version = "0.3.43", features = ["formatting", "parsing"] }
 
 [dev-dependencies]
 divan = "0.1.17"

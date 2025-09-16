@@ -5708,6 +5708,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &link_packages,
+      minimum_release_cutoff_date: None,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -5775,6 +5776,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
+      minimum_release_cutoff_date: None,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
