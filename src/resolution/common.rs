@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
+use crate::registry::PackageDate;
 
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone, deno_error::JsError)]
@@ -43,11 +44,12 @@ pub enum NpmPackageVersionResolutionError {
   VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[class(type)]
   #[error(
-    "Could not find npm package '{package_name}' matching '{version_req}'."
+    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_release_cutoff_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum release cutoff date of '{}'", v.to_string())).unwrap_or_else(String::new)
   )]
   VersionReqNotMatched {
     package_name: StackString,
     version_req: VersionReq,
+    minimum_release_cutoff_date: Option<PackageDate>,
   },
 }
 
@@ -55,6 +57,7 @@ pub enum NpmPackageVersionResolutionError {
 pub struct NpmVersionResolver<'link> {
   pub types_node_version_req: Option<VersionReq>,
   pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  pub minimum_release_cutoff_date: Option<PackageDate>,
 }
 
 impl NpmVersionResolver<'_> {
@@ -107,6 +110,7 @@ impl NpmVersionResolver<'_> {
     version_req: &VersionReq,
     info: &'a NpmPackageInfo,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
+    let mut found_matching_version = false;
     if let Some(tag) = version_req.tag() {
       self.tag_to_version_info(info, tag)
       // When the version is *, if there is a latest tag, use it directly.
@@ -120,7 +124,7 @@ impl NpmVersionResolver<'_> {
           .dist_tags
           .get("latest")
           .and_then(|version| {
-            self.version_req_satisfies(version_req, version, info).ok()
+            self.version_req_satisfies(version_req, version, info).ok().filter(|_| self.matches_min_release_cutoff(info, version))
           })
           .unwrap_or_default())
     {
@@ -130,12 +134,15 @@ impl NpmVersionResolver<'_> {
       for version_info in info.versions.values() {
         let version = &version_info.version;
         if self.version_req_satisfies(version_req, version, info)? {
-          let is_best_version = maybe_best_version
-            .as_ref()
-            .map(|best_version| best_version.version.cmp(version).is_lt())
-            .unwrap_or(true);
-          if is_best_version {
-            maybe_best_version = Some(version_info);
+          found_matching_version = true;
+          if self.matches_min_release_cutoff(info, version) {
+            let is_best_version = maybe_best_version
+              .as_ref()
+              .map(|best_version| best_version.version.cmp(version).is_lt())
+              .unwrap_or(true);
+            if is_best_version {
+              maybe_best_version = Some(version_info);
+            }
           }
         }
       }
@@ -152,9 +159,32 @@ impl NpmVersionResolver<'_> {
         None => Err(NpmPackageVersionResolutionError::VersionReqNotMatched {
           package_name: info.name.clone(),
           version_req: version_req.clone(),
+          minimum_release_cutoff_date: if found_matching_version {
+            self.minimum_release_cutoff_date
+          } else {
+            None
+          },
         }),
       }
     }
+  }
+
+  #[inline]
+  fn matches_min_release_cutoff(
+    &self,
+    info: &NpmPackageInfo,
+    version: &Version,
+  ) -> bool {
+    self
+      .minimum_release_cutoff_date
+      .and_then(|cutoff| {
+        // assume versions not in the time hashmap are really old
+        info
+          .time
+          .get(version)
+          .map(|package_age| *package_age < cutoff)
+      })
+      .unwrap_or(true)
   }
 
   pub fn version_req_satisfies(
@@ -251,10 +281,12 @@ mod test {
         "latest".into(),
         Version::parse_from_npm("1.0.0-alpha").unwrap(),
       )]),
+      time: Default::default(),
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
+      minimum_release_cutoff_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -286,6 +318,7 @@ mod test {
         "latest".into(),
         Version::parse_from_npm("1.0.0-alpha").unwrap(),
       )]),
+      time: Default::default(),
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -321,12 +354,14 @@ mod test {
         "latest".into(),
         Version::parse_from_npm("1.1.0").unwrap(),
       )]),
+      time: Default::default(),
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
       link_packages: &Default::default(),
+      minimum_release_cutoff_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -360,10 +395,12 @@ mod test {
         "latest".into(),
         Version::parse_from_npm("1.0.0-rc.1").unwrap(),
       )]),
+      time: Default::default(),
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
+      minimum_release_cutoff_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -416,10 +453,12 @@ mod test {
           Version::parse_from_npm("0.1.0-beta.2").unwrap(),
         ),
       ]),
+      time: Default::default(),
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
+      minimum_release_cutoff_date: None,
     };
 
     // check for when matches dist tag

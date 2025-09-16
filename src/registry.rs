@@ -17,7 +17,9 @@ use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
 use thiserror::Error;
+use time::OffsetDateTime;
 
 use crate::resolution::NpmPackageVersionNotFound;
 
@@ -27,8 +29,11 @@ use crate::resolution::NpmPackageVersionNotFound;
 pub struct NpmPackageInfo {
   pub name: PackageName,
   pub versions: HashMap<Version, NpmPackageVersionInfo>,
-  #[serde(rename = "dist-tags")]
+  #[serde(default, rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
+  pub time: HashMap<Version, PackageDate>,
 }
 
 impl NpmPackageInfo {
@@ -48,6 +53,99 @@ impl NpmPackageInfo {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
+  }
+}
+
+/// Gets the minutes since epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PackageDate {
+  minutes: u32,
+}
+
+impl PackageDate {
+  pub fn new(minutes: u32) -> Self {
+    Self { minutes }
+  }
+
+  pub fn now() -> Self {
+    let secs = OffsetDateTime::now_utc().unix_timestamp();
+    assert!(secs >= 0, "system clock before 1970-01-01");
+    let minutes = (secs as u64 / 60) as u32;
+    Self { minutes }
+  }
+
+  pub fn subtract_minutes(&self, age: u32) -> Option<Self> {
+    self.minutes.checked_sub(age).map(|m| Self { minutes: m })
+  }
+
+  pub fn minutes_since_epoch(&self) -> u32 {
+    self.minutes
+  }
+
+  pub fn to_string(&self) -> String {
+    let secs = self.minutes as i64 * 60;
+    OffsetDateTime::from_unix_timestamp(secs)
+      .ok()
+      .and_then(|dt| {
+        dt.format(&time::format_description::well_known::Rfc3339)
+          .ok()
+      })
+      .unwrap_or_else(|| "<invalid-date>".to_string())
+  }
+}
+
+impl<'de> Deserialize<'de> for PackageDate {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    use serde::de;
+    use std::fmt;
+
+    fn minutes_from_rfc3339(s: &str) -> Option<u32> {
+      let dt = OffsetDateTime::parse(
+        s,
+        &time::format_description::well_known::Rfc3339,
+      )
+      .ok()?;
+      let seconds = dt.unix_timestamp();
+      let minutes = seconds / 60;
+      if minutes < 0 {
+        None
+      } else {
+        Some(minutes as u32)
+      }
+    }
+
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+      type Value = PackageDate;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an RFC 3339 timestamp string")
+      }
+
+      fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+      where
+        E: de::Error,
+      {
+        minutes_from_rfc3339(v)
+          .map(|minutes| PackageDate { minutes })
+          .ok_or_else(|| E::custom("invalid date"))
+      }
+    }
+
+    deserializer.deserialize_any(Visitor)
+  }
+}
+
+impl Serialize for PackageDate {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(&self.to_string())
   }
 }
 
@@ -667,7 +765,7 @@ mod deserializers {
     deserializer: D,
   ) -> Result<HashMap<K, V>, D::Error>
   where
-    K: Deserialize<'de> + Eq + std::hash::Hash,
+    K: DeserializeOwned + Eq + std::hash::Hash,
     V: DeserializeOwned,
     D: Deserializer<'de>,
   {
@@ -699,7 +797,7 @@ mod deserializers {
 
   impl<'de, K, V> Visitor<'de> for HashMapVisitor<K, V>
   where
-    K: Deserialize<'de> + Eq + std::hash::Hash,
+    K: DeserializeOwned + Eq + std::hash::Hash,
     V: DeserializeOwned,
   {
     type Value = HashMap<K, V>;
@@ -730,9 +828,13 @@ mod deserializers {
 
       // deserialize to a serde_json::Value first to ensure serde_json
       // skips over the entry, then deserialize to an actual value
-      while let Some(entry) = map.next_entry::<K, serde_json::Value>()? {
-        if let Ok(value) = serde_json::from_value(entry.1) {
-          hashmap.insert(entry.0, value);
+      while let Some(entry) =
+        map.next_entry::<serde_json::Value, serde_json::Value>()?
+      {
+        if let Ok(key) = serde_json::from_value(entry.0) {
+          if let Ok(value) = serde_json::from_value(entry.1) {
+            hashmap.insert(key, value);
+          }
         }
       }
 
@@ -992,6 +1094,7 @@ mod test {
   use std::collections::HashMap;
 
   use deno_semver::Version;
+  use pretty_assertions::assert_eq;
   use serde_json;
 
   use super::*;
@@ -1011,6 +1114,24 @@ mod test {
         }),
         ..Default::default()
       }
+    );
+  }
+
+  #[test]
+  fn deserializes_serializes_time() {
+    let text = r#"{ "name": "package", "versions": {}, "time": { "created": "2015-11-07T19:15:58.747Z", "1.0.0": "2015-11-07T19:15:58.747Z" } }"#;
+    let info: NpmPackageInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.time,
+      HashMap::from([(
+        Version::parse_from_npm("1.0.0").unwrap(),
+        PackageDate::new(24115395)
+      )])
+    );
+    assert_eq!(
+      serde_json::to_string(&info).unwrap(),
+      // this loss of precision is ok
+      r#"{"name":"package","versions":{},"dist-tags":{},"time":{"1.0.0":"2015-11-07T19:15:00Z"}}"#
     );
   }
 
