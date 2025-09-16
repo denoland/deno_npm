@@ -63,7 +63,7 @@ pub struct PackageDate {
 }
 
 impl PackageDate {
-  pub fn new(minutes: u32) -> Self {
+  pub fn from_minutes(minutes: u32) -> Self {
     Self { minutes }
   }
 
@@ -1125,7 +1125,7 @@ mod test {
       info.time,
       HashMap::from([(
         Version::parse_from_npm("1.0.0").unwrap(),
-        PackageDate::new(24115395)
+        PackageDate::from_minutes(24115395)
       )])
     );
     assert_eq!(

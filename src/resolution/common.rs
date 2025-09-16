@@ -57,6 +57,7 @@ pub enum NpmPackageVersionResolutionError {
 pub struct NpmVersionResolver<'link> {
   pub types_node_version_req: Option<VersionReq>,
   pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  /// Prevents installing packages newer than the specified date.
   pub minimum_release_cutoff_date: Option<PackageDate>,
 }
 
@@ -124,7 +125,7 @@ impl NpmVersionResolver<'_> {
           .dist_tags
           .get("latest")
           .and_then(|version| {
-            self.version_req_satisfies(version_req, version, info).ok().filter(|_| self.matches_min_release_cutoff(info, version))
+            self.version_req_satisfies(version_req, version, info).ok().filter(|_| self.matches_min_release_cutoff_date(info, version))
           })
           .unwrap_or_default())
     {
@@ -135,7 +136,7 @@ impl NpmVersionResolver<'_> {
         let version = &version_info.version;
         if self.version_req_satisfies(version_req, version, info)? {
           found_matching_version = true;
-          if self.matches_min_release_cutoff(info, version) {
+          if self.matches_min_release_cutoff_date(info, version) {
             let is_best_version = maybe_best_version
               .as_ref()
               .map(|best_version| best_version.version.cmp(version).is_lt())
@@ -170,7 +171,7 @@ impl NpmVersionResolver<'_> {
   }
 
   #[inline]
-  fn matches_min_release_cutoff(
+  fn matches_min_release_cutoff_date(
     &self,
     info: &NpmPackageInfo,
     version: &Version,
