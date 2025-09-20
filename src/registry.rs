@@ -17,9 +17,7 @@ use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use serde::Deserialize;
 use serde::Serialize;
-use serde::Serializer;
 use thiserror::Error;
-use time::OffsetDateTime;
 
 use crate::resolution::NpmPackageVersionNotFound;
 
@@ -33,7 +31,7 @@ pub struct NpmPackageInfo {
   pub dist_tags: HashMap<String, Version>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
-  pub time: HashMap<Version, PackageDate>,
+  pub time: HashMap<Version, chrono::DateTime<chrono::Utc>>,
 }
 
 impl NpmPackageInfo {
@@ -53,99 +51,6 @@ impl NpmPackageInfo {
       Some(version_info) => Ok(version_info),
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
-  }
-}
-
-/// Gets the minutes since epoch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PackageDate {
-  minutes: u32,
-}
-
-impl PackageDate {
-  pub fn from_minutes(minutes: u32) -> Self {
-    Self { minutes }
-  }
-
-  pub fn now() -> Self {
-    let secs = OffsetDateTime::now_utc().unix_timestamp();
-    assert!(secs >= 0, "system clock before 1970-01-01");
-    let minutes = (secs as u64 / 60) as u32;
-    Self { minutes }
-  }
-
-  pub fn subtract_minutes(&self, age: u32) -> Option<Self> {
-    self.minutes.checked_sub(age).map(|m| Self { minutes: m })
-  }
-
-  pub fn minutes_since_epoch(&self) -> u32 {
-    self.minutes
-  }
-
-  pub fn to_string(&self) -> String {
-    let secs = self.minutes as i64 * 60;
-    OffsetDateTime::from_unix_timestamp(secs)
-      .ok()
-      .and_then(|dt| {
-        dt.format(&time::format_description::well_known::Rfc3339)
-          .ok()
-      })
-      .unwrap_or_else(|| "<invalid-date>".to_string())
-  }
-}
-
-impl<'de> Deserialize<'de> for PackageDate {
-  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-  where
-    D: serde::Deserializer<'de>,
-  {
-    use serde::de;
-    use std::fmt;
-
-    fn minutes_from_rfc3339(s: &str) -> Option<u32> {
-      let dt = OffsetDateTime::parse(
-        s,
-        &time::format_description::well_known::Rfc3339,
-      )
-      .ok()?;
-      let seconds = dt.unix_timestamp();
-      let minutes = seconds / 60;
-      if minutes < 0 {
-        None
-      } else {
-        Some(minutes as u32)
-      }
-    }
-
-    struct Visitor;
-
-    impl<'de> serde::de::Visitor<'de> for Visitor {
-      type Value = PackageDate;
-
-      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("an RFC 3339 timestamp string")
-      }
-
-      fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-      where
-        E: de::Error,
-      {
-        minutes_from_rfc3339(v)
-          .map(|minutes| PackageDate { minutes })
-          .ok_or_else(|| E::custom("invalid date"))
-      }
-    }
-
-    deserializer.deserialize_any(Visitor)
-  }
-}
-
-impl Serialize for PackageDate {
-  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-  where
-    S: Serializer,
-  {
-    serializer.serialize_str(&self.to_string())
   }
 }
 
@@ -831,10 +736,10 @@ mod deserializers {
       while let Some(entry) =
         map.next_entry::<serde_json::Value, serde_json::Value>()?
       {
-        if let Ok(key) = serde_json::from_value(entry.0) {
-          if let Ok(value) = serde_json::from_value(entry.1) {
-            hashmap.insert(key, value);
-          }
+        if let Ok(key) = serde_json::from_value(entry.0)
+          && let Ok(value) = serde_json::from_value(entry.1)
+        {
+          hashmap.insert(key, value);
         }
       }
 

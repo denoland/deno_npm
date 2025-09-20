@@ -38,7 +38,6 @@ use crate::registry::NpmPackageVersionDistInfo;
 use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
-use crate::registry::PackageDate;
 use crate::resolution::Reporter;
 
 #[derive(Debug, Error, Clone, JsError)]
@@ -201,7 +200,7 @@ pub struct AddPkgReqsOptions<'a> {
   /// Packages that are marked as "links" in the config file.
   pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   /// Minimum date to accept packages for.
-  pub minimum_release_cutoff_date: Option<PackageDate>,
+  pub minimum_release_cutoff_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug)]

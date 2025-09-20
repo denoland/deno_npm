@@ -12,7 +12,6 @@ use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
-use crate::registry::PackageDate;
 
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone, deno_error::JsError)]
@@ -44,12 +43,12 @@ pub enum NpmPackageVersionResolutionError {
   VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[class(type)]
   #[error(
-    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_release_cutoff_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum release cutoff date of '{}'", v.to_string())).unwrap_or_else(String::new)
+    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_release_cutoff_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum release cutoff date '{}'", v)).unwrap_or_else(String::new)
   )]
   VersionReqNotMatched {
     package_name: StackString,
     version_req: VersionReq,
-    minimum_release_cutoff_date: Option<PackageDate>,
+    minimum_release_cutoff_date: Option<chrono::DateTime<chrono::Utc>>,
   },
 }
 
@@ -58,7 +57,7 @@ pub struct NpmVersionResolver<'link> {
   pub types_node_version_req: Option<VersionReq>,
   pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   /// Prevents installing packages newer than the specified date.
-  pub minimum_release_cutoff_date: Option<PackageDate>,
+  pub minimum_release_cutoff_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl NpmVersionResolver<'_> {
