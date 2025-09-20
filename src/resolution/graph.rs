@@ -5373,7 +5373,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn test_minimum_dependency_age() {
+  async fn test_minimum_dependency_date() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("a", "1.0.0");
     api.ensure_package_version("a", "1.0.1");
@@ -5398,7 +5398,7 @@ mod test {
       api.clone(),
       RunResolverOptions {
         reqs: vec!["a@1"],
-        minimum_dependency_age: Some(
+        minimum_dependency_date: Some(
           "2021-11-07T00:00:00.000Z".parse().unwrap(),
         ),
         ..Default::default()
@@ -5412,7 +5412,7 @@ mod test {
       &api,
       RunResolverOptions {
         reqs: vec!["a@1"],
-        minimum_dependency_age: Some(
+        minimum_dependency_date: Some(
           "2010-11-07T00:00:00.000Z".parse().unwrap(),
         ),
         ..Default::default()
@@ -5725,7 +5725,7 @@ mod test {
       RunResolverOptions {
         reqs,
         link_packages: None,
-        minimum_dependency_age: None,
+        minimum_dependency_date: None,
         snapshot: Default::default(),
         expected_diagnostics: Default::default(),
       },
@@ -5740,7 +5740,7 @@ mod test {
     reqs: Vec<&'a str>,
     link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
-    minimum_dependency_age: Option<chrono::DateTime<chrono::Utc>>,
+    minimum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
   }
 
   async fn run_resolver_with_options_and_get_err(
@@ -5773,7 +5773,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &link_packages,
-      minimum_dependency_age: options.minimum_dependency_age,
+      minimum_dependency_date: options.minimum_dependency_date,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -5841,7 +5841,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
-      minimum_dependency_age: None,
+      minimum_dependency_date: None,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
