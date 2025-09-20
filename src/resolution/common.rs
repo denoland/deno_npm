@@ -43,7 +43,7 @@ pub enum NpmPackageVersionResolutionError {
   VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[class(type)]
   #[error(
-    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_dependency_age.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum release cutoff date '{}'", v)).unwrap_or_else(String::new)
+    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_dependency_age.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of {}", v)).unwrap_or_else(String::new)
   )]
   VersionReqNotMatched {
     package_name: StackString,

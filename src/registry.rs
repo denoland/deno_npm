@@ -1030,13 +1030,12 @@ mod test {
       info.time,
       HashMap::from([(
         Version::parse_from_npm("1.0.0").unwrap(),
-        PackageDate::from_minutes(24115395)
+        "2015-11-07T19:15:58.747Z".parse().unwrap(),
       )])
     );
     assert_eq!(
       serde_json::to_string(&info).unwrap(),
-      // this loss of precision is ok
-      r#"{"name":"package","versions":{},"dist-tags":{},"time":{"1.0.0":"2015-11-07T19:15:00Z"}}"#
+      r#"{"name":"package","versions":{},"dist-tags":{},"time":{"1.0.0":"2015-11-07T19:15:58.747Z"}}"#
     );
   }
 
