@@ -43,12 +43,12 @@ pub enum NpmPackageVersionResolutionError {
   VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[class(type)]
   #[error(
-    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, minimum_dependency_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of {}", v)).unwrap_or_else(String::new)
+    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, maximum_dependency_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of {}", v)).unwrap_or_else(String::new)
   )]
   VersionReqNotMatched {
     package_name: StackString,
     version_req: VersionReq,
-    minimum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    maximum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
   },
 }
 
@@ -57,7 +57,7 @@ pub struct NpmVersionResolver<'link> {
   pub types_node_version_req: Option<VersionReq>,
   pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   /// Prevents installing packages newer than the specified date.
-  pub minimum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  pub maximum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl NpmVersionResolver<'_> {
@@ -159,8 +159,8 @@ impl NpmVersionResolver<'_> {
         None => Err(NpmPackageVersionResolutionError::VersionReqNotMatched {
           package_name: info.name.clone(),
           version_req: version_req.clone(),
-          minimum_dependency_date: if found_matching_version {
-            self.minimum_dependency_date
+          maximum_dependency_date: if found_matching_version {
+            self.maximum_dependency_date
           } else {
             None
           },
@@ -176,7 +176,7 @@ impl NpmVersionResolver<'_> {
     version: &Version,
   ) -> bool {
     self
-      .minimum_dependency_date
+      .maximum_dependency_date
       .and_then(|cutoff| {
         // assume versions not in the time hashmap are really old
         info
@@ -286,7 +286,7 @@ mod test {
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
-      minimum_dependency_date: None,
+      maximum_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -361,7 +361,7 @@ mod test {
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
       link_packages: &Default::default(),
-      minimum_dependency_date: None,
+      maximum_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -400,7 +400,7 @@ mod test {
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
-      minimum_dependency_date: None,
+      maximum_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
       &package_req.version_req,
@@ -458,7 +458,7 @@ mod test {
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
-      minimum_dependency_date: None,
+      maximum_dependency_date: None,
     };
 
     // check for when matches dist tag
