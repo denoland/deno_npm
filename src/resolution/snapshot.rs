@@ -200,7 +200,7 @@ pub struct AddPkgReqsOptions<'a> {
   /// Packages that are marked as "links" in the config file.
   pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   /// Minimum date to accept packages for.
-  pub maximum_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  pub newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug)]
@@ -330,7 +330,7 @@ impl NpmResolutionSnapshot {
     let version_resolver = NpmVersionResolver {
       types_node_version_req: options.types_node_version_req,
       link_packages: options.link_packages,
-      maximum_dependency_date: options.maximum_dependency_date,
+      newest_dependency_date: options.newest_dependency_date,
     };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches

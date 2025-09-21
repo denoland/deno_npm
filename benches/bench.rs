@@ -196,7 +196,7 @@ async fn run_resolver_and_get_snapshot(
         package_reqs: &reqs,
         types_node_version_req: None,
         link_packages: &Default::default(),
-        maximum_dependency_date: None,
+        newest_dependency_date: None,
       },
       None,
     )
