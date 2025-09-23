@@ -60,7 +60,11 @@ impl NpmPackageInfo {
     link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
     newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
   ) -> NpmPackageVersionInfosIterator<'a> {
-    NpmPackageVersionInfosIterator::new(self, link_packages, newest_dependency_date)
+    NpmPackageVersionInfosIterator::new(
+      self,
+      link_packages,
+      newest_dependency_date,
+    )
   }
 
   pub fn matches_newest_dependency_date(
