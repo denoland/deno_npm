@@ -2505,7 +2505,7 @@ mod test {
     api.add_peer_dependency(("package-c", "3.0.0"), ("package-peer", "1"));
 
     let (packages, package_reqs) =
-      run_resolver_with_link_packages_and_get_output(
+      run_resolver_with_options_and_get_output(
         api,
         RunResolverOptions {
           reqs: vec!["package-0@1.1.1"],
@@ -4930,16 +4930,15 @@ mod test {
       ],
     )]);
 
-    let (packages, package_reqs) =
-      run_resolver_with_link_packages_and_get_output(
-        api,
-        RunResolverOptions {
-          reqs: vec!["package-a@1.0.0"],
-          link_packages: Some(&link_packages),
-          ..Default::default()
-        },
-      )
-      .await;
+    let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        link_packages: Some(&link_packages),
+        ..Default::default()
+      },
+    )
+    .await;
 
     assert_eq!(
       packages,
@@ -5000,16 +4999,15 @@ mod test {
       }],
     )]);
 
-    let (packages, package_reqs) =
-      run_resolver_with_link_packages_and_get_output(
-        api,
-        RunResolverOptions {
-          reqs: vec!["package-a@next"],
-          link_packages: Some(&link_packages),
-          ..Default::default()
-        },
-      )
-      .await;
+    let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@next"],
+        link_packages: Some(&link_packages),
+        ..Default::default()
+      },
+    )
+    .await;
 
     assert_eq!(
       packages,
@@ -5059,16 +5057,15 @@ mod test {
       }],
     )]);
 
-    let (packages, package_reqs) =
-      run_resolver_with_link_packages_and_get_output(
-        api,
-        RunResolverOptions {
-          reqs: vec!["package-a@1.0", "package-b@1.0"],
-          link_packages: Some(&link_packages),
-          ..Default::default()
-        },
-      )
-      .await;
+    let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0", "package-b@1.0"],
+        link_packages: Some(&link_packages),
+        ..Default::default()
+      },
+    )
+    .await;
     assert_eq!(
       packages,
       vec![
@@ -5376,6 +5373,59 @@ mod test {
   }
 
   #[tokio::test]
+  async fn test_newest_dependency_date() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("a", "1.0.0");
+    api.ensure_package_version("a", "1.0.1");
+    api.ensure_package_version("a", "1.0.2");
+
+    api.with_package("a", |info| {
+      info.time.insert(
+        version("1.0.0"),
+        "2015-11-07T00:00:00.000Z".parse().unwrap(),
+      );
+      info.time.insert(
+        version("1.0.1"),
+        "2020-11-07T00:00:00.000Z".parse().unwrap(),
+      );
+      info.time.insert(
+        version("1.0.2"),
+        "2022-11-07T00:00:00.000Z".parse().unwrap(),
+      );
+    });
+
+    let (packages, _package_reqs) = run_resolver_with_options_and_get_output(
+      api.clone(),
+      RunResolverOptions {
+        reqs: vec!["a@1"],
+        newest_dependency_date: Some(
+          "2021-11-07T00:00:00.000Z".parse().unwrap(),
+        ),
+        ..Default::default()
+      },
+    )
+    .await;
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].pkg_id, "a@1.0.1");
+
+    let err = run_resolver_with_options_and_get_err(
+      &api,
+      RunResolverOptions {
+        reqs: vec!["a@1"],
+        newest_dependency_date: Some(
+          "2010-11-07T00:00:00.000Z".parse().unwrap(),
+        ),
+        ..Default::default()
+      },
+    )
+    .await;
+    assert_eq!(
+      err.to_string(),
+      "Could not find npm package 'a' matching '1'.\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of 2010-11-07 00:00:00 UTC"
+    );
+  }
+
+  #[tokio::test]
   async fn vite_tailwind_optional_peer_duplicates() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("@deno/vite-plugin", "1.0.4");
@@ -5565,6 +5615,10 @@ mod test {
     );
   }
 
+  fn version(text: &str) -> Version {
+    Version::parse_from_npm(text).unwrap()
+  }
+
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct TestNpmResolutionPackage {
     pub pkg_id: String,
@@ -5576,7 +5630,7 @@ mod test {
     api: TestNpmRegistryApi,
     reqs: Vec<&str>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
-    run_resolver_with_link_packages_and_get_output(
+    run_resolver_with_options_and_get_output(
       api,
       RunResolverOptions {
         reqs,
@@ -5586,7 +5640,7 @@ mod test {
     .await
   }
 
-  async fn run_resolver_with_link_packages_and_get_output(
+  async fn run_resolver_with_options_and_get_output(
     api: TestNpmRegistryApi,
     options: RunResolverOptions<'_>,
   ) -> (Vec<TestNpmResolutionPackage>, Vec<(String, String)>) {
@@ -5671,6 +5725,7 @@ mod test {
       RunResolverOptions {
         reqs,
         link_packages: None,
+        newest_dependency_date: None,
         snapshot: Default::default(),
         expected_diagnostics: Default::default(),
       },
@@ -5685,6 +5740,16 @@ mod test {
     reqs: Vec<&'a str>,
     link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
+    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  }
+
+  async fn run_resolver_with_options_and_get_err(
+    api: &impl NpmRegistryApi,
+    options: RunResolverOptions<'_>,
+  ) -> NpmResolutionError {
+    run_resolver_with_options_and_get_snapshot(api, options)
+      .await
+      .unwrap_err()
   }
 
   async fn run_resolver_with_options_and_get_snapshot(
@@ -5708,6 +5773,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &link_packages,
+      newest_dependency_date: options.newest_dependency_date,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -5775,6 +5841,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: &Default::default(),
+      newest_dependency_date: None,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,

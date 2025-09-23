@@ -27,8 +27,11 @@ use crate::resolution::NpmPackageVersionNotFound;
 pub struct NpmPackageInfo {
   pub name: PackageName,
   pub versions: HashMap<Version, NpmPackageVersionInfo>,
-  #[serde(rename = "dist-tags")]
+  #[serde(default, rename = "dist-tags")]
   pub dist_tags: HashMap<String, Version>,
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
+  pub time: HashMap<Version, chrono::DateTime<chrono::Utc>>,
 }
 
 impl NpmPackageInfo {
@@ -667,7 +670,7 @@ mod deserializers {
     deserializer: D,
   ) -> Result<HashMap<K, V>, D::Error>
   where
-    K: Deserialize<'de> + Eq + std::hash::Hash,
+    K: DeserializeOwned + Eq + std::hash::Hash,
     V: DeserializeOwned,
     D: Deserializer<'de>,
   {
@@ -699,7 +702,7 @@ mod deserializers {
 
   impl<'de, K, V> Visitor<'de> for HashMapVisitor<K, V>
   where
-    K: Deserialize<'de> + Eq + std::hash::Hash,
+    K: DeserializeOwned + Eq + std::hash::Hash,
     V: DeserializeOwned,
   {
     type Value = HashMap<K, V>;
@@ -730,9 +733,13 @@ mod deserializers {
 
       // deserialize to a serde_json::Value first to ensure serde_json
       // skips over the entry, then deserialize to an actual value
-      while let Some(entry) = map.next_entry::<K, serde_json::Value>()? {
-        if let Ok(value) = serde_json::from_value(entry.1) {
-          hashmap.insert(entry.0, value);
+      while let Some(entry) =
+        map.next_entry::<serde_json::Value, serde_json::Value>()?
+      {
+        if let Ok(key) = serde_json::from_value(entry.0)
+          && let Ok(value) = serde_json::from_value(entry.1)
+        {
+          hashmap.insert(key, value);
         }
       }
 
@@ -992,6 +999,7 @@ mod test {
   use std::collections::HashMap;
 
   use deno_semver::Version;
+  use pretty_assertions::assert_eq;
   use serde_json;
 
   use super::*;
@@ -1011,6 +1019,23 @@ mod test {
         }),
         ..Default::default()
       }
+    );
+  }
+
+  #[test]
+  fn deserializes_serializes_time() {
+    let text = r#"{ "name": "package", "versions": {}, "time": { "created": "2015-11-07T19:15:58.747Z", "1.0.0": "2015-11-07T19:15:58.747Z" } }"#;
+    let info: NpmPackageInfo = serde_json::from_str(text).unwrap();
+    assert_eq!(
+      info.time,
+      HashMap::from([(
+        Version::parse_from_npm("1.0.0").unwrap(),
+        "2015-11-07T19:15:58.747Z".parse().unwrap(),
+      )])
+    );
+    assert_eq!(
+      serde_json::to_string(&info).unwrap(),
+      r#"{"name":"package","versions":{},"dist-tags":{},"time":{"1.0.0":"2015-11-07T19:15:58.747Z"}}"#
     );
   }
 
