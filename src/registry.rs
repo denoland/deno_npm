@@ -53,6 +53,16 @@ impl NpmPackageInfo {
     }
   }
 
+  /// Gets the version infos for the package, taking into account the linked packages
+  /// and the newest dependency date.
+  pub fn version_infos<'a>(
+    &'a self,
+    link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  ) -> PackageVersionsIterator<'a> {
+    PackageVersionsIterator::new(self, link_packages, newest_dependency_date)
+  }
+
   pub fn matches_newest_dependency_date(
     &self,
     newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
@@ -67,6 +77,51 @@ impl NpmPackageInfo {
           .map(|package_age| *package_age < cutoff)
       })
       .unwrap_or(true)
+  }
+}
+
+/// An iterator over all the package versions that takes into account the
+/// linked packages and the newest dependency date.
+pub struct PackageVersionsIterator<'a> {
+  iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a>,
+  info: &'a NpmPackageInfo,
+  newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl<'a> PackageVersionsIterator<'a> {
+  pub fn new(
+    info: &'a NpmPackageInfo,
+    link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  ) -> Self {
+    let iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a> =
+      match link_packages.get(&info.name) {
+        Some(link_version_infos) => Box::new(link_version_infos.iter().chain(
+          info.versions.values().filter(move |v| {
+            // assumes the user won't have a large amount of linked versions
+            !link_version_infos.iter().any(|l| l.version == v.version)
+          }),
+        )),
+        None => Box::new(info.versions.values()),
+      };
+    Self {
+      iterator,
+      newest_dependency_date,
+      info,
+    }
+  }
+}
+
+impl<'a> Iterator for PackageVersionsIterator<'a> {
+  type Item = &'a NpmPackageVersionInfo;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    self.iterator.by_ref().find(|&next| {
+      self.info.matches_newest_dependency_date(
+        self.newest_dependency_date,
+        &next.version,
+      )
+    })
   }
 }
 
