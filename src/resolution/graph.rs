@@ -5765,10 +5765,12 @@ mod test {
 
     let snapshot = options.snapshot;
     let mut graph = Graph::from_snapshot(snapshot);
-    let link_packages = options
-      .link_packages
-      .cloned()
-      .unwrap_or_else(HashMap::default);
+    let link_packages = Arc::new(
+      options
+        .link_packages
+        .cloned()
+        .unwrap_or_else(HashMap::default),
+    );
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: link_packages.clone(),

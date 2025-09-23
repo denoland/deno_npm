@@ -1,6 +1,7 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use deno_semver::StackString;
 use deno_semver::Version;
@@ -58,7 +59,7 @@ pub struct NpmVersionResolver {
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
   /// Packages that are marked as "links" in the config file.
-  pub link_packages: HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  pub link_packages: Arc<HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
   /// Prevents installing packages newer than the specified date.
   pub newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
 }
