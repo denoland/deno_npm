@@ -53,14 +53,17 @@ pub enum NpmPackageVersionResolutionError {
 }
 
 #[derive(Debug, Clone)]
-pub struct NpmVersionResolver<'link> {
+pub struct NpmVersionResolver {
+  /// Known good version requirement to use for the `@types/node` package
+  /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
-  pub link_packages: &'link HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
+  /// Packages that are marked as "links" in the config file.
+  pub link_packages: HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
   /// Prevents installing packages newer than the specified date.
   pub newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl NpmVersionResolver<'_> {
+impl NpmVersionResolver {
   pub fn resolve_best_package_version_info<'a, 'version>(
     &'a self,
     version_req: &VersionReq,
@@ -285,7 +288,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      link_packages: &Default::default(),
+      link_packages: Default::default(),
       newest_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
@@ -360,7 +363,7 @@ mod test {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
-      link_packages: &Default::default(),
+      link_packages: Default::default(),
       newest_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
@@ -399,7 +402,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      link_packages: &Default::default(),
+      link_packages: Default::default(),
       newest_dependency_date: None,
     };
     let result = resolver.get_resolved_package_version_and_info(
@@ -457,7 +460,7 @@ mod test {
     };
     let resolver = NpmVersionResolver {
       types_node_version_req: None,
-      link_packages: &Default::default(),
+      link_packages: Default::default(),
       newest_dependency_date: None,
     };
 

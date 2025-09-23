@@ -194,13 +194,7 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
 #[derive(Debug, Clone)]
 pub struct AddPkgReqsOptions<'a> {
   pub package_reqs: &'a [PackageReq],
-  /// Known good version requirement to use for the `@types/node` package
-  /// when the version is unspecified or "latest".
-  pub types_node_version_req: Option<VersionReq>,
-  /// Packages that are marked as "links" in the config file.
-  pub link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-  /// Minimum date to accept packages for.
-  pub newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  pub version_resolver: &'a NpmVersionResolver,
 }
 
 #[derive(Debug)]
@@ -327,17 +321,12 @@ impl NpmResolutionSnapshot {
       })
     });
 
-    let version_resolver = NpmVersionResolver {
-      types_node_version_req: options.types_node_version_req,
-      link_packages: options.link_packages,
-      newest_dependency_date: options.newest_dependency_date,
-    };
     // go over the top level package names first (npm package reqs and pending unresolved),
     // then down the tree one level at a time through all the branches
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
       api,
-      &version_resolver,
+      options.version_resolver,
       reporter,
     );
 
@@ -378,7 +367,7 @@ impl NpmResolutionSnapshot {
         Ok(()) => {
           unmet_peer_diagnostics = resolver.take_unmet_peer_diagnostics();
           graph
-            .into_snapshot(api, version_resolver.link_packages)
+            .into_snapshot(api, &options.version_resolver.link_packages)
             .await
         }
         Err(err) => Err(err),

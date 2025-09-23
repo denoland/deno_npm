@@ -978,7 +978,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   unmet_peer_diagnostics: RefCell<IndexSet<UnmetPeerDepDiagnostic>>,
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
-  version_resolver: &'a NpmVersionResolver<'a>,
+  version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
@@ -1213,7 +1213,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         // need to parallelize
         let package_info = self.api.package_info(&pkg_nv.name).await?;
         let version_info = package_info
-          .version_info(&pkg_nv, self.version_resolver.link_packages)
+          .version_info(&pkg_nv, &self.version_resolver.link_packages)
           .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
         self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
       };
@@ -2010,7 +2010,6 @@ fn build_trace_graph_snapshot(
 
 #[cfg(test)]
 mod test {
-  use std::borrow::Cow;
   use std::sync::Arc;
 
   use pretty_assertions::assert_eq;
@@ -5768,11 +5767,11 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let link_packages = options
       .link_packages
-      .map(Cow::Borrowed)
-      .unwrap_or(Cow::Owned(HashMap::default()));
+      .cloned()
+      .unwrap_or_else(HashMap::default);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      link_packages: &link_packages,
+      link_packages: link_packages.clone(),
       newest_dependency_date: options.newest_dependency_date,
     };
     let mut resolver = GraphDependencyResolver::new(
@@ -5840,7 +5839,7 @@ mod test {
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
-      link_packages: &Default::default(),
+      link_packages: Default::default(),
       newest_dependency_date: None,
     };
     let mut resolver = GraphDependencyResolver::new(
