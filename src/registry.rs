@@ -55,12 +55,12 @@ impl NpmPackageInfo {
 
   /// Gets the version infos for the package, taking into account the linked packages
   /// and the newest dependency date.
-  pub fn version_infos<'a>(
+  pub fn applicable_version_infos<'a>(
     &'a self,
     link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
     newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
-  ) -> PackageVersionsIterator<'a> {
-    PackageVersionsIterator::new(self, link_packages, newest_dependency_date)
+  ) -> NpmPackageVersionInfosIterator<'a> {
+    NpmPackageVersionInfosIterator::new(self, link_packages, newest_dependency_date)
   }
 
   pub fn matches_newest_dependency_date(
@@ -82,13 +82,13 @@ impl NpmPackageInfo {
 
 /// An iterator over all the package versions that takes into account the
 /// linked packages and the newest dependency date.
-pub struct PackageVersionsIterator<'a> {
+pub struct NpmPackageVersionInfosIterator<'a> {
   iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a>,
   info: &'a NpmPackageInfo,
   newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl<'a> PackageVersionsIterator<'a> {
+impl<'a> NpmPackageVersionInfosIterator<'a> {
   pub fn new(
     info: &'a NpmPackageInfo,
     link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
@@ -112,7 +112,7 @@ impl<'a> PackageVersionsIterator<'a> {
   }
 }
 
-impl<'a> Iterator for PackageVersionsIterator<'a> {
+impl<'a> Iterator for NpmPackageVersionInfosIterator<'a> {
   type Item = &'a NpmPackageVersionInfo;
 
   fn next(&mut self) -> Option<Self::Item> {

@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
+use crate::registry::NpmPackageVersionInfosIterator;
 
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone, deno_error::JsError)]
@@ -76,6 +77,11 @@ pub struct NpmVersionResolver {
 }
 
 impl NpmVersionResolver {
+  /// Gets the version infos that match the link packages and newest dependency date.
+  pub fn applicable_version_infos<'a>(&'a self, package_info: &'a NpmPackageInfo) -> NpmPackageVersionInfosIterator<'a> {
+    package_info.applicable_version_infos(&self.link_packages, self.newest_dependency_date)
+  }
+
   pub fn resolve_best_package_version_info<'a, 'version>(
     &'a self,
     version_req: &VersionReq,
