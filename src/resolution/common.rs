@@ -53,7 +53,7 @@ pub enum NpmPackageVersionResolutionError {
   },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct NpmVersionResolver {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
