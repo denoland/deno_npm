@@ -52,6 +52,22 @@ impl NpmPackageInfo {
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
   }
+
+  pub fn matches_newest_dependency_date(
+    &self,
+    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    version: &Version,
+  ) -> bool {
+    newest_dependency_date
+      .and_then(|cutoff| {
+        // assume versions not in the time hashmap are really old
+        self
+          .time
+          .get(version)
+          .map(|package_age| *package_age < cutoff)
+      })
+      .unwrap_or(true)
+  }
 }
 
 #[derive(Debug, Clone, Error, deno_error::JsError)]
