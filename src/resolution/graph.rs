@@ -5380,6 +5380,7 @@ mod test {
     api.ensure_package_version("a", "1.0.2");
 
     api.with_package("a", |info| {
+      info.dist_tags.insert("tag".to_string(), version("1.0.2"));
       info.time.insert(
         version("1.0.0"),
         "2015-11-07T00:00:00.000Z".parse().unwrap(),
@@ -5393,36 +5394,56 @@ mod test {
         "2022-11-07T00:00:00.000Z".parse().unwrap(),
       );
     });
+    {
+      let (packages, _package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: vec!["a@1"],
+          newest_dependency_date: Some(
+            "2021-11-07T00:00:00.000Z".parse().unwrap(),
+          ),
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(packages.len(), 1);
+      assert_eq!(packages[0].pkg_id, "a@1.0.1");
+    }
 
-    let (packages, _package_reqs) = run_resolver_with_options_and_get_output(
-      api.clone(),
-      RunResolverOptions {
-        reqs: vec!["a@1"],
-        newest_dependency_date: Some(
-          "2021-11-07T00:00:00.000Z".parse().unwrap(),
-        ),
-        ..Default::default()
-      },
-    )
-    .await;
-    assert_eq!(packages.len(), 1);
-    assert_eq!(packages[0].pkg_id, "a@1.0.1");
-
-    let err = run_resolver_with_options_and_get_err(
-      &api,
-      RunResolverOptions {
-        reqs: vec!["a@1"],
-        newest_dependency_date: Some(
-          "2010-11-07T00:00:00.000Z".parse().unwrap(),
-        ),
-        ..Default::default()
-      },
-    )
-    .await;
-    assert_eq!(
-      err.to_string(),
-      "Could not find npm package 'a' matching '1'.\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of 2010-11-07 00:00:00 UTC"
-    );
+    {
+      let err = run_resolver_with_options_and_get_err(
+        &api,
+        RunResolverOptions {
+          reqs: vec!["a@1"],
+          newest_dependency_date: Some(
+            "2010-11-07T00:00:00.000Z".parse().unwrap(),
+          ),
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(
+        err.to_string(),
+        "Could not find npm package 'a' matching '1'.\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of 2010-11-07 00:00:00 UTC."
+      );
+    }
+    {
+      let err = run_resolver_with_options_and_get_err(
+        &api,
+        RunResolverOptions {
+          reqs: vec!["a@tag"],
+          newest_dependency_date: Some(
+            "2010-11-07T00:00:00.000Z".parse().unwrap(),
+          ),
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(
+        err.to_string(),
+        "Failed resolving tag 'a@tag' mapped to 'a@1.0.2' because the package version was published at 2022-11-07 00:00:00 UTC, but dependencies newer than 2010-11-07 00:00:00 UTC are not allowed because it is newer than the specified minimum dependency date."
+      );
+    }
   }
 
   #[tokio::test]

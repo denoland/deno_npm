@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::registry::NpmPackageInfo;
 use crate::registry::NpmPackageVersionInfo;
+use crate::registry::NpmPackageVersionInfosIterator;
 
 /// Error that occurs when the version is not found in the package information.
 #[derive(Debug, Error, Clone, deno_error::JsError)]
@@ -39,12 +40,23 @@ pub enum NpmPackageVersionResolutionError {
     dist_tag: String,
     version: String,
   },
+  #[class(type)]
+  #[error(
+    "Failed resolving tag '{package_name}@{dist_tag}' mapped to '{package_name}@{version}' because the package version was published at {publish_date}, but dependencies newer than {newest_dependency_date} are not allowed because it is newer than the specified minimum dependency date."
+  )]
+  DistTagVersionTooNew {
+    package_name: StackString,
+    dist_tag: String,
+    version: String,
+    publish_date: chrono::DateTime<chrono::Utc>,
+    newest_dependency_date: chrono::DateTime<chrono::Utc>,
+  },
   #[class(inherit)]
   #[error(transparent)]
   VersionNotFound(#[from] NpmPackageVersionNotFound),
   #[class(type)]
   #[error(
-    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, newest_dependency_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of {}", v)).unwrap_or_else(String::new)
+    "Could not find npm package '{}' matching '{}'.{}", package_name, version_req, newest_dependency_date.map(|v| format!("\n\nA newer matching version was found, but it was not used because it was newer than the specified minimum dependency date of {}.", v)).unwrap_or_else(String::new)
   )]
   VersionReqNotMatched {
     package_name: StackString,
@@ -65,6 +77,17 @@ pub struct NpmVersionResolver {
 }
 
 impl NpmVersionResolver {
+  /// Gets the version infos that match the link packages and newest dependency date.
+  pub fn applicable_version_infos<'a>(
+    &'a self,
+    package_info: &'a NpmPackageInfo,
+  ) -> NpmPackageVersionInfosIterator<'a> {
+    package_info.applicable_version_infos(
+      &self.link_packages,
+      self.newest_dependency_date,
+    )
+  }
+
   pub fn resolve_best_package_version_info<'a, 'version>(
     &'a self,
     version_req: &VersionReq,
@@ -121,16 +144,17 @@ impl NpmVersionResolver {
       // No need to care about @types/node here, because it'll be handled specially below.
     } else if info.dist_tags.contains_key("latest")
       && info.name != "@types/node"
-      && (*version_req == *WILDCARD_VERSION_REQ
-        // When the latest tag satisfies the version requirement, use it directly.
-        // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
-        || info
-          .dist_tags
-          .get("latest")
-          .and_then(|version| {
-            self.version_req_satisfies(version_req, version, info).ok().filter(|_| self.matches_min_release_cutoff_date(info, version))
-          })
-          .unwrap_or_default())
+      // When the latest tag satisfies the version requirement, use it directly.
+      // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
+      && info
+        .dist_tags
+        .get("latest")
+        .filter(|version| self.matches_newest_dependency_date(info, version))
+        .map(|version| {
+          *version_req == *WILDCARD_VERSION_REQ ||
+          self.version_req_satisfies(version_req, version, info).ok().unwrap_or(false)
+        })
+        .unwrap_or(false)
     {
       self.tag_to_version_info(info, "latest")
     } else {
@@ -139,7 +163,7 @@ impl NpmVersionResolver {
         let version = &version_info.version;
         if self.version_req_satisfies(version_req, version, info)? {
           found_matching_version = true;
-          if self.matches_min_release_cutoff_date(info, version) {
+          if self.matches_newest_dependency_date(info, version) {
             let is_best_version = maybe_best_version
               .as_ref()
               .map(|best_version| best_version.version.cmp(version).is_lt())
@@ -173,22 +197,26 @@ impl NpmVersionResolver {
     }
   }
 
-  #[inline]
-  fn matches_min_release_cutoff_date(
+  pub fn version_req_satisfies_and_matches_newest_dependency_date(
+    &self,
+    version_req: &VersionReq,
+    version: &Version,
+    package_info: &NpmPackageInfo,
+  ) -> Result<bool, NpmPackageVersionResolutionError> {
+    Ok(
+      self.version_req_satisfies(version_req, version, package_info)?
+        && self.matches_newest_dependency_date(package_info, version),
+    )
+  }
+
+  /// Gets if the provided version should be ignored or not
+  /// based on the `newest_dependency_date`.
+  pub fn matches_newest_dependency_date(
     &self,
     info: &NpmPackageInfo,
     version: &Version,
   ) -> bool {
-    self
-      .newest_dependency_date
-      .and_then(|cutoff| {
-        // assume versions not in the time hashmap are really old
-        info
-          .time
-          .get(version)
-          .map(|package_age| *package_age < cutoff)
-      })
-      .unwrap_or(true)
+    info.matches_newest_dependency_date(self.newest_dependency_date, version)
   }
 
   pub fn version_req_satisfies(
@@ -250,7 +278,19 @@ impl NpmVersionResolver {
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
     if let Some(version) = info.dist_tags.get(tag) {
       match info.versions.get(version) {
-        Some(info) => Ok(info),
+        Some(version_info) => {
+          if self.matches_newest_dependency_date(info, version) {
+            Ok(version_info)
+          } else {
+            Err(NpmPackageVersionResolutionError::DistTagVersionTooNew {
+              package_name: info.name.clone(),
+              dist_tag: tag.to_string(),
+              version: version.to_string(),
+              newest_dependency_date: self.newest_dependency_date.unwrap(),
+              publish_date: *info.time.get(version).unwrap(),
+            })
+          }
+        }
         None => Err(NpmPackageVersionResolutionError::DistTagVersionNotFound {
           package_name: info.name.clone(),
           dist_tag: tag.to_string(),
