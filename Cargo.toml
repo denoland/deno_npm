@@ -15,7 +15,7 @@ tracing = []
 [dependencies]
 async-trait = "0.1.68"
 capacity_builder = "0.5.0"
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
 deno_semver = "0.9.0"
 deno_error = "0.7.0"
 deno_lockfile = "0.31.0"
