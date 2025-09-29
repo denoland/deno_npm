@@ -1253,11 +1253,7 @@ mod test {
     combined.dedup();
     assert_eq!(
       combined,
-      Vec::from([
-        "a".to_string(),
-        "b".to_string(),
-        "c".to_string(),
-      ])
+      Vec::from(["a".to_string(), "b".to_string(), "c".to_string(),])
     );
   }
 
@@ -1529,7 +1525,7 @@ mod test {
       bin: Default::default(),
       dependencies: Default::default(),
       bundle_dependencies: Default::default(),
-  bundled_dependencies: Default::default(),
+      bundled_dependencies: Default::default(),
       optional_dependencies: Default::default(),
       peer_dependencies: Default::default(),
       peer_dependencies_meta: Default::default(),
