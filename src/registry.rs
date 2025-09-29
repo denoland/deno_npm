@@ -214,7 +214,7 @@ pub enum NpmPackageVersionBinEntry {
   Map(HashMap<String, String>),
 }
 
-#[derive(Debug, Default, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NpmPackageVersionInfo {
   pub version: Version,
@@ -225,95 +225,60 @@ pub struct NpmPackageVersionInfo {
   // Bare specifier to version (ex. `"typescript": "^3.0.1") or possibly
   // package and version (ex. `"typescript-3.0.1": "npm:typescript@3.0.1"`).
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub dependencies: HashMap<StackString, StackString>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub bundle_dependencies: Vec<StackString>,
+  #[serde(
+    default,
+    skip_serializing,
+    rename = "bundledDependencies",
+    deserialize_with = "deserializers::vector"
+  )]
+  pub bundled_dependencies: Vec<StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub optional_dependencies: HashMap<StackString, StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies: HashMap<StackString, StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub peer_dependencies_meta: HashMap<StackString, NpmPeerDependencyMeta>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub os: Vec<SmallStackString>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub cpu: Vec<SmallStackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub directories: HashMap<SmallStackString, String>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  #[serde(deserialize_with = "deserializers::hashmap")]
   pub scripts: HashMap<SmallStackString, String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
+  #[serde(deserialize_with = "deserializers::string")]
   pub deprecated: Option<String>,
 }
 
-impl<'de> Deserialize<'de> for NpmPackageVersionInfo {
-  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-  where
-    D: serde::Deserializer<'de>,
-  {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Helper {
-      pub version: Version,
-      #[serde(default)]
-      pub dist: Option<NpmPackageVersionDistInfo>,
-      #[serde(default)]
-      pub bin: Option<NpmPackageVersionBinEntry>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub dependencies: HashMap<StackString, StackString>,
-      #[serde(default, deserialize_with = "deserializers::vector")]
-      pub bundle_dependencies: Vec<StackString>,
-      #[serde(default, deserialize_with = "deserializers::vector")]
-      pub bundled_dependencies: Vec<StackString>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub optional_dependencies: HashMap<StackString, StackString>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub peer_dependencies: HashMap<StackString, StackString>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub peer_dependencies_meta: HashMap<StackString, NpmPeerDependencyMeta>,
-      #[serde(default, deserialize_with = "deserializers::vector")]
-      pub os: Vec<SmallStackString>,
-      #[serde(default, deserialize_with = "deserializers::vector")]
-      pub cpu: Vec<SmallStackString>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub directories: HashMap<SmallStackString, String>,
-      #[serde(default, deserialize_with = "deserializers::hashmap")]
-      pub scripts: HashMap<SmallStackString, String>,
-      #[serde(default, deserialize_with = "deserializers::string")]
-      pub deprecated: Option<String>,
-    }
-
-    let mut helper = Helper::deserialize(deserializer)?;
-
-    if !helper.bundled_dependencies.is_empty() {
-      let mut existing = helper.bundle_dependencies;
-      for dep in helper.bundled_dependencies {
-        if !existing.iter().any(|existing_dep| existing_dep == &dep) {
-          existing.push(dep);
-        }
-      }
-      helper.bundle_dependencies = existing;
-    }
-
-    Ok(NpmPackageVersionInfo {
-      version: helper.version,
-      dist: helper.dist,
-      bin: helper.bin,
-      dependencies: helper.dependencies,
-      bundle_dependencies: helper.bundle_dependencies,
-      optional_dependencies: helper.optional_dependencies,
-      peer_dependencies: helper.peer_dependencies,
-      peer_dependencies_meta: helper.peer_dependencies_meta,
-      os: helper.os,
-      cpu: helper.cpu,
-      directories: helper.directories,
-      scripts: helper.scripts,
-      deprecated: helper.deprecated,
-    })
-  }
-}
-
 impl NpmPackageVersionInfo {
+  fn bundle_dependencies_iter(&self) -> impl Iterator<Item = &StackString> {
+    self
+      .bundle_dependencies
+      .iter()
+      .chain(self.bundled_dependencies.iter())
+  }
+
+  fn bundle_dependencies_is_empty(&self) -> bool {
+    self.bundle_dependencies.is_empty() && self.bundled_dependencies.is_empty()
+  }
+
+  fn is_bundle_dependency(&self, key: &StackString) -> bool {
+    self.bundle_dependencies_iter().any(|dep| dep == key)
+  }
+
   pub fn dependencies_as_entries(
     &self,
     // name of the package used to improve error messages
@@ -357,7 +322,7 @@ impl NpmPackageVersionInfo {
       .optional_dependencies
       .keys()
       .all(|k| self.dependencies.contains_key(k))
-      && self.bundle_dependencies.is_empty()
+      && self.bundle_dependencies_is_empty()
     {
       Cow::Borrowed(&self.dependencies)
     } else {
@@ -371,7 +336,7 @@ impl NpmPackageVersionInfo {
           // prefer what's in the dependencies map
           .chain(self.dependencies.iter())
           // exclude bundle dependencies
-          .filter(|(k, _)| !self.bundle_dependencies.contains(k))
+          .filter(|(k, _)| !self.is_bundle_dependency(k))
           .map(|(k, v)| (k.clone(), v.clone()))
           .collect(),
       )
@@ -1278,12 +1243,20 @@ mod test {
       "bundledDependencies": ["b", "c"]
     }"#;
     let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    let mut combined: Vec<String> = info
+      .bundle_dependencies
+      .iter()
+      .chain(info.bundled_dependencies.iter())
+      .map(|s| s.to_string())
+      .collect();
+    combined.sort();
+    combined.dedup();
     assert_eq!(
-      info.bundle_dependencies,
+      combined,
       Vec::from([
-        StackString::from("a"),
-        StackString::from("b"),
-        StackString::from("c"),
+        "a".to_string(),
+        "b".to_string(),
+        "c".to_string(),
       ])
     );
   }
@@ -1556,6 +1529,7 @@ mod test {
       bin: Default::default(),
       dependencies: Default::default(),
       bundle_dependencies: Default::default(),
+  bundled_dependencies: Default::default(),
       optional_dependencies: Default::default(),
       peer_dependencies: Default::default(),
       peer_dependencies_meta: Default::default(),
