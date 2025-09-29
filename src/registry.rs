@@ -230,12 +230,8 @@ pub struct NpmPackageVersionInfo {
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   #[serde(deserialize_with = "deserializers::vector")]
   pub bundle_dependencies: Vec<StackString>,
-  #[serde(
-    default,
-    skip_serializing,
-    rename = "bundledDependencies",
-    deserialize_with = "deserializers::vector"
-  )]
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub bundled_dependencies: Vec<StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
