@@ -228,11 +228,11 @@ pub struct NpmPackageVersionInfo {
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub dependencies: HashMap<StackString, StackString>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
-  #[serde(
-    deserialize_with = "deserializers::vector",
-    alias = "bundledDependencies"
-  )]
+  #[serde(deserialize_with = "deserializers::vector")]
   pub bundle_dependencies: Vec<StackString>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(deserialize_with = "deserializers::vector")]
+  pub bundled_dependencies: Vec<StackString>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   #[serde(deserialize_with = "deserializers::hashmap")]
   pub optional_dependencies: HashMap<StackString, StackString>,
@@ -260,6 +260,21 @@ pub struct NpmPackageVersionInfo {
 }
 
 impl NpmPackageVersionInfo {
+  /// Helper for getting the bundle dependencies.
+  ///
+  /// Unfortunately due to limitations in serde, it's not
+  /// easy to have a way to deserialize an alias without it
+  /// throwing when the data has both fields, so we store both
+  /// on the struct.
+  pub fn bundle_dependencies(&self) -> &[StackString] {
+    if self.bundle_dependencies.is_empty() {
+      // only use the alias if the main field is empty
+      &self.bundled_dependencies
+    } else {
+      &self.bundle_dependencies
+    }
+  }
+
   pub fn dependencies_as_entries(
     &self,
     // name of the package used to improve error messages
@@ -303,7 +318,7 @@ impl NpmPackageVersionInfo {
       .optional_dependencies
       .keys()
       .all(|k| self.dependencies.contains_key(k))
-      && self.bundle_dependencies.is_empty()
+      && self.bundle_dependencies().is_empty()
     {
       Cow::Borrowed(&self.dependencies)
     } else {
@@ -317,7 +332,7 @@ impl NpmPackageVersionInfo {
           // prefer what's in the dependencies map
           .chain(self.dependencies.iter())
           // exclude bundle dependencies
-          .filter(|(k, _)| !self.bundle_dependencies.contains(k))
+          .filter(|(k, _)| !self.bundle_dependencies().iter().any(|b| b == *k))
           .map(|(k, v)| (k.clone(), v.clone()))
           .collect(),
       )
@@ -1216,6 +1231,36 @@ mod test {
   }
 
   #[test]
+  fn deserializes_bundle_dependencies_aliases() {
+    let text = r#"{
+      "version": "1.0.0",
+      "dist": { "tarball": "value", "shasum": "test" },
+      "bundleDependencies": ["a", "b"],
+      "bundledDependencies": ["b", "c"]
+    }"#;
+    let info: NpmPackageVersionInfo = serde_json::from_str(text).unwrap();
+    let combined: Vec<String> = info
+      .bundle_dependencies
+      .iter()
+      .chain(info.bundled_dependencies.iter())
+      .map(|s| s.to_string())
+      .collect();
+    assert_eq!(
+      combined,
+      Vec::from([
+        "a".to_string(),
+        "b".to_string(),
+        "b".to_string(),
+        "c".to_string(),
+      ])
+    );
+    assert_eq!(
+      info.bundle_dependencies(),
+      Vec::from(["a".to_string(), "b".to_string()])
+    );
+  }
+
+  #[test]
   fn deserializes_invalid_kind() {
     #[track_caller]
     fn assert_empty(text: &str) {
@@ -1483,6 +1528,7 @@ mod test {
       bin: Default::default(),
       dependencies: Default::default(),
       bundle_dependencies: Default::default(),
+      bundled_dependencies: Default::default(),
       optional_dependencies: Default::default(),
       peer_dependencies: Default::default(),
       peer_dependencies_meta: Default::default(),
