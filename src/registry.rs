@@ -1282,7 +1282,7 @@ mod test {
         "peerDependenciesMeta": [],
         "os": {},
         "cpu": {},
-        "scripts": [],
+        "scripts": []
       }"#,
     );
 
