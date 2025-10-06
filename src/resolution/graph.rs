@@ -982,6 +982,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
+  is_deduping: bool,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -1001,6 +1002,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
+      is_deduping: false,
     }
   }
 
@@ -1163,28 +1165,39 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   }
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
-    // go down through the dependencies by tree depth
-    let mut previous_seen_optional_peers_count = 0;
     while !self.pending_unresolved_nodes.is_empty() {
-      while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
-        self.resolve_next_pending(parent_path).await?;
-      }
+      // go down through the dependencies by tree depth
+      let mut previous_seen_optional_peers_count = 0;
+      while !self.pending_unresolved_nodes.is_empty() {
+        while let Some(parent_path) = self.pending_unresolved_nodes.pop_front()
+        {
+          self.resolve_next_pending(parent_path).await?;
+        }
 
-      let seen_optional_peers_count =
-        self.graph.unresolved_optional_peers.seen_count();
-      if seen_optional_peers_count > previous_seen_optional_peers_count {
-        previous_seen_optional_peers_count = seen_optional_peers_count;
-        debug!("Traversing graph to ensure newly seen optional peers are set.");
-        // go through the graph again resolving any optional peers
-        for (nv, node_id) in &self.graph.root_packages {
-          self.pending_unresolved_nodes.push_back(GraphPath::for_root(
-            *node_id,
-            nv.clone(),
-            GraphPathResolutionMode::OptionalPeers,
-          ));
+        let seen_optional_peers_count =
+          self.graph.unresolved_optional_peers.seen_count();
+        if seen_optional_peers_count > previous_seen_optional_peers_count {
+          previous_seen_optional_peers_count = seen_optional_peers_count;
+          debug!(
+            "Traversing graph to ensure newly seen optional peers are set."
+          );
+          // go through the graph again resolving any optional peers
+          for (nv, node_id) in &self.graph.root_packages {
+            self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+              *node_id,
+              nv.clone(),
+              GraphPathResolutionMode::OptionalPeers,
+            ));
+          }
         }
       }
+
+      if !self.is_deduping {
+        self.run_dedup_pass().await;
+        self.is_deduping = true;
+      }
     }
+
     Ok(())
   }
 
@@ -1194,7 +1207,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) -> Result<(), NpmResolutionError> {
     let (parent_nv, child_deps) = {
       let node_id = parent_path.node_id();
-      if self.graph.nodes.get(&node_id).unwrap().no_peers {
+      if !self.is_deduping && self.graph.nodes.get(&node_id).unwrap().no_peers {
         // We can skip as there's no reason to analyze this graph segment further.
         return Ok(());
       }
@@ -1941,6 +1954,203 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   pub fn take_unmet_peer_diagnostics(&self) -> Vec<UnmetPeerDepDiagnostic> {
     self.unmet_peer_diagnostics.borrow_mut().drain(..).collect()
   }
+
+  async fn run_dedup_pass(&mut self) {
+    let mut package_versions: HashMap<
+      PackageName,
+      BTreeMap<Version, Vec<VersionReq>>,
+    > = HashMap::with_capacity(self.graph.nodes.len());
+    let mut seen_nodes: HashSet<NodeId> =
+      HashSet::with_capacity(self.graph.nodes.len());
+    let mut pending_nodes: VecDeque<NodeId> = Default::default();
+
+    for (req, pkg_nv) in &self.graph.package_reqs {
+      if let Some(node_id) = self.graph.root_packages.get(pkg_nv) {
+        package_versions
+          .entry(req.name.clone())
+          .or_default()
+          .entry(pkg_nv.version.clone())
+          .or_default()
+          .push(req.version_req.clone());
+        if seen_nodes.insert(*node_id) {
+          pending_nodes.push_back(*node_id);
+        }
+      }
+    }
+
+    while let Some(node_id) = pending_nodes.pop_front() {
+      if let Some(node) = self.graph.nodes.get(&node_id) {
+        let id = self.graph.resolved_node_ids.get(node_id).unwrap();
+        if let Some(deps) = self.dep_entry_cache.get(&id.nv) {
+          for dep in deps.iter() {
+            if let Some(child_node_id) = node.children.get(&dep.bare_specifier)
+            {
+              let child_id =
+                self.graph.resolved_node_ids.get(*child_node_id).unwrap();
+              package_versions
+                .entry(dep.name.clone())
+                .or_default()
+                .entry(child_id.nv.version.clone())
+                .or_default()
+                .push(dep.version_req.clone());
+              if seen_nodes.insert(*child_node_id) {
+                pending_nodes.push_back(*child_node_id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    let mut consolidated_versions: BTreeMap<
+      PackageName,
+      HashMap<VersionReq, Version>,
+    > = Default::default();
+
+    for (package_name, reqs_by_version) in package_versions {
+      if reqs_by_version.len() <= 1 {
+        continue;
+      }
+      let final_versions = self
+        .assign_highest_satisfying(&package_name, &reqs_by_version)
+        .await;
+      if !final_versions.is_empty() {
+        // update the graph to only have the new versions in it
+        if let Some(versions) =
+          self.graph.package_name_versions.get_mut(&package_name)
+        {
+          versions
+            .retain(|version| final_versions.values().any(|v| v == version));
+        }
+
+        consolidated_versions.insert(package_name, final_versions);
+      }
+    }
+
+    if consolidated_versions.is_empty() {
+      return; // nothing to do
+    }
+
+    eprintln!("VERSIONS: {:?}", consolidated_versions);
+
+    // set the root package reqs
+    let mut changed_root_package_ids = Vec::new();
+    for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
+      if let Some(new_versions) = consolidated_versions.get(&pkg_req.name) {
+        if let Some(new_version) = new_versions.get(&pkg_req.version_req) {
+          if pkg_nv.version != *new_version {
+            *pkg_nv = Rc::new(PackageNv {
+              name: pkg_nv.name.clone(),
+              version: new_version.clone(),
+            });
+            let resolved_id = ResolvedId {
+              nv: pkg_nv.clone(),
+              peer_dependencies: Vec::new(),
+            };
+            changed_root_package_ids.push(resolved_id);
+          }
+        }
+      }
+    }
+
+    // set the root package nvs
+    for resolved_id in changed_root_package_ids {
+      let (_, node_id) = self.graph.get_or_create_for_id(&resolved_id);
+      self.graph.root_packages.insert(resolved_id.nv, node_id);
+    }
+
+    // now go through each node clearing it out
+    for (node_id, node) in &mut self.graph.nodes {
+      let Some(id) = self.graph.resolved_node_ids.get(*node_id) else {
+        continue;
+      };
+      let Some(deps) = self.dep_entry_cache.get(&id.nv) else {
+        continue;
+      };
+      for dep in deps.iter() {
+        let Some(child_node_id) = node.children.get(&dep.bare_specifier) else {
+          continue;
+        };
+        let child_id =
+          self.graph.resolved_node_ids.get(*child_node_id).unwrap();
+        let Some(versions) = consolidated_versions.get(&child_id.nv.name)
+        else {
+          continue;
+        };
+        if versions.contains_key(&dep.version_req) {
+          node.children.remove(&dep.bare_specifier);
+        }
+      }
+    }
+
+    // reset some details
+    self.graph.unresolved_optional_peers = Default::default();
+
+    // add the pending nodes from the root
+    for (pkg_nv, node_id) in &self.graph.root_packages {
+      self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+        *node_id,
+        pkg_nv.clone(),
+        GraphPathResolutionMode::All,
+      ));
+    }
+  }
+
+  async fn assign_highest_satisfying(
+    &self,
+    package_name: &PackageName,
+    by_version: &BTreeMap<Version, Vec<VersionReq>>,
+  ) -> HashMap<VersionReq, Version> {
+    // Collect unique reqs across all duplicates
+    let mut unassigned: HashSet<VersionReq> = HashSet::new();
+    for reqs in by_version.values() {
+      for r in reqs {
+        unassigned.insert(r.clone());
+      }
+    }
+
+    let mut assigned: HashMap<VersionReq, Version> =
+      HashMap::with_capacity(unassigned.len());
+    // the api is expected to have cached this at this point, so no
+    // need to parallelize
+    let package_info = self.api.package_info(package_name).await.unwrap();
+
+    // Iterate versions from highest to lowest
+    for (ver, _) in by_version.iter().rev() {
+      // Pick all still-unassigned reqs that accept v
+      let matching: Vec<VersionReq> = unassigned
+        .iter()
+        .filter(|r| {
+          self
+            .version_resolver
+            .version_req_satisfies(r, ver, &package_info)
+            .ok()
+            .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+      if matching.is_empty() {
+        continue;
+      }
+
+      // Assign them to this highest possible version
+      for r in matching {
+        unassigned.remove(&r);
+        assigned.insert(r, ver.clone());
+      }
+
+      if unassigned.is_empty() {
+        break;
+      }
+    }
+
+    // If anything remains, it means some req didn't match any available version.
+    // That shouldn't happen if the input was derived from a successful resolution,
+    // but you could fall back to its original version here if needed.
+
+    assigned
+  }
 }
 
 #[cfg(feature = "tracing")]
@@ -2007,6 +2217,15 @@ fn build_trace_graph_snapshot(
     path: build_path(current_path),
   }
 }
+
+struct DedupPass<'a, TNpmRegistryApi: NpmRegistryApi> {
+  graph: &'a mut Graph,
+  api: &'a TNpmRegistryApi,
+  version_resolver: &'a NpmVersionResolver,
+  dep_entry_cache: &'a mut DepEntryCache,
+}
+
+impl<'a, TNpmRegistryApi: NpmRegistryApi> DedupPass<'a, TNpmRegistryApi> {}
 
 #[cfg(test)]
 mod test {
@@ -2150,6 +2369,49 @@ mod test {
         copy_index: 0,
         dependencies: BTreeMap::new(),
       },]
+    );
+  }
+
+  #[tokio::test]
+  async fn dudpes_dep_overlapping_high_version_constraint_then_low() {
+    // a -> b
+    //   -> c -> b
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.1");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
+
+    let (packages, _package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
+            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
+          ])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+      ]
     );
   }
 
