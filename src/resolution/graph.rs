@@ -2031,8 +2031,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       return; // nothing to do
     }
 
-    eprintln!("VERSIONS: {:?}", consolidated_versions);
-
     // set the root package reqs
     let mut changed_root_package_ids = Vec::new();
     for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
@@ -2101,29 +2099,56 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     package_name: &PackageName,
     by_version: &BTreeMap<Version, Vec<VersionReq>>,
   ) -> HashMap<VersionReq, Version> {
-    // Collect unique reqs across all duplicates
-    let mut unassigned: HashSet<VersionReq> = HashSet::new();
-    for reqs in by_version.values() {
-      for r in reqs {
-        unassigned.insert(r.clone());
-      }
-    }
-
-    let mut assigned: HashMap<VersionReq, Version> =
-      HashMap::with_capacity(unassigned.len());
-    // the api is expected to have cached this at this point, so no
-    // need to parallelize
+    // this should already be cached
     let package_info = self.api.package_info(package_name).await.unwrap();
 
-    // Iterate versions from highest to lowest
-    for (ver, _) in by_version.iter().rev() {
-      // Pick all still-unassigned reqs that accept v
+    // Collect unique reqs across all versions
+    let reqs = {
+      let mut set: HashSet<VersionReq> = HashSet::new();
+      for rs in by_version.values() {
+        for r in rs {
+          set.insert(r.clone());
+        }
+      }
+      set
+    };
+
+    // Candidate versions = keys of by_version, highest -> lowest
+    let mut candidates: Vec<Version> = by_version.keys().cloned().collect();
+    candidates.sort(); // asc
+    candidates.reverse(); // desc
+
+    // ---------- Phase 1: try ONE global winner ----------
+    if let Some(global) = candidates
+      .iter()
+      .find(|v| {
+        reqs.iter().all(|r| {
+          self
+            .version_resolver
+            .version_req_satisfies(r, v, &package_info)
+            .ok()
+            .unwrap_or(false)
+        })
+      })
+      .cloned()
+    {
+      // Everyone can share `global`
+      return reqs.into_iter().map(|r| (r, global.clone())).collect();
+    }
+
+    // ---------- Phase 2: greedy fallback (highest-first per-range) ----------
+    let mut unassigned: HashSet<VersionReq> = reqs.into_iter().collect();
+    let mut assigned: HashMap<VersionReq, Version> =
+      HashMap::with_capacity(unassigned.len());
+
+    for v in candidates.into_iter() {
+      // assign all still-unassigned reqs that accept this version
       let matching: Vec<VersionReq> = unassigned
         .iter()
         .filter(|r| {
           self
             .version_resolver
-            .version_req_satisfies(r, ver, &package_info)
+            .version_req_satisfies(r, &v, &package_info)
             .ok()
             .unwrap_or(false)
         })
@@ -2134,10 +2159,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         continue;
       }
 
-      // Assign them to this highest possible version
       for r in matching {
         unassigned.remove(&r);
-        assigned.insert(r, ver.clone());
+        assigned.insert(r, v.clone());
       }
 
       if unassigned.is_empty() {
@@ -2145,10 +2169,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
 
-    // If anything remains, it means some req didn't match any available version.
-    // That shouldn't happen if the input was derived from a successful resolution,
-    // but you could fall back to its original version here if needed.
-
+    // Any leftover reqs would indicate no candidate matched them (shouldn't happen
+    // if `by_version` came from a successful resolution).
     assigned
   }
 }
@@ -2217,15 +2239,6 @@ fn build_trace_graph_snapshot(
     path: build_path(current_path),
   }
 }
-
-struct DedupPass<'a, TNpmRegistryApi: NpmRegistryApi> {
-  graph: &'a mut Graph,
-  api: &'a TNpmRegistryApi,
-  version_resolver: &'a NpmVersionResolver,
-  dep_entry_cache: &'a mut DepEntryCache,
-}
-
-impl<'a, TNpmRegistryApi: NpmRegistryApi> DedupPass<'a, TNpmRegistryApi> {}
 
 #[cfg(test)]
 mod test {
@@ -2374,8 +2387,8 @@ mod test {
 
   #[tokio::test]
   async fn dudpes_dep_overlapping_high_version_constraint_then_low() {
-    // a -> b
-    //   -> c -> b
+    // a -> b (1.x)
+    //   -> c -> b (1.0.0)
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-b", "1.0.0");
