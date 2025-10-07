@@ -201,6 +201,7 @@ async fn run_resolver_and_get_snapshot(
       AddPkgReqsOptions {
         package_reqs: &reqs,
         version_resolver: &version_resolver,
+        should_dedup: true,
       },
       None,
     )

@@ -181,6 +181,12 @@ impl ResolvedNodeIds {
       .get(&resolved_id.current_state_hash())
       .copied()
   }
+
+  pub fn clear_peer_deps(&mut self) {
+    for (resolved_id, _) in self.node_to_resolved_id.values_mut() {
+      resolved_id.peer_dependencies.clear();
+    }
+  }
 }
 
 /// A pointer to a specific node in a graph path. The underlying node id
@@ -974,6 +980,10 @@ impl UnresolvedOptionalPeers {
   }
 }
 
+pub struct GraphDependencyResolverOptions {
+  pub should_dedup: bool,
+}
+
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   unmet_peer_diagnostics: RefCell<IndexSet<UnmetPeerDepDiagnostic>>,
   graph: &'a mut Graph,
@@ -993,6 +1003,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     api: &'a TNpmRegistryApi,
     version_resolver: &'a NpmVersionResolver,
     reporter: Option<&'a dyn Reporter>,
+    options: GraphDependencyResolverOptions,
   ) -> Self {
     Self {
       unmet_peer_diagnostics: Default::default(),
@@ -1002,7 +1013,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
-      is_deduping: false,
+      is_deduping: options.should_dedup,
     }
   }
 
@@ -2083,6 +2094,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     // reset some details
     self.graph.unresolved_optional_peers = Default::default();
+    self.graph.resolved_node_ids.clear_peer_deps();
 
     // add the pending nodes from the root
     for (pkg_nv, node_id) in &self.graph.root_packages {
@@ -2382,49 +2394,6 @@ mod test {
         copy_index: 0,
         dependencies: BTreeMap::new(),
       },]
-    );
-  }
-
-  #[tokio::test]
-  async fn dudpes_dep_overlapping_high_version_constraint_then_low() {
-    // a -> b (1.x)
-    //   -> c -> b (1.0.0)
-    let api = TestNpmRegistryApi::default();
-    api.ensure_package_version("package-a", "1.0.0");
-    api.ensure_package_version("package-b", "1.0.0");
-    api.ensure_package_version("package-b", "1.0.1");
-    api.ensure_package_version("package-c", "1.0.0");
-    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
-    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
-    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
-
-    let (packages, _package_reqs) =
-      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
-            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
-          ])
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-b@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::new(),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-c@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-b".to_string(),
-            "package-b@1.0.0".to_string(),
-          )]),
-        },
-      ]
     );
   }
 
@@ -5137,6 +5106,106 @@ mod test {
   }
 
   #[tokio::test]
+  async fn dudpes_dep_overlapping_high_version_constraint_then_low() {
+    // a -> b (1.x)
+    //   -> c -> b (1.0.0)
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.1");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
+
+    let (packages, _package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
+            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
+          ])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+      ]
+    );
+  }
+
+  #[tokio::test]
+  async fn dudpes_dep_overlapping_high_version_constraint_then_low_with_peer_deps()
+   {
+    // a -> b (1.x) -> d
+    //   -> c -> b (1.0.0)
+    // d
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.1");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
+    // this is only a peer dep of the 1.0.1 package and not 1.0.0 so it initially
+    // resolves the peer dep, but then it resets itself so there's no longer any
+    api.add_peer_dependency(("package-b", "1.0.1"), ("package-d", "1"));
+
+    let (packages, _package_reqs) = run_resolver_and_get_output(
+      api,
+      vec!["package-a@1.0.0", "package-d@1.0.0"],
+    )
+    .await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
+            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
+          ])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-d@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+      ]
+    );
+  }
+
+  #[tokio::test]
   async fn graph_from_snapshot_dep_on_self() {
     // there are some lockfiles in the wild that when loading have a dependency
     // on themselves and causes a panic, so ensure this doesn't panic
@@ -6077,6 +6146,7 @@ mod test {
       api,
       &npm_version_resolver,
       None,
+      GraphDependencyResolverOptions { should_dedup: true },
     );
 
     for req in options.reqs {
@@ -6145,6 +6215,7 @@ mod test {
       &api,
       &npm_version_resolver,
       None,
+      GraphDependencyResolverOptions { should_dedup: true },
     );
 
     for req in reqs {
