@@ -992,7 +992,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
-  is_deduping: bool,
+  should_dedup: bool,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -1013,7 +1013,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
-      is_deduping: options.should_dedup,
+      should_dedup: options.should_dedup,
     }
   }
 
@@ -1176,6 +1176,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   }
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
+    let mut did_dedup = false;
     while !self.pending_unresolved_nodes.is_empty() {
       // go down through the dependencies by tree depth
       let mut previous_seen_optional_peers_count = 0;
@@ -1203,9 +1204,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         }
       }
 
-      if !self.is_deduping {
+      if self.should_dedup && !did_dedup {
         self.run_dedup_pass().await;
-        self.is_deduping = true;
+        did_dedup = true;
       }
     }
 
@@ -1218,7 +1219,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) -> Result<(), NpmResolutionError> {
     let (parent_nv, child_deps) = {
       let node_id = parent_path.node_id();
-      if !self.is_deduping && self.graph.nodes.get(&node_id).unwrap().no_peers {
+      if self.graph.nodes.get(&node_id).unwrap().no_peers {
         // We can skip as there's no reason to analyze this graph segment further.
         return Ok(());
       }
@@ -2070,6 +2071,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     // now go through each node clearing it out
     for (node_id, node) in &mut self.graph.nodes {
+      node.no_peers = false; // reset
       let Some(id) = self.graph.resolved_node_ids.get(*node_id) else {
         continue;
       };
