@@ -1968,6 +1968,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   }
 
   async fn run_dedup_pass(&mut self) {
+    log::debug!("Running npm dedup pass.");
     let mut package_versions: HashMap<
       PackageName,
       BTreeMap<Version, Vec<VersionReq>>,
@@ -2043,12 +2044,23 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       return; // nothing to do
     }
 
+    log::debug!("Consolidating npm versions.");
+
+    if log::log_enabled!(log::Level::Debug) {
+      for (package_name, versions_by_version_req) in &consolidated_versions {
+        for (version_req, version) in versions_by_version_req {
+          log::debug!("{}: {} -> {}", package_name, version_req, version);
+        }
+      }
+    }
+
     // set the root package reqs
-    let mut changed_root_package_ids = Vec::new();
+    let mut added_root_package_ids = Vec::new();
     for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
       if let Some(new_versions) = consolidated_versions.get(&pkg_req.name) {
         if let Some(new_version) = new_versions.get(&pkg_req.version_req) {
           if pkg_nv.version != *new_version {
+            self.graph.root_packages.remove(pkg_nv);
             *pkg_nv = Rc::new(PackageNv {
               name: pkg_nv.name.clone(),
               version: new_version.clone(),
@@ -2057,14 +2069,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               nv: pkg_nv.clone(),
               peer_dependencies: Vec::new(),
             };
-            changed_root_package_ids.push(resolved_id);
+            added_root_package_ids.push(resolved_id);
           }
         }
       }
     }
 
     // set the root package nvs
-    for resolved_id in changed_root_package_ids {
+    for resolved_id in added_root_package_ids {
       let (_, node_id) = self.graph.get_or_create_for_id(&resolved_id);
       self.graph.root_packages.insert(resolved_id.nv, node_id);
     }
