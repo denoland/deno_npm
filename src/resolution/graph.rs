@@ -183,8 +183,13 @@ impl ResolvedNodeIds {
   }
 
   pub fn clear_peer_deps(&mut self) {
-    for (resolved_id, _) in self.node_to_resolved_id.values_mut() {
+    self.resolved_to_node_id.clear();
+    for (node_id, (resolved_id, resolved_id_hash)) in
+      &mut self.node_to_resolved_id
+    {
       resolved_id.peer_dependencies.clear();
+      *resolved_id_hash = resolved_id.current_state_hash();
+      self.resolved_to_node_id.insert(*resolved_id_hash, *node_id);
     }
   }
 }
