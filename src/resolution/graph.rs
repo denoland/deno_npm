@@ -2059,18 +2059,19 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
       if let Some(new_versions) = consolidated_versions.get(&pkg_req.name)
         && let Some(new_version) = new_versions.get(&pkg_req.version_req)
-          && pkg_nv.version != *new_version {
-            self.graph.root_packages.remove(pkg_nv);
-            *pkg_nv = Rc::new(PackageNv {
-              name: pkg_nv.name.clone(),
-              version: new_version.clone(),
-            });
-            let resolved_id = ResolvedId {
-              nv: pkg_nv.clone(),
-              peer_dependencies: Vec::new(),
-            };
-            added_root_package_ids.push(resolved_id);
-          }
+        && pkg_nv.version != *new_version
+      {
+        self.graph.root_packages.remove(pkg_nv);
+        *pkg_nv = Rc::new(PackageNv {
+          name: pkg_nv.name.clone(),
+          version: new_version.clone(),
+        });
+        let resolved_id = ResolvedId {
+          nv: pkg_nv.clone(),
+          peer_dependencies: Vec::new(),
+        };
+        added_root_package_ids.push(resolved_id);
+      }
     }
 
     // set the root package nvs
@@ -2127,26 +2128,26 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let package_info = self.api.package_info(package_name).await.unwrap();
 
     // collect unique reqs across all versions
-    let reqs = by_version.values()
-        .map(|rs| rs.iter().cloned()).flatten().collect::<HashSet<_>>();
+    let reqs = by_version
+      .values()
+      .flat_map(|rs| rs.iter())
+      .cloned()
+      .collect::<HashSet<_>>();
 
     // candidate versions = keys of by_version, highest -> lowest
     let mut candidates: Vec<Version> = by_version.keys().cloned().collect();
     candidates.sort_by(|a, b| b.cmp(a));
 
     // try one global winner
-    if let Some(global) = candidates
-      .iter()
-      .find(|v| {
-        reqs.iter().all(|r| {
-          self
-            .version_resolver
-            .version_req_satisfies(r, v, &package_info)
-            .ok()
-            .unwrap_or(false)
-        })
+    if let Some(global) = candidates.iter().find(|v| {
+      reqs.iter().all(|r| {
+        self
+          .version_resolver
+          .version_req_satisfies(r, v, &package_info)
+          .ok()
+          .unwrap_or(false)
       })
-    {
+    }) {
       return reqs.into_iter().map(|r| (r, global.clone())).collect();
     }
 
