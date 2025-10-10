@@ -1985,7 +1985,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     for (req, pkg_nv) in &self.graph.package_reqs {
       if let Some(node_id) = self.graph.root_packages.get(pkg_nv) {
-        package_versions
+        package_version_reqs_by_version
           .entry(req.name.clone())
           .or_default()
           .entry(pkg_nv.version.clone())
@@ -2006,7 +2006,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             {
               let child_id =
                 self.graph.resolved_node_ids.get(*child_node_id).unwrap();
-              package_versions
+              package_version_reqs_by_version
                 .entry(dep.name.clone())
                 .or_default()
                 .entry(child_id.nv.version.clone())
@@ -2026,7 +2026,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       HashMap<VersionReq, Version>,
     > = Default::default();
 
-    for (package_name, reqs_by_version) in package_versions {
+    for (package_name, reqs_by_version) in package_version_reqs_by_version {
       if reqs_by_version.len() <= 1 {
         continue;
       }
