@@ -2057,9 +2057,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // set the root package reqs
     let mut added_root_package_ids = Vec::new();
     for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
-      if let Some(new_versions) = consolidated_versions.get(&pkg_req.name) {
-        if let Some(new_version) = new_versions.get(&pkg_req.version_req) {
-          if pkg_nv.version != *new_version {
+      if let Some(new_versions) = consolidated_versions.get(&pkg_req.name)
+        && let Some(new_version) = new_versions.get(&pkg_req.version_req)
+          && pkg_nv.version != *new_version {
             self.graph.root_packages.remove(pkg_nv);
             *pkg_nv = Rc::new(PackageNv {
               name: pkg_nv.name.clone(),
@@ -2071,8 +2071,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             };
             added_root_package_ids.push(resolved_id);
           }
-        }
-      }
     }
 
     // set the root package nvs
