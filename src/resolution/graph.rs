@@ -2155,7 +2155,10 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           .unwrap_or(false)
       })
     }) {
-      return reqs.iter().map(|r| ((*r).clone(), global.clone())).collect();
+      return reqs
+        .iter()
+        .map(|r| ((*r).clone(), global.clone()))
+        .collect();
     }
 
     // otherwise, use highest-first per-range
