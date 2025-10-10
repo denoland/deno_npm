@@ -2126,23 +2126,15 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // this should already be cached
     let package_info = self.api.package_info(package_name).await.unwrap();
 
-    // Collect unique reqs across all versions
-    let reqs = {
-      let mut set: HashSet<VersionReq> = HashSet::new();
-      for rs in by_version.values() {
-        for r in rs {
-          set.insert(r.clone());
-        }
-      }
-      set
-    };
+    // collect unique reqs across all versions
+    let reqs = by_version.values()
+        .map(|rs| rs.iter().cloned()).flatten().collect::<HashSet<_>>();
 
-    // Candidate versions = keys of by_version, highest -> lowest
+    // candidate versions = keys of by_version, highest -> lowest
     let mut candidates: Vec<Version> = by_version.keys().cloned().collect();
-    candidates.sort(); // asc
-    candidates.reverse(); // desc
+    candidates.sort_by(|a, b| b.cmp(a));
 
-    // ---------- Phase 1: try ONE global winner ----------
+    // try one global winner
     if let Some(global) = candidates
       .iter()
       .find(|v| {
@@ -2154,13 +2146,11 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             .unwrap_or(false)
         })
       })
-      .cloned()
     {
-      // Everyone can share `global`
       return reqs.into_iter().map(|r| (r, global.clone())).collect();
     }
 
-    // ---------- Phase 2: greedy fallback (highest-first per-range) ----------
+    // otherwise, use highest-first per-range
     let mut unassigned: HashSet<VersionReq> = reqs.into_iter().collect();
     let mut assigned: HashMap<VersionReq, Version> =
       HashMap::with_capacity(unassigned.len());
@@ -2193,8 +2183,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
 
-    // Any leftover reqs would indicate no candidate matched them (shouldn't happen
-    // if `by_version` came from a successful resolution).
     assigned
   }
 }
