@@ -3896,7 +3896,7 @@ mod test {
         vec![
           TestNpmResolutionPackage {
             pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
-            copy_index: 1,
+            copy_index: 0,
             dependencies: BTreeMap::from([(
               "package-peer".to_string(),
               "package-peer@1.1.0".to_string(),
