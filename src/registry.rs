@@ -163,7 +163,7 @@ pub enum NpmDependencyEntryKind {
 }
 
 impl NpmDependencyEntryKind {
-  pub fn is_optional(&self) -> bool {
+  pub fn is_optional_peer(&self) -> bool {
     matches!(self, NpmDependencyEntryKind::OptionalPeer)
   }
 }

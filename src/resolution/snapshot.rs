@@ -39,6 +39,7 @@ use crate::registry::NpmPackageVersionInfo;
 use crate::registry::NpmRegistryApi;
 use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::Reporter;
+use crate::resolution::graph::GraphDependencyResolverOptions;
 
 #[derive(Debug, Error, Clone, JsError)]
 #[class(type)]
@@ -195,6 +196,13 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
 pub struct AddPkgReqsOptions<'a> {
   pub package_reqs: &'a [PackageReq],
   pub version_resolver: &'a NpmVersionResolver,
+  /// If a deduplication pass should be done on the final graph.
+  ///
+  /// This should never be done after code execution occurs (ex. this
+  /// should NOT be done when resolving a dynamically resolved npm dependency),
+  /// but is recommended for most other actions as it will create a smaller npm
+  /// dependency graph.
+  pub should_dedup: bool,
 }
 
 #[derive(Debug)]
@@ -328,6 +336,9 @@ impl NpmResolutionSnapshot {
       api,
       options.version_resolver,
       reporter,
+      GraphDependencyResolverOptions {
+        should_dedup: options.should_dedup,
+      },
     );
 
     // The package reqs and ids should already be sorted
