@@ -181,6 +181,17 @@ impl ResolvedNodeIds {
       .get(&resolved_id.current_state_hash())
       .copied()
   }
+
+  pub fn clear_peer_deps(&mut self) {
+    self.resolved_to_node_id.clear();
+    for (node_id, (resolved_id, resolved_id_hash)) in
+      &mut self.node_to_resolved_id
+    {
+      resolved_id.peer_dependencies.clear();
+      *resolved_id_hash = resolved_id.current_state_hash();
+      self.resolved_to_node_id.insert(*resolved_id_hash, *node_id);
+    }
+  }
 }
 
 /// A pointer to a specific node in a graph path. The underlying node id
@@ -974,6 +985,10 @@ impl UnresolvedOptionalPeers {
   }
 }
 
+pub struct GraphDependencyResolverOptions {
+  pub should_dedup: bool,
+}
+
 pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   unmet_peer_diagnostics: RefCell<IndexSet<UnmetPeerDepDiagnostic>>,
   graph: &'a mut Graph,
@@ -982,6 +997,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
+  should_dedup: bool,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -992,6 +1008,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     api: &'a TNpmRegistryApi,
     version_resolver: &'a NpmVersionResolver,
     reporter: Option<&'a dyn Reporter>,
+    options: GraphDependencyResolverOptions,
   ) -> Self {
     Self {
       unmet_peer_diagnostics: Default::default(),
@@ -1001,6 +1018,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
+      should_dedup: options.should_dedup,
     }
   }
 
@@ -1163,28 +1181,40 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   }
 
   pub async fn resolve_pending(&mut self) -> Result<(), NpmResolutionError> {
-    // go down through the dependencies by tree depth
-    let mut previous_seen_optional_peers_count = 0;
+    let mut did_dedup = false;
     while !self.pending_unresolved_nodes.is_empty() {
-      while let Some(parent_path) = self.pending_unresolved_nodes.pop_front() {
-        self.resolve_next_pending(parent_path).await?;
-      }
+      // go down through the dependencies by tree depth
+      let mut previous_seen_optional_peers_count = 0;
+      while !self.pending_unresolved_nodes.is_empty() {
+        while let Some(parent_path) = self.pending_unresolved_nodes.pop_front()
+        {
+          self.resolve_next_pending(parent_path).await?;
+        }
 
-      let seen_optional_peers_count =
-        self.graph.unresolved_optional_peers.seen_count();
-      if seen_optional_peers_count > previous_seen_optional_peers_count {
-        previous_seen_optional_peers_count = seen_optional_peers_count;
-        debug!("Traversing graph to ensure newly seen optional peers are set.");
-        // go through the graph again resolving any optional peers
-        for (nv, node_id) in &self.graph.root_packages {
-          self.pending_unresolved_nodes.push_back(GraphPath::for_root(
-            *node_id,
-            nv.clone(),
-            GraphPathResolutionMode::OptionalPeers,
-          ));
+        let seen_optional_peers_count =
+          self.graph.unresolved_optional_peers.seen_count();
+        if seen_optional_peers_count > previous_seen_optional_peers_count {
+          previous_seen_optional_peers_count = seen_optional_peers_count;
+          debug!(
+            "Traversing graph to ensure newly seen optional peers are set."
+          );
+          // go through the graph again resolving any optional peers
+          for (nv, node_id) in &self.graph.root_packages {
+            self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+              *node_id,
+              nv.clone(),
+              GraphPathResolutionMode::OptionalPeers,
+            ));
+          }
         }
       }
+
+      if self.should_dedup && !did_dedup {
+        self.run_dedup_pass().await;
+        did_dedup = true;
+      }
     }
+
     Ok(())
   }
 
@@ -1393,7 +1423,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       NpmDependencyEntryKind::Peer | NpmDependencyEntryKind::OptionalPeer
     ));
 
-    if !peer_dep.kind.is_optional()
+    if !peer_dep.kind.is_optional_peer()
       && matches!(ancestor_path.mode, GraphPathResolutionMode::OptionalPeers)
       && let Some(previous_nv) = previous_nv.cloned()
     {
@@ -1506,7 +1536,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       return Ok(Some(peer_dep_id));
     }
 
-    if peer_dep.kind.is_optional() {
+    if peer_dep.kind.is_optional_peer() {
       if self
         .graph
         .unresolved_optional_peers
@@ -1940,6 +1970,231 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
   pub fn take_unmet_peer_diagnostics(&self) -> Vec<UnmetPeerDepDiagnostic> {
     self.unmet_peer_diagnostics.borrow_mut().drain(..).collect()
+  }
+
+  async fn run_dedup_pass(&mut self) {
+    debug!("Running npm dedup pass.");
+    type VersionReqsByVersion = BTreeMap<Version, Vec<VersionReq>>;
+    let mut package_version_reqs_by_version: HashMap<
+      PackageName,
+      VersionReqsByVersion,
+    > = HashMap::with_capacity(self.graph.nodes.len());
+    let mut seen_nodes: HashSet<NodeId> =
+      HashSet::with_capacity(self.graph.nodes.len());
+    let mut pending_nodes: VecDeque<NodeId> = Default::default();
+
+    for (req, pkg_nv) in &self.graph.package_reqs {
+      if let Some(node_id) = self.graph.root_packages.get(pkg_nv) {
+        package_version_reqs_by_version
+          .entry(req.name.clone())
+          .or_default()
+          .entry(pkg_nv.version.clone())
+          .or_default()
+          .push(req.version_req.clone());
+        if seen_nodes.insert(*node_id) {
+          pending_nodes.push_back(*node_id);
+        }
+      }
+    }
+
+    while let Some(node_id) = pending_nodes.pop_front() {
+      if let Some(node) = self.graph.nodes.get(&node_id) {
+        let id = self.graph.resolved_node_ids.get(node_id).unwrap();
+        if let Some(deps) = self.dep_entry_cache.get(&id.nv) {
+          for dep in deps.iter() {
+            if let Some(child_node_id) = node.children.get(&dep.bare_specifier)
+            {
+              let child_id =
+                self.graph.resolved_node_ids.get(*child_node_id).unwrap();
+              package_version_reqs_by_version
+                .entry(dep.name.clone())
+                .or_default()
+                .entry(child_id.nv.version.clone())
+                .or_default()
+                .push(dep.version_req.clone());
+              if seen_nodes.insert(*child_node_id) {
+                pending_nodes.push_back(*child_node_id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    let mut consolidated_versions: BTreeMap<
+      PackageName,
+      HashMap<VersionReq, Version>,
+    > = Default::default();
+
+    for (package_name, reqs_by_version) in package_version_reqs_by_version {
+      if reqs_by_version.len() <= 1 {
+        continue;
+      }
+      let final_versions = self
+        .assign_highest_satisfying(&package_name, &reqs_by_version)
+        .await;
+      if !final_versions.is_empty() {
+        // update the graph to only have the new versions in it
+        if let Some(versions) =
+          self.graph.package_name_versions.get_mut(&package_name)
+        {
+          versions
+            .retain(|version| final_versions.values().any(|v| v == version));
+        }
+
+        consolidated_versions.insert(package_name, final_versions);
+      }
+    }
+
+    if consolidated_versions.is_empty() {
+      return; // nothing to do
+    }
+
+    debug!("Consolidating npm versions.");
+
+    if log::log_enabled!(log::Level::Debug) {
+      for (package_name, versions_by_version_req) in &consolidated_versions {
+        for (version_req, version) in versions_by_version_req {
+          debug!("{}: {} -> {}", package_name, version_req, version);
+        }
+      }
+    }
+
+    // set the root package reqs
+    let mut added_root_package_ids = Vec::new();
+    for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
+      if let Some(new_versions) = consolidated_versions.get(&pkg_req.name)
+        && let Some(new_version) = new_versions.get(&pkg_req.version_req)
+        && pkg_nv.version != *new_version
+      {
+        self.graph.root_packages.remove(pkg_nv);
+        *pkg_nv = Rc::new(PackageNv {
+          name: pkg_nv.name.clone(),
+          version: new_version.clone(),
+        });
+        let resolved_id = ResolvedId {
+          nv: pkg_nv.clone(),
+          peer_dependencies: Vec::new(),
+        };
+        added_root_package_ids.push(resolved_id);
+      }
+    }
+
+    // set the root package nvs
+    for resolved_id in added_root_package_ids {
+      let (_, node_id) = self.graph.get_or_create_for_id(&resolved_id);
+      self.graph.root_packages.insert(resolved_id.nv, node_id);
+    }
+
+    // now go through each node clearing it out
+    for (node_id, node) in &mut self.graph.nodes {
+      node.no_peers = false; // reset
+      let Some(id) = self.graph.resolved_node_ids.get(*node_id) else {
+        continue;
+      };
+      let Some(deps) = self.dep_entry_cache.get(&id.nv) else {
+        continue;
+      };
+      for dep in deps.iter() {
+        let Some(child_node_id) = node.children.get(&dep.bare_specifier) else {
+          continue;
+        };
+        let child_id =
+          self.graph.resolved_node_ids.get(*child_node_id).unwrap();
+        let Some(versions) = consolidated_versions.get(&child_id.nv.name)
+        else {
+          continue;
+        };
+        if versions.contains_key(&dep.version_req) {
+          node.children.remove(&dep.bare_specifier);
+        }
+      }
+    }
+
+    // reset some details
+    self.graph.unresolved_optional_peers = Default::default();
+    self.graph.resolved_node_ids.clear_peer_deps();
+    self.graph.moved_package_ids.clear();
+    self.unmet_peer_diagnostics.borrow_mut().clear();
+
+    // add the pending nodes from the root
+    for (pkg_nv, node_id) in &self.graph.root_packages {
+      self.pending_unresolved_nodes.push_back(GraphPath::for_root(
+        *node_id,
+        pkg_nv.clone(),
+        GraphPathResolutionMode::All,
+      ));
+    }
+  }
+
+  async fn assign_highest_satisfying(
+    &self,
+    package_name: &PackageName,
+    by_version: &BTreeMap<Version, Vec<VersionReq>>,
+  ) -> HashMap<VersionReq, Version> {
+    // this should already be cached
+    let package_info = self.api.package_info(package_name).await.unwrap();
+
+    // collect unique reqs across all versions
+    let reqs = by_version
+      .values()
+      .flat_map(|rs| rs.iter())
+      .collect::<HashSet<_>>();
+
+    // candidate versions = keys of by_version, highest -> lowest
+    let mut candidates: Vec<Version> = by_version.keys().cloned().collect();
+    candidates.sort_by(|a, b| b.cmp(a));
+
+    // try one global winner
+    if let Some(global) = candidates.iter().find(|v| {
+      reqs.iter().all(|r| {
+        self
+          .version_resolver
+          .version_req_satisfies(r, v, &package_info)
+          .ok()
+          .unwrap_or(false)
+      })
+    }) {
+      return reqs
+        .iter()
+        .map(|r| ((*r).clone(), global.clone()))
+        .collect();
+    }
+
+    // otherwise, use highest-first per-range
+    let mut unassigned = reqs;
+    let mut assigned: HashMap<VersionReq, Version> =
+      HashMap::with_capacity(unassigned.len());
+
+    for v in candidates.into_iter() {
+      // assign all still-unassigned reqs that accept this version
+      let matching = unassigned
+        .iter()
+        .filter(|r| {
+          self
+            .version_resolver
+            .version_req_satisfies(r, &v, &package_info)
+            .ok()
+            .unwrap_or(false)
+        })
+        .map(|v| (*v).clone())
+        .collect::<Vec<_>>();
+
+      if matching.is_empty() {
+        continue;
+      }
+
+      for r in matching {
+        unassigned.remove(&r);
+        assigned.insert(r, v.clone());
+      }
+
+      if unassigned.is_empty() {
+        break;
+      }
+    }
+
+    assigned
   }
 }
 
@@ -2955,70 +3210,88 @@ mod test {
     api.add_dependency(("package-b", "1.0.0"), ("package-a", "1.0.0"));
     api.add_dependency(("package-b", "1.0.0"), ("package-peer", "2.0.0"));
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["package-a@1", "package-b@1", "package-peer@1.0.0"],
-    )
-    .await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@1.0.0".to_string(),
-          )]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@2.0.0".to_string(),
-          copy_index: 1,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@2.0.0".to_string(),
-          )]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-b@1.0.0_package-peer@2.0.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            ("package-peer".to_string(), "package-peer@2.0.0".to_string(),),
-            (
-              "package-a".to_string(),
-              "package-a@1.0.0_package-peer@2.0.0".to_string(),
-            ),
-          ]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: Default::default(),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@2.0.0".to_string(),
-          copy_index: 0,
-          dependencies: Default::default(),
-        },
-      ]
-    );
-    assert_eq!(
-      package_reqs,
-      vec![
-        (
-          "package-a@1".to_string(),
-          "package-a@1.0.0_package-peer@1.0.0".to_string()
-        ),
-        (
-          "package-b@1".to_string(),
-          "package-b@1.0.0_package-peer@2.0.0".to_string()
-        ),
-        (
+    let input_reqs = vec!["package-a@1", "package-b@1", "package-peer@1.0.0"];
+    let expected_packages = vec![
+      TestNpmResolutionPackage {
+        pkg_id: "package-a@1.0.0_package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([(
+          "package-peer".to_string(),
           "package-peer@1.0.0".to_string(),
-          "package-peer@1.0.0".to_string()
-        )
-      ]
-    );
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-a@1.0.0_package-peer@2.0.0".to_string(),
+        copy_index: 1,
+        dependencies: BTreeMap::from([(
+          "package-peer".to_string(),
+          "package-peer@2.0.0".to_string(),
+        )]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-b@1.0.0_package-peer@2.0.0".to_string(),
+        copy_index: 0,
+        dependencies: BTreeMap::from([
+          ("package-peer".to_string(), "package-peer@2.0.0".to_string()),
+          (
+            "package-a".to_string(),
+            "package-a@1.0.0_package-peer@2.0.0".to_string(),
+          ),
+        ]),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-peer@1.0.0".to_string(),
+        copy_index: 0,
+        dependencies: Default::default(),
+      },
+      TestNpmResolutionPackage {
+        pkg_id: "package-peer@2.0.0".to_string(),
+        copy_index: 0,
+        dependencies: Default::default(),
+      },
+    ];
+    let expected_reqs = vec![
+      (
+        "package-a@1".to_string(),
+        "package-a@1.0.0_package-peer@1.0.0".to_string(),
+      ),
+      (
+        "package-b@1".to_string(),
+        "package-b@1.0.0_package-peer@2.0.0".to_string(),
+      ),
+      (
+        "package-peer@1.0.0".to_string(),
+        "package-peer@1.0.0".to_string(),
+      ),
+    ];
+    // skipping dedup
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          skip_dedup: true,
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(packages, expected_packages);
+      assert_eq!(package_reqs, expected_reqs);
+    }
+    // doing dedup
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          skip_dedup: false,
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(packages, expected_packages);
+      assert_eq!(package_reqs, expected_reqs);
+    }
   }
 
   #[tokio::test]
@@ -3528,72 +3801,144 @@ mod test {
     api.add_dependency(("package-b", "1.0.0"), ("package-peer", "=1.1.0"));
     api.add_dependency(("package-c", "1.0.0"), ("package-a", "1"));
 
-    let (packages, package_reqs) =
-      run_resolver_and_get_output(api, vec!["package-a@1.0", "package-b@1.0"])
-        .await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 1,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@1.1.0".to_string(),
-          )]),
+    let input_reqs = vec!["package-a@1.0", "package-b@1.0"];
+    // before deduping
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          skip_dedup: true,
+          ..Default::default()
         },
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.2.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@1.2.0".to_string(),
-          )]),
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 1,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.2.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.2.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([
+              (
+                "package-c".to_string(),
+                "package-c@1.0.0_package-peer@1.1.0".to_string(),
+              ),
+              ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
+            ]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-a".to_string(),
+              "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.2.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+        ]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          (
+            "package-a@1.0".to_string(),
+            "package-a@1.0.0_package-peer@1.2.0".to_string()
+          ),
+          (
+            "package-b@1.0".to_string(),
+            "package-b@1.0.0_package-peer@1.1.0".to_string()
+          )
+        ]
+      );
+    }
+    // deduping
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api,
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          skip_dedup: false,
+          ..Default::default()
         },
-        TestNpmResolutionPackage {
-          pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            (
-              "package-c".to_string(),
-              "package-c@1.0.0_package-peer@1.1.0".to_string(),
-            ),
-            ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
-          ]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-a".to_string(),
-            "package-a@1.0.0_package-peer@1.1.0".to_string(),
-          )]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.2.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([]),
-        },
-      ]
-    );
-    assert_eq!(
-      package_reqs,
-      vec![
-        (
-          "package-a@1.0".to_string(),
-          "package-a@1.0.0_package-peer@1.2.0".to_string()
-        ),
-        (
-          "package-b@1.0".to_string(),
-          "package-b@1.0.0_package-peer@1.1.0".to_string()
-        )
-      ]
-    );
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([
+              (
+                "package-c".to_string(),
+                "package-c@1.0.0_package-peer@1.1.0".to_string(),
+              ),
+              ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
+            ]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-a".to_string(),
+              "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+        ]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          (
+            "package-a@1.0".to_string(),
+            "package-a@1.0.0_package-peer@1.1.0".to_string()
+          ),
+          (
+            "package-b@1.0".to_string(),
+            "package-b@1.0.0_package-peer@1.1.0".to_string()
+          )
+        ]
+      );
+    }
   }
 
   #[tokio::test]
@@ -4862,6 +5207,106 @@ mod test {
   }
 
   #[tokio::test]
+  async fn dudpes_dep_overlapping_high_version_constraint_then_low() {
+    // a -> b (1.x)
+    //   -> c -> b (1.0.0)
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.1");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
+
+    let (packages, _package_reqs) =
+      run_resolver_and_get_output(api, vec!["package-a@1.0.0"]).await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
+            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
+          ])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+      ]
+    );
+  }
+
+  #[tokio::test]
+  async fn dudpes_dep_overlapping_high_version_constraint_then_low_with_peer_deps()
+   {
+    // a -> b (1.x) -> d
+    //   -> c -> b (1.0.0)
+    // d
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.1");
+    api.ensure_package_version("package-c", "1.0.0");
+    api.ensure_package_version("package-d", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1"));
+    api.add_dependency(("package-a", "1.0.0"), ("package-c", "1"));
+    api.add_dependency(("package-c", "1.0.0"), ("package-b", "1.0.0"));
+    // this is only a peer dep of the 1.0.1 package and not 1.0.0 so it initially
+    // resolves the peer dep, but then it resets itself so there's no longer any
+    api.add_peer_dependency(("package-b", "1.0.1"), ("package-d", "1"));
+
+    let (packages, _package_reqs) = run_resolver_and_get_output(
+      api,
+      vec!["package-a@1.0.0", "package-d@1.0.0"],
+    )
+    .await;
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([
+            ("package-b".to_string(), "package-b@1.0.0".to_string(),),
+            ("package-c".to_string(), "package-c@1.0.0".to_string(),)
+          ])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-c@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-b".to_string(),
+            "package-b@1.0.0".to_string(),
+          )]),
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-d@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::new(),
+        },
+      ]
+    );
+  }
+
+  #[tokio::test]
   async fn graph_from_snapshot_dep_on_self() {
     // there are some lockfiles in the wild that when loading have a dependency
     // on themselves and causes a panic, so ensure this doesn't panic
@@ -5056,78 +5501,146 @@ mod test {
       }],
     )]);
 
-    let (packages, package_reqs) = run_resolver_with_options_and_get_output(
-      api,
-      RunResolverOptions {
-        reqs: vec!["package-a@1.0", "package-b@1.0"],
-        link_packages: Some(&link_packages),
-        ..Default::default()
-      },
-    )
-    .await;
-    assert_eq!(
-      packages,
-      vec![
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 1,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@1.1.0".to_string(),
-          )]),
+    let input_reqs = vec!["package-a@1.0", "package-b@1.0"];
+    // skip deduping
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          link_packages: Some(&link_packages),
+          skip_dedup: true,
+          ..Default::default()
         },
-        TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.2.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-peer".to_string(),
-            "package-peer@1.2.0".to_string(),
-          )]),
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 1,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.2.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.2.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([
+              (
+                "package-c".to_string(),
+                "package-c@1.0.0_package-peer@1.1.0".to_string(),
+              ),
+              ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
+            ]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-a".to_string(),
+              "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.2.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+        ]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          (
+            "package-a@1.0".to_string(),
+            "package-a@1.0.0_package-peer@1.2.0".to_string()
+          ),
+          (
+            "package-b@1.0".to_string(),
+            "package-b@1.0.0_package-peer@1.1.0".to_string()
+          )
+        ]
+      );
+    }
+    // dedup should consolidate to a single package
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api,
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          link_packages: Some(&link_packages),
+          skip_dedup: false,
+          ..Default::default()
         },
-        TestNpmResolutionPackage {
-          pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([
-            (
-              "package-c".to_string(),
-              "package-c@1.0.0_package-peer@1.1.0".to_string(),
-            ),
-            ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
-          ]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([(
-            "package-a".to_string(),
-            "package-a@1.0.0_package-peer@1.1.0".to_string(),
-          )]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.1.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([]),
-        },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.2.0".to_string(),
-          copy_index: 0,
-          dependencies: BTreeMap::from([]),
-        },
-      ]
-    );
-    assert_eq!(
-      package_reqs,
-      vec![
-        (
-          "package-a@1.0".to_string(),
-          "package-a@1.0.0_package-peer@1.2.0".to_string()
-        ),
-        (
-          "package-b@1.0".to_string(),
-          "package-b@1.0.0_package-peer@1.1.0".to_string()
-        )
-      ]
-    );
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-b@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([
+              (
+                "package-c".to_string(),
+                "package-c@1.0.0_package-peer@1.1.0".to_string(),
+              ),
+              ("package-peer".to_string(), "package-peer@1.1.0".to_string(),)
+            ]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-c@1.0.0_package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-a".to_string(),
+              "package-a@1.0.0_package-peer@1.1.0".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([]),
+          },
+        ]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          (
+            "package-a@1.0".to_string(),
+            "package-a@1.0.0_package-peer@1.1.0".to_string()
+          ),
+          (
+            "package-b@1.0".to_string(),
+            "package-b@1.0.0_package-peer@1.1.0".to_string()
+          )
+        ]
+      );
+    }
   }
 
   #[tokio::test]
@@ -5301,53 +5814,136 @@ mod test {
     api.add_dependency(("package-c", "1.0.0"), ("package-peer", "1.0.1"));
     api.add_peer_dependency(("package-d", "1.0.0"), ("package-b", "1"));
 
-    let (packages, package_reqs) = run_resolver_and_get_output(
-      api,
-      vec!["package-a@1.0.0", "package-peer@1"],
-    )
-    .await;
-    assert_eq!(
+    // skipping dedup
+    let input_reqs = vec!["package-a@1.0.0", "package-peer@1"];
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api.clone(),
+        RunResolverOptions {
+          reqs: input_reqs.clone(),
+          skip_dedup: true,
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0_package-peer@1.0.2_package-b@1.0.0__package-peer@1.0.2".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-b".to_string(),
+              "package-b@1.0.0_package-peer@1.0.2".to_string(),
+            ), (
+              "package-c".to_string(),
+              "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            ), (
+              "package-peer".to_string(),
+              "package-peer@1.0.2".to_string()
+            )])
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-b@1.0.0_package-peer@1.0.2".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-peer".to_string(),
+              "package-peer@1.0.2".to_string(),
+            )])
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-d".to_string(),
+              "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            ), (
+              "package-peer".to_string(),
+              "package-peer@1.0.1".to_string(),
+            )]),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            copy_index: 0,
+            dependencies: BTreeMap::from([(
+              "package-b".to_string(),
+              "package-b@1.0.0_package-peer@1.0.2".to_string(),
+            )])
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.0.1".to_string(),
+            copy_index: 0,
+            dependencies: Default::default(),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-peer@1.0.2".to_string(),
+            copy_index: 0,
+            dependencies: Default::default(),
+          },
+        ]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          ("package-a@1.0.0".to_string(), "package-a@1.0.0_package-peer@1.0.2_package-b@1.0.0__package-peer@1.0.2".to_string()),
+          ("package-peer@1".to_string(), "package-peer@1.0.2".to_string()),
+        ]
+      );
+    }
+
+    // dedup pass should consolidate to 1.0.1
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api,
+        RunResolverOptions {
+          reqs: input_reqs,
+          skip_dedup: false,
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(
       packages,
       vec![
         TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0_package-peer@1.0.2_package-b@1.0.0__package-peer@1.0.2".to_string(),
+          pkg_id: "package-a@1.0.0_package-peer@1.0.1_package-b@1.0.0__package-peer@1.0.1".to_string(),
           copy_index: 0,
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
-            "package-b@1.0.0_package-peer@1.0.2".to_string(),
+            "package-b@1.0.0_package-peer@1.0.1".to_string(),
           ), (
             "package-c".to_string(),
-            "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.1_package-peer@1.0.1".to_string(),
           ), (
             "package-peer".to_string(),
-            "package-peer@1.0.2".to_string()
+            "package-peer@1.0.1".to_string()
           )])
         },
         TestNpmResolutionPackage {
-          pkg_id: "package-b@1.0.0_package-peer@1.0.2".to_string(),
+          pkg_id: "package-b@1.0.0_package-peer@1.0.1".to_string(),
           copy_index: 0,
           dependencies: BTreeMap::from([(
             "package-peer".to_string(),
-            "package-peer@1.0.2".to_string(),
+            "package-peer@1.0.1".to_string(),
           )])
         },
         TestNpmResolutionPackage {
-          pkg_id: "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+          pkg_id: "package-c@1.0.0_package-b@1.0.0__package-peer@1.0.1_package-peer@1.0.1".to_string(),
           copy_index: 0,
           dependencies: BTreeMap::from([(
             "package-d".to_string(),
-            "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+            "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.1_package-peer@1.0.1".to_string(),
           ), (
             "package-peer".to_string(),
             "package-peer@1.0.1".to_string(),
           )]),
         },
         TestNpmResolutionPackage {
-          pkg_id: "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.2_package-peer@1.0.2".to_string(),
+          pkg_id: "package-d@1.0.0_package-b@1.0.0__package-peer@1.0.1_package-peer@1.0.1".to_string(),
           copy_index: 0,
           dependencies: BTreeMap::from([(
             "package-b".to_string(),
-            "package-b@1.0.0_package-peer@1.0.2".to_string(),
+            "package-b@1.0.0_package-peer@1.0.1".to_string(),
           )])
         },
         TestNpmResolutionPackage {
@@ -5355,20 +5951,16 @@ mod test {
           copy_index: 0,
           dependencies: Default::default(),
         },
-        TestNpmResolutionPackage {
-          pkg_id: "package-peer@1.0.2".to_string(),
-          copy_index: 0,
-          dependencies: Default::default(),
-        },
       ]
     );
-    assert_eq!(
+      assert_eq!(
       package_reqs,
       vec![
-        ("package-a@1.0.0".to_string(), "package-a@1.0.0_package-peer@1.0.2_package-b@1.0.0__package-peer@1.0.2".to_string()),
-        ("package-peer@1".to_string(), "package-peer@1.0.2".to_string()),
+        ("package-a@1.0.0".to_string(), "package-a@1.0.0_package-peer@1.0.1_package-b@1.0.0__package-peer@1.0.1".to_string()),
+        ("package-peer@1".to_string(), "package-peer@1.0.1".to_string()),
       ]
     );
+    }
   }
 
   #[tokio::test]
@@ -5748,6 +6340,7 @@ mod test {
         newest_dependency_date: None,
         snapshot: Default::default(),
         expected_diagnostics: Default::default(),
+        skip_dedup: false,
       },
     )
     .await
@@ -5761,6 +6354,7 @@ mod test {
     link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
     newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    skip_dedup: bool,
   }
 
   async fn run_resolver_with_options_and_get_err(
@@ -5802,6 +6396,9 @@ mod test {
       api,
       &npm_version_resolver,
       None,
+      GraphDependencyResolverOptions {
+        should_dedup: !options.skip_dedup,
+      },
     );
 
     for req in options.reqs {
@@ -5870,6 +6467,7 @@ mod test {
       &api,
       &npm_version_resolver,
       None,
+      GraphDependencyResolverOptions { should_dedup: true },
     );
 
     for req in reqs {
