@@ -36,7 +36,7 @@ use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
-use super::common::NpmPackageVersionResolverProvider;
+use super::common::NpmVersionResolver;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
@@ -994,7 +994,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   unmet_peer_diagnostics: RefCell<IndexSet<UnmetPeerDepDiagnostic>>,
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
-  version_resolver_provider: &'a NpmPackageVersionResolverProvider,
+  version_resolver: &'a NpmVersionResolver,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
@@ -1007,7 +1007,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   pub fn new(
     graph: &'a mut Graph,
     api: &'a TNpmRegistryApi,
-    version_resolver_provider: &'a NpmPackageVersionResolverProvider,
+    version_resolver: &'a NpmVersionResolver,
     reporter: Option<&'a dyn Reporter>,
     options: GraphDependencyResolverOptions,
   ) -> Self {
@@ -1015,7 +1015,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       unmet_peer_diagnostics: Default::default(),
       graph,
       api,
-      version_resolver_provider,
+      version_resolver,
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
@@ -1033,8 +1033,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
 
     // attempt to find an existing root package that matches this package req
-    let version_resolver =
-      self.version_resolver_provider.get_for_package(package_info);
+    let version_resolver = self.version_resolver.get_for_package(package_info);
     let existing_root = self
       .graph
       .root_packages
@@ -1240,7 +1239,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         // need to parallelize
         let package_info = self.api.package_info(&pkg_nv.name).await?;
         let version_info = package_info
-          .version_info(&pkg_nv, &self.version_resolver_provider.link_packages)
+          .version_info(&pkg_nv, &self.version_resolver.link_packages)
           .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
         self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
       };
@@ -1270,9 +1269,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         }
         Err(e) => return Err(e.into()),
       };
-      let version_resolver = self
-        .version_resolver_provider
-        .get_for_package(&package_info);
+      let version_resolver =
+        self.version_resolver.get_for_package(&package_info);
 
       match dep.kind {
         NpmDependencyEntryKind::Dep => {
@@ -2139,9 +2137,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) -> HashMap<VersionReq, Version> {
     // this should already be cached
     let package_info = self.api.package_info(package_name).await.unwrap();
-    let version_resolver = self
-      .version_resolver_provider
-      .get_for_package(&package_info);
+    let version_resolver = self.version_resolver.get_for_package(&package_info);
 
     // collect unique reqs across all versions
     let reqs = by_version
@@ -6493,7 +6489,7 @@ mod test {
         .cloned()
         .unwrap_or_else(HashMap::default),
     );
-    let npm_version_resolver = NpmPackageVersionResolverProvider {
+    let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: link_packages.clone(),
       newest_dependency_date_options: options.newest_dependency_date,
@@ -6564,7 +6560,7 @@ mod test {
   ) -> NpmResolutionError {
     let snapshot = NpmResolutionSnapshot::new(Default::default());
     let mut graph = Graph::from_snapshot(snapshot);
-    let npm_version_resolver = NpmPackageVersionResolverProvider {
+    let npm_version_resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),

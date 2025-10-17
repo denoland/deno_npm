@@ -110,7 +110,7 @@ impl NewestDependencyDateOptions {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct NpmPackageVersionResolverProvider {
+pub struct NpmVersionResolver {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
@@ -119,7 +119,7 @@ pub struct NpmPackageVersionResolverProvider {
   pub newest_dependency_date_options: NewestDependencyDateOptions,
 }
 
-impl NpmPackageVersionResolverProvider {
+impl NpmVersionResolver {
   pub fn get_for_package<'a>(
     &'a self,
     info: &'a NpmPackageInfo,
@@ -387,13 +387,13 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let provider = NpmPackageVersionResolverProvider {
+    let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
-    let version_resolver = provider.get_for_package(&package_info);
-    let result = version_resolver
+    let package_version_resolver = resolver.get_for_package(&package_info);
+    let result = package_version_resolver
       .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(
       result.err().unwrap().to_string(),
@@ -423,7 +423,7 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let version_resolver = provider.get_for_package(&package_info);
+    let version_resolver = resolver.get_for_package(&package_info);
     let result = version_resolver
       .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-alpha");
@@ -458,14 +458,14 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let provider = NpmPackageVersionResolverProvider {
+    let resolver = NpmVersionResolver {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
-    let version_resolver = provider.get_for_package(&package_info);
+    let version_resolver = resolver.get_for_package(&package_info);
     let result = version_resolver
       .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0");
@@ -498,12 +498,12 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let provider = NpmPackageVersionResolverProvider {
+    let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
-    let version_resolver = provider.get_for_package(&package_info);
+    let version_resolver = resolver.get_for_package(&package_info);
     let result = version_resolver
       .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-rc.1");
@@ -555,7 +555,7 @@ mod test {
       ]),
       time: Default::default(),
     };
-    let provider = NpmPackageVersionResolverProvider {
+    let resolver = NpmVersionResolver {
       types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
@@ -563,7 +563,7 @@ mod test {
 
     // check for when matches dist tag
     let package_req = PackageReq::from_str("some-pkg@^0.1.0-alpha.2").unwrap();
-    let version_resolver = provider.get_for_package(&package_info);
+    let version_resolver = resolver.get_for_package(&package_info);
     let result = version_resolver
       .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(

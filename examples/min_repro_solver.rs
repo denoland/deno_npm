@@ -9,8 +9,8 @@ use deno_npm::registry::NpmPackageVersionInfo;
 use deno_npm::registry::NpmRegistryApi;
 use deno_npm::registry::NpmRegistryPackageInfoLoadError;
 use deno_npm::resolution::AddPkgReqsOptions;
-use deno_npm::resolution::NpmPackageVersionResolverProvider;
 use deno_npm::resolution::NpmResolutionSnapshot;
+use deno_npm::resolution::NpmVersionResolver;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use reqwest::StatusCode;
@@ -287,7 +287,7 @@ async fn run_resolver_and_get_snapshot(
     .iter()
     .map(|req| PackageReq::from_str(req).unwrap())
     .collect::<Vec<_>>();
-  let version_resolver = NpmPackageVersionResolverProvider {
+  let version_resolver = NpmVersionResolver {
     types_node_version_req: None,
     link_packages: Default::default(),
     newest_dependency_date_options: Default::default(),
