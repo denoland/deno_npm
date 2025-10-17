@@ -6236,7 +6236,8 @@ mod test {
   }
 
   #[tokio::test]
-  async fn dedup_higher_root_req_added_later() {
+  async fn dedup_lower_specific_with_overlapping_then_higher_root_req_added_later()
+   {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-a", "1.1.0");
