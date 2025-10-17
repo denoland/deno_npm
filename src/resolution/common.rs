@@ -1,5 +1,6 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -66,14 +67,41 @@ pub enum NpmPackageVersionResolutionError {
 }
 
 #[derive(Debug, Default, Clone)]
+pub struct NewestDependencyDateOptions {
+  /// Prevents installing packages newer than the specified date.
+  pub date: chrono::DateTime<chrono::Utc>,
+  pub exclude: BTreeSet<PackageName>,
+}
+
+impl NewestDependencyDateOptions {
+  pub fn from_date(date: chrono::DateTime<chrono::Utc>) -> Self {
+    Self {
+      date,
+      exclude: Default::default(),
+    }
+  }
+
+  pub fn matches(
+    &self,
+    name: &PackageName,
+    date: chrono::DateTime<chrono::Utc>,
+  ) -> bool {
+    if self.exclude.contains(name) {
+      true
+    } else {
+      date < self.date
+    }
+  }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct NpmVersionResolver {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
   /// Packages that are marked as "links" in the config file.
   pub link_packages: Arc<HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
-  /// Prevents installing packages newer than the specified date.
-  pub newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  pub newest_dependency_date: Option<NewestDependencyDateOptions>,
 }
 
 impl NpmVersionResolver {
@@ -84,7 +112,7 @@ impl NpmVersionResolver {
   ) -> NpmPackageVersionInfosIterator<'a> {
     package_info.applicable_version_infos(
       &self.link_packages,
-      self.newest_dependency_date,
+      self.newest_dependency_date.as_ref(),
     )
   }
 
@@ -187,11 +215,9 @@ impl NpmVersionResolver {
         None => Err(NpmPackageVersionResolutionError::VersionReqNotMatched {
           package_name: info.name.clone(),
           version_req: version_req.clone(),
-          newest_dependency_date: if found_matching_version {
-            self.newest_dependency_date
-          } else {
-            None
-          },
+          newest_dependency_date: found_matching_version
+            .then(|| self.newest_dependency_date.as_ref().map(|v| v.date))
+            .flatten(),
         }),
       }
     }
@@ -216,7 +242,10 @@ impl NpmVersionResolver {
     info: &NpmPackageInfo,
     version: &Version,
   ) -> bool {
-    info.matches_newest_dependency_date(self.newest_dependency_date, version)
+    info.matches_newest_dependency_date(
+      self.newest_dependency_date.as_ref(),
+      version,
+    )
   }
 
   pub fn version_req_satisfies(
@@ -286,7 +315,11 @@ impl NpmVersionResolver {
               package_name: info.name.clone(),
               dist_tag: tag.to_string(),
               version: version.to_string(),
-              newest_dependency_date: self.newest_dependency_date.unwrap(),
+              newest_dependency_date: self
+                .newest_dependency_date
+                .as_ref()
+                .unwrap()
+                .date,
               publish_date: *info.time.get(version).unwrap(),
             })
           }

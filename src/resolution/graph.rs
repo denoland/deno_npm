@@ -2273,6 +2273,7 @@ fn build_trace_graph_snapshot(
 
 #[cfg(test)]
 mod test {
+  use std::collections::BTreeSet;
   use std::sync::Arc;
 
   use pretty_assertions::assert_eq;
@@ -2280,6 +2281,7 @@ mod test {
   use crate::NpmSystemInfo;
   use crate::registry::NpmDependencyEntryErrorSource;
   use crate::registry::TestNpmRegistryApi;
+  use crate::resolution::NewestDependencyDateOptions;
   use crate::resolution::NpmPackageVersionNotFound;
   use crate::resolution::SerializedNpmResolutionSnapshot;
 
@@ -5977,6 +5979,8 @@ mod test {
     api.ensure_package_version("a", "1.0.0");
     api.ensure_package_version("a", "1.0.1");
     api.ensure_package_version("a", "1.0.2");
+    api.ensure_package_version("b", "1.0.0");
+    api.ensure_package_version("b", "1.0.1");
 
     api.with_package("a", |info| {
       info.dist_tags.insert("tag".to_string(), version("1.0.2"));
@@ -5993,20 +5997,35 @@ mod test {
         "2022-11-07T00:00:00.000Z".parse().unwrap(),
       );
     });
+
+    api.with_package("b", |info| {
+      info.dist_tags.insert("tag".to_string(), version("1.0.1"));
+      info.time.insert(
+        version("1.0.0"),
+        "2015-11-07T00:00:00.000Z".parse().unwrap(),
+      );
+      info.time.insert(
+        version("1.0.1"),
+        "2022-11-07T00:00:00.000Z".parse().unwrap(),
+      );
+    });
+
     {
       let (packages, _package_reqs) = run_resolver_with_options_and_get_output(
         api.clone(),
         RunResolverOptions {
-          reqs: vec!["a@1"],
-          newest_dependency_date: Some(
-            "2021-11-07T00:00:00.000Z".parse().unwrap(),
-          ),
+          reqs: vec!["a@1", "b@1"],
+          newest_dependency_date: Some(NewestDependencyDateOptions {
+            date: "2021-11-07T00:00:00.000Z".parse().unwrap(),
+            exclude: BTreeSet::from(["b".into()]),
+          }),
           ..Default::default()
         },
       )
       .await;
-      assert_eq!(packages.len(), 1);
+      assert_eq!(packages.len(), 2);
       assert_eq!(packages[0].pkg_id, "a@1.0.1");
+      assert_eq!(packages[1].pkg_id, "b@1.0.1");
     }
 
     {
@@ -6014,9 +6033,9 @@ mod test {
         &api,
         RunResolverOptions {
           reqs: vec!["a@1"],
-          newest_dependency_date: Some(
+          newest_dependency_date: Some(NewestDependencyDateOptions::from_date(
             "2010-11-07T00:00:00.000Z".parse().unwrap(),
-          ),
+          )),
           ..Default::default()
         },
       )
@@ -6031,9 +6050,9 @@ mod test {
         &api,
         RunResolverOptions {
           reqs: vec!["a@tag"],
-          newest_dependency_date: Some(
+          newest_dependency_date: Some(NewestDependencyDateOptions::from_date(
             "2010-11-07T00:00:00.000Z".parse().unwrap(),
-          ),
+          )),
           ..Default::default()
         },
       )
@@ -6440,7 +6459,7 @@ mod test {
     reqs: Vec<&'a str>,
     link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    newest_dependency_date: Option<NewestDependencyDateOptions>,
     skip_dedup: bool,
   }
 

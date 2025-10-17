@@ -7,6 +7,7 @@ mod snapshot;
 #[cfg(feature = "tracing")]
 mod tracing;
 
+pub use common::NewestDependencyDateOptions;
 pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;
 pub use common::NpmVersionResolver;

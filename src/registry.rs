@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::resolution::NewestDependencyDateOptions;
 use crate::resolution::NpmPackageVersionNotFound;
 
 // npm registry docs: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
@@ -58,7 +59,7 @@ impl NpmPackageInfo {
   pub fn applicable_version_infos<'a>(
     &'a self,
     link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    newest_dependency_date: Option<&'a NewestDependencyDateOptions>,
   ) -> NpmPackageVersionInfosIterator<'a> {
     NpmPackageVersionInfosIterator::new(
       self,
@@ -69,16 +70,16 @@ impl NpmPackageInfo {
 
   pub fn matches_newest_dependency_date(
     &self,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    newest_dependency_date: Option<&NewestDependencyDateOptions>,
     version: &Version,
   ) -> bool {
     newest_dependency_date
-      .and_then(|cutoff| {
+      .and_then(|options| {
         // assume versions not in the time hashmap are really old
         self
           .time
           .get(version)
-          .map(|package_age| *package_age < cutoff)
+          .map(|publish_date| options.matches(&self.name, *publish_date))
       })
       .unwrap_or(true)
   }
@@ -89,14 +90,14 @@ impl NpmPackageInfo {
 pub struct NpmPackageVersionInfosIterator<'a> {
   iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a>,
   info: &'a NpmPackageInfo,
-  newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  newest_dependency_date: Option<&'a NewestDependencyDateOptions>,
 }
 
 impl<'a> NpmPackageVersionInfosIterator<'a> {
   pub fn new(
     info: &'a NpmPackageInfo,
     link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    newest_dependency_date: Option<&'a NewestDependencyDateOptions>,
   ) -> Self {
     let iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a> =
       match link_packages.get(&info.name) {
