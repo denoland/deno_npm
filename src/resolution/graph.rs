@@ -2062,12 +2062,13 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     // set the root package reqs
     let mut added_root_package_ids = Vec::new();
+    let mut maybe_root_nvs_to_remove = Vec::new();
     for (pkg_req, pkg_nv) in &mut self.graph.package_reqs {
       if let Some(new_versions) = consolidated_versions.get(&pkg_req.name)
         && let Some(new_version) = new_versions.get(&pkg_req.version_req)
         && pkg_nv.version != *new_version
       {
-        self.graph.root_packages.remove(pkg_nv);
+        maybe_root_nvs_to_remove.push(pkg_nv.clone());
         *pkg_nv = Rc::new(PackageNv {
           name: pkg_nv.name.clone(),
           version: new_version.clone(),
@@ -2084,6 +2085,13 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     for resolved_id in added_root_package_ids {
       let (_, node_id) = self.graph.get_or_create_for_id(&resolved_id);
       self.graph.root_packages.insert(resolved_id.nv, node_id);
+    }
+
+    // remove any root packages no longer in the reqs
+    for pkg_nv in &maybe_root_nvs_to_remove {
+      if !self.graph.package_reqs.values().any(|v| v == pkg_nv) {
+        self.graph.root_packages.remove(pkg_nv);
+      }
     }
 
     // now go through each node clearing it out
@@ -6228,7 +6236,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn dedup_conflicting_root_reqs() {
+  async fn dedup_higher_root_req_added_later() {
     let api = TestNpmRegistryApi::default();
     api.ensure_package_version("package-a", "1.0.0");
     api.ensure_package_version("package-a", "1.1.0");
@@ -6278,17 +6286,28 @@ mod test {
       .await;
       assert_eq!(
         packages,
-        vec![TestNpmResolutionPackage {
-          pkg_id: "package-a@1.0.0".to_string(),
-          copy_index: 0,
-          dependencies: Default::default(),
-        },]
+        vec![
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.0.0".to_string(),
+            copy_index: 0,
+            dependencies: Default::default(),
+          },
+          TestNpmResolutionPackage {
+            pkg_id: "package-a@1.1.0".to_string(),
+            copy_index: 0,
+            dependencies: Default::default(),
+          }
+        ]
       );
       assert_eq!(
         package_reqs,
         vec![
           ("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string()),
-          ("package-peer@1".to_string(), "package-a@1.0.0".to_string()),
+          ("package-a@1.1.0".to_string(), "package-a@1.1.0".to_string()),
+          (
+            "package-a@^1.0.0".to_string(),
+            "package-a@1.1.0".to_string()
+          ),
         ]
       );
     }
