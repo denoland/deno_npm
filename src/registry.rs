@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::resolution::NewestDependencyDate;
 use crate::resolution::NpmPackageVersionNotFound;
 
 // npm registry docs: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
@@ -52,36 +53,6 @@ impl NpmPackageInfo {
       None => Err(NpmPackageVersionNotFound(nv.clone())),
     }
   }
-
-  /// Gets the version infos for the package, taking into account the linked packages
-  /// and the newest dependency date.
-  pub fn applicable_version_infos<'a>(
-    &'a self,
-    link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
-  ) -> NpmPackageVersionInfosIterator<'a> {
-    NpmPackageVersionInfosIterator::new(
-      self,
-      link_packages,
-      newest_dependency_date,
-    )
-  }
-
-  pub fn matches_newest_dependency_date(
-    &self,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
-    version: &Version,
-  ) -> bool {
-    newest_dependency_date
-      .and_then(|cutoff| {
-        // assume versions not in the time hashmap are really old
-        self
-          .time
-          .get(version)
-          .map(|package_age| *package_age < cutoff)
-      })
-      .unwrap_or(true)
-  }
 }
 
 /// An iterator over all the package versions that takes into account the
@@ -89,17 +60,17 @@ impl NpmPackageInfo {
 pub struct NpmPackageVersionInfosIterator<'a> {
   iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a>,
   info: &'a NpmPackageInfo,
-  newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+  newest_dependency_date: Option<NewestDependencyDate>,
 }
 
 impl<'a> NpmPackageVersionInfosIterator<'a> {
   pub fn new(
     info: &'a NpmPackageInfo,
-    link_packages: &'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    link_packages: Option<&'a Vec<NpmPackageVersionInfo>>,
+    newest_dependency_date: Option<NewestDependencyDate>,
   ) -> Self {
     let iterator: Box<dyn Iterator<Item = &'a NpmPackageVersionInfo> + 'a> =
-      match link_packages.get(&info.name) {
+      match link_packages {
         Some(link_version_infos) => Box::new(link_version_infos.iter().chain(
           info.versions.values().filter(move |v| {
             // assumes the user won't have a large amount of linked versions
@@ -121,10 +92,17 @@ impl<'a> Iterator for NpmPackageVersionInfosIterator<'a> {
 
   fn next(&mut self) -> Option<Self::Item> {
     self.iterator.by_ref().find(|&next| {
-      self.info.matches_newest_dependency_date(
-        self.newest_dependency_date,
-        &next.version,
-      )
+      self
+        .newest_dependency_date
+        .and_then(|newest_dependency_date| {
+          // assume versions not in the time hashmap are really old
+          self
+            .info
+            .time
+            .get(&next.version)
+            .map(|publish_date| newest_dependency_date.matches(*publish_date))
+        })
+        .unwrap_or(true)
     })
   }
 }
