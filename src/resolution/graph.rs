@@ -24,6 +24,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use super::common::NpmPackageVersionResolutionError;
+use super::common::NpmPackageVersionResolver;
 use crate::NpmResolutionPackageSystemInfo;
 use crate::registry::NpmDependencyEntry;
 use crate::registry::NpmDependencyEntryError;
@@ -35,7 +36,7 @@ use crate::registry::NpmRegistryPackageInfoLoadError;
 use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
-use super::common::NpmVersionResolver;
+use super::common::NpmPackageVersionResolverProvider;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
@@ -993,7 +994,7 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   unmet_peer_diagnostics: RefCell<IndexSet<UnmetPeerDepDiagnostic>>,
   graph: &'a mut Graph,
   api: &'a TNpmRegistryApi,
-  version_resolver: &'a NpmVersionResolver,
+  version_resolver_provider: &'a NpmPackageVersionResolverProvider,
   pending_unresolved_nodes: VecDeque<Rc<GraphPath>>,
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
@@ -1006,7 +1007,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   pub fn new(
     graph: &'a mut Graph,
     api: &'a TNpmRegistryApi,
-    version_resolver: &'a NpmVersionResolver,
+    version_resolver_provider: &'a NpmPackageVersionResolverProvider,
     reporter: Option<&'a dyn Reporter>,
     options: GraphDependencyResolverOptions,
   ) -> Self {
@@ -1014,7 +1015,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       unmet_peer_diagnostics: Default::default(),
       graph,
       api,
-      version_resolver,
+      version_resolver_provider,
       pending_unresolved_nodes: Default::default(),
       dep_entry_cache: Default::default(),
       reporter,
@@ -1032,19 +1033,16 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
 
     // attempt to find an existing root package that matches this package req
+    let version_resolver =
+      self.version_resolver_provider.get_for_package(package_info);
     let existing_root = self
       .graph
       .root_packages
       .iter()
       .find(|(nv, _id)| {
         package_req.name == nv.name
-          && self
-            .version_resolver
-            .version_req_satisfies(
-              &package_req.version_req,
-              &nv.version,
-              package_info,
-            )
+          && version_resolver
+            .version_req_satisfies(&package_req.version_req, &nv.version)
             .ok()
             .unwrap_or(false)
       })
@@ -1055,7 +1053,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         let (pkg_nv, node_id) = self.resolve_node_from_info(
           &package_req.name,
           &package_req.version_req,
-          package_info,
+          &version_resolver,
           None,
         )?;
         self.pending_unresolved_nodes.push_back(GraphPath::for_root(
@@ -1077,7 +1075,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   fn analyze_dependency(
     &mut self,
     entry: &NpmDependencyEntry,
-    package_info: &NpmPackageInfo,
+    version_resolver: &NpmPackageVersionResolver,
     parent_path: &Rc<GraphPath>,
   ) -> Result<NodeId, NpmResolutionError> {
     debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
@@ -1085,7 +1083,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let (child_nv, mut child_id) = self.resolve_node_from_info(
       &entry.name,
       &entry.version_req,
-      package_info,
+      version_resolver,
       Some(parent_id),
     )?;
 
@@ -1130,22 +1128,21 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     pkg_req_name: &str,
     version_req: &VersionReq,
-    package_info: &NpmPackageInfo,
+    version_resolver: &NpmPackageVersionResolver,
     parent_id: Option<NodeId>,
   ) -> Result<(Rc<PackageNv>, NodeId), NpmResolutionError> {
-    let info = self.version_resolver.resolve_best_package_version_info(
+    let info = version_resolver.resolve_best_package_version_info(
       version_req,
-      package_info,
       self
         .graph
         .package_name_versions
-        .entry(package_info.name.clone())
+        .entry(version_resolver.info().name.clone())
         .or_default()
         .iter(),
     )?;
     let resolved_id = ResolvedId {
       nv: Rc::new(PackageNv {
-        name: package_info.name.clone(),
+        name: version_resolver.info().name.clone(),
         version: info.version.clone(),
       }),
       peer_dependencies: Vec::new(),
@@ -1243,7 +1240,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         // need to parallelize
         let package_info = self.api.package_info(&pkg_nv.name).await?;
         let version_info = package_info
-          .version_info(&pkg_nv, &self.version_resolver.link_packages)
+          .version_info(&pkg_nv, &self.version_resolver_provider.link_packages)
           .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
         self.dep_entry_cache.store(pkg_nv.clone(), version_info)?
       };
@@ -1273,6 +1270,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         }
         Err(e) => return Err(e.into()),
       };
+      let version_resolver = self
+        .version_resolver_provider
+        .get_for_package(&package_info);
 
       match dep.kind {
         NpmDependencyEntryKind::Dep => {
@@ -1308,7 +1308,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               child_id
             }
             None => {
-              self.analyze_dependency(dep, &package_info, &parent_path)?
+              self.analyze_dependency(dep, &version_resolver, &parent_path)?
             }
           };
 
@@ -1351,7 +1351,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           let maybe_new_id = self.resolve_peer_dep(
             &dep.bare_specifier,
             dep,
-            &package_info,
+            &version_resolver,
             &parent_path,
             previous_nv.as_ref(),
           )?;
@@ -1399,7 +1399,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &mut self,
     specifier: &StackString,
     peer_dep: &NpmDependencyEntry,
-    peer_package_info: &NpmPackageInfo,
+    peer_version_resolver: &NpmPackageVersionResolver,
     ancestor_path: &Rc<GraphPath>,
     previous_nv: Option<&Rc<PackageNv>>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
@@ -1447,7 +1447,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       let maybe_peer_dep = self.find_peer_dep_in_node(
         ancestor_path,
         peer_dep,
-        peer_package_info,
+        peer_version_resolver,
         // exclude the current resolving specifier so that we don't find the
         // peer dependency in the current slot, which might be out of date
         Some(specifier),
@@ -1477,7 +1477,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             let maybe_peer_dep_result = self.find_peer_dep_in_node(
               ancestor_graph_path_node,
               peer_dep,
-              peer_package_info,
+              peer_version_resolver,
               None,
               ancestor_path,
             );
@@ -1495,7 +1495,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
             // in this case, the parent is the root so the children are all the package requirements
             let maybe_peer_dep_result = self.find_matching_child_for_peer_dep(
               peer_dep,
-              peer_package_info,
+              peer_version_resolver,
               self.graph.root_packages.iter().map(|(nv, id)| (*id, nv)),
               ancestor_path,
             );
@@ -1588,7 +1588,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           .peer_dep_version_req
           .as_ref()
           .unwrap_or(&peer_dep.version_req),
-        peer_package_info,
+        peer_version_resolver,
         Some(parent_id),
       )?;
       let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
@@ -1601,7 +1601,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     &self,
     path: &Rc<GraphPath>,
     peer_dep: &NpmDependencyEntry,
-    peer_package_info: &NpmPackageInfo,
+    peer_version_resolver: &NpmPackageVersionResolver,
     exclude_key: Option<&str>,
     original_resolving_path: &Rc<GraphPath>,
   ) -> Result<Option<(GraphPathNodeOrRoot, NodeId)>, NpmResolutionError> {
@@ -1610,10 +1610,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // check if this node itself is a match for
     // the peer dependency and if so use that
     if resolved_node_id.nv.name == peer_dep.name {
-      if !self.version_resolver.version_req_satisfies(
+      if !peer_version_resolver.version_req_satisfies(
         &peer_dep.version_req,
         &resolved_node_id.nv.version,
-        peer_package_info,
       )? {
         self.add_unmet_peer_dep_diagnostic(
           original_resolving_path,
@@ -1639,7 +1638,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       self
         .find_matching_child_for_peer_dep(
           peer_dep,
-          peer_package_info,
+          peer_version_resolver,
           children,
           original_resolving_path,
         )
@@ -1945,17 +1944,15 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   fn find_matching_child_for_peer_dep<'nv>(
     &self,
     peer_dep: &NpmDependencyEntry,
-    peer_package_info: &NpmPackageInfo,
+    peer_version_resolver: &NpmPackageVersionResolver,
     children: impl Iterator<Item = (NodeId, &'nv Rc<PackageNv>)>,
     original_resolving_path: &Rc<GraphPath>,
   ) -> Result<Option<NodeId>, NpmResolutionError> {
     for (child_id, pkg_id) in children {
       if pkg_id.name == peer_dep.name {
-        if !self.version_resolver.version_req_satisfies(
-          &peer_dep.version_req,
-          &pkg_id.version,
-          peer_package_info,
-        )? {
+        if !peer_version_resolver
+          .version_req_satisfies(&peer_dep.version_req, &pkg_id.version)?
+        {
           self.add_unmet_peer_dep_diagnostic(
             original_resolving_path,
             peer_dep,
@@ -2142,6 +2139,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) -> HashMap<VersionReq, Version> {
     // this should already be cached
     let package_info = self.api.package_info(package_name).await.unwrap();
+    let version_resolver = self
+      .version_resolver_provider
+      .get_for_package(&package_info);
 
     // collect unique reqs across all versions
     let reqs = by_version
@@ -2156,9 +2156,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     // try one global winner
     if let Some(global) = candidates.iter().find(|v| {
       reqs.iter().all(|r| {
-        self
-          .version_resolver
-          .version_req_satisfies(r, v, &package_info)
+        version_resolver
+          .version_req_satisfies(r, v)
           .ok()
           .unwrap_or(false)
       })
@@ -2179,9 +2178,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       let matching = unassigned
         .iter()
         .filter(|r| {
-          self
-            .version_resolver
-            .version_req_satisfies(r, &v, &package_info)
+          version_resolver
+            .version_req_satisfies(r, &v)
             .ok()
             .unwrap_or(false)
         })
@@ -2281,6 +2279,7 @@ mod test {
   use crate::NpmSystemInfo;
   use crate::registry::NpmDependencyEntryErrorSource;
   use crate::registry::TestNpmRegistryApi;
+  use crate::resolution::NewestDependencyDate;
   use crate::resolution::NewestDependencyDateOptions;
   use crate::resolution::NpmPackageVersionNotFound;
   use crate::resolution::SerializedNpmResolutionSnapshot;
@@ -6015,10 +6014,12 @@ mod test {
         api.clone(),
         RunResolverOptions {
           reqs: vec!["a@1", "b@1"],
-          newest_dependency_date: Some(NewestDependencyDateOptions {
-            date: "2021-11-07T00:00:00.000Z".parse().unwrap(),
+          newest_dependency_date: NewestDependencyDateOptions {
+            date: Some(NewestDependencyDate(
+              "2021-11-07T00:00:00.000Z".parse().unwrap(),
+            )),
             exclude: BTreeSet::from(["b".into()]),
-          }),
+          },
           ..Default::default()
         },
       )
@@ -6033,9 +6034,9 @@ mod test {
         &api,
         RunResolverOptions {
           reqs: vec!["a@1"],
-          newest_dependency_date: Some(NewestDependencyDateOptions::from_date(
+          newest_dependency_date: NewestDependencyDateOptions::from_date(
             "2010-11-07T00:00:00.000Z".parse().unwrap(),
-          )),
+          ),
           ..Default::default()
         },
       )
@@ -6050,9 +6051,9 @@ mod test {
         &api,
         RunResolverOptions {
           reqs: vec!["a@tag"],
-          newest_dependency_date: Some(NewestDependencyDateOptions::from_date(
+          newest_dependency_date: NewestDependencyDateOptions::from_date(
             "2010-11-07T00:00:00.000Z".parse().unwrap(),
-          )),
+          ),
           ..Default::default()
         },
       )
@@ -6443,7 +6444,7 @@ mod test {
       RunResolverOptions {
         reqs,
         link_packages: None,
-        newest_dependency_date: None,
+        newest_dependency_date: Default::default(),
         snapshot: Default::default(),
         expected_diagnostics: Default::default(),
         skip_dedup: false,
@@ -6459,7 +6460,7 @@ mod test {
     reqs: Vec<&'a str>,
     link_packages: Option<&'a HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
     expected_diagnostics: Vec<&'a str>,
-    newest_dependency_date: Option<NewestDependencyDateOptions>,
+    newest_dependency_date: NewestDependencyDateOptions,
     skip_dedup: bool,
   }
 
@@ -6492,10 +6493,10 @@ mod test {
         .cloned()
         .unwrap_or_else(HashMap::default),
     );
-    let npm_version_resolver = NpmVersionResolver {
+    let npm_version_resolver = NpmPackageVersionResolverProvider {
       types_node_version_req: None,
       link_packages: link_packages.clone(),
-      newest_dependency_date: options.newest_dependency_date,
+      newest_dependency_date_options: options.newest_dependency_date,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -6563,10 +6564,10 @@ mod test {
   ) -> NpmResolutionError {
     let snapshot = NpmResolutionSnapshot::new(Default::default());
     let mut graph = Graph::from_snapshot(snapshot);
-    let npm_version_resolver = NpmVersionResolver {
+    let npm_version_resolver = NpmPackageVersionResolverProvider {
       types_node_version_req: None,
       link_packages: Default::default(),
-      newest_dependency_date: None,
+      newest_dependency_date_options: Default::default(),
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,

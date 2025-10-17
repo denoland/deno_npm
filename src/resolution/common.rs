@@ -50,7 +50,7 @@ pub enum NpmPackageVersionResolutionError {
     dist_tag: String,
     version: String,
     publish_date: chrono::DateTime<chrono::Utc>,
-    newest_dependency_date: chrono::DateTime<chrono::Utc>,
+    newest_dependency_date: NewestDependencyDate,
   },
   #[class(inherit)]
   #[error(transparent)]
@@ -62,72 +62,164 @@ pub enum NpmPackageVersionResolutionError {
   VersionReqNotMatched {
     package_name: StackString,
     version_req: VersionReq,
-    newest_dependency_date: Option<chrono::DateTime<chrono::Utc>>,
+    newest_dependency_date: Option<NewestDependencyDate>,
   },
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NewestDependencyDate(pub chrono::DateTime<chrono::Utc>);
+
+impl std::fmt::Display for NewestDependencyDate {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
+impl NewestDependencyDate {
+  pub fn matches(&self, date: chrono::DateTime<chrono::Utc>) -> bool {
+    date < self.0
+  }
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct NewestDependencyDateOptions {
   /// Prevents installing packages newer than the specified date.
-  pub date: chrono::DateTime<chrono::Utc>,
+  pub date: Option<NewestDependencyDate>,
   pub exclude: BTreeSet<PackageName>,
 }
 
 impl NewestDependencyDateOptions {
   pub fn from_date(date: chrono::DateTime<chrono::Utc>) -> Self {
     Self {
-      date,
+      date: Some(NewestDependencyDate(date)),
       exclude: Default::default(),
     }
   }
 
-  pub fn matches(
+  pub fn get_for_package(
     &self,
-    name: &PackageName,
-    date: chrono::DateTime<chrono::Utc>,
-  ) -> bool {
-    if self.exclude.contains(name) {
-      true
+    package_name: &PackageName,
+  ) -> Option<NewestDependencyDate> {
+    let date = self.date?;
+    if self.exclude.contains(package_name) {
+      None
     } else {
-      date < self.date
+      Some(date)
     }
   }
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct NpmVersionResolver {
+pub struct NpmPackageVersionResolverProvider {
   /// Known good version requirement to use for the `@types/node` package
   /// when the version is unspecified or "latest".
   pub types_node_version_req: Option<VersionReq>,
   /// Packages that are marked as "links" in the config file.
   pub link_packages: Arc<HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
-  pub newest_dependency_date: Option<NewestDependencyDateOptions>,
+  pub newest_dependency_date_options: NewestDependencyDateOptions,
 }
 
-impl NpmVersionResolver {
-  /// Gets the version infos that match the link packages and newest dependency date.
-  pub fn applicable_version_infos<'a>(
+impl NpmPackageVersionResolverProvider {
+  pub fn get_for_package<'a>(
     &'a self,
-    package_info: &'a NpmPackageInfo,
-  ) -> NpmPackageVersionInfosIterator<'a> {
-    package_info.applicable_version_infos(
-      &self.link_packages,
-      self.newest_dependency_date.as_ref(),
+    info: &'a NpmPackageInfo,
+  ) -> NpmPackageVersionResolver<'a> {
+    NpmPackageVersionResolver {
+      info,
+      newest_dependency_date: self
+        .newest_dependency_date_options
+        .get_for_package(&info.name),
+      link_packages: self.link_packages.get(&info.name),
+      types_node_version_req: self.types_node_version_req.as_ref(),
+    }
+  }
+}
+
+pub struct NpmPackageVersionResolver<'a> {
+  info: &'a NpmPackageInfo,
+  link_packages: Option<&'a Vec<NpmPackageVersionInfo>>,
+  newest_dependency_date: Option<NewestDependencyDate>,
+  types_node_version_req: Option<&'a VersionReq>,
+}
+
+impl<'a> NpmPackageVersionResolver<'a> {
+  pub fn info(&self) -> &'a NpmPackageInfo {
+    self.info
+  }
+
+  /// Gets the version infos that match the link packages and newest dependency date.
+  pub fn applicable_version_infos(&self) -> NpmPackageVersionInfosIterator<'a> {
+    NpmPackageVersionInfosIterator::new(
+      self.info,
+      self.link_packages,
+      self.newest_dependency_date,
     )
   }
 
-  pub fn resolve_best_package_version_info<'a, 'version>(
-    &'a self,
+  pub fn version_req_satisfies_and_matches_newest_dependency_date(
+    &self,
     version_req: &VersionReq,
-    package_info: &'a NpmPackageInfo,
+    version: &Version,
+  ) -> Result<bool, NpmPackageVersionResolutionError> {
+    Ok(
+      self.version_req_satisfies(version_req, version)?
+        && self.matches_newest_dependency_date(version),
+    )
+  }
+
+  pub fn version_req_satisfies(
+    &self,
+    version_req: &VersionReq,
+    version: &Version,
+  ) -> Result<bool, NpmPackageVersionResolutionError> {
+    match version_req.tag() {
+      Some(tag) => {
+        let version_info = self.tag_to_version_info(tag)?;
+        Ok(version_info.version == *version)
+      }
+      None => {
+        // For when someone just specifies @types/node, we want to pull in a
+        // "known good" version of @types/node that works well with Deno and
+        // not necessarily the latest version. For example, we might only be
+        // compatible with Node vX, but then Node vY is published so we wouldn't
+        // want to pull that in.
+        // Note: If the user doesn't want this behavior, then they can specify an
+        // explicit version.
+        if self.info.name == "@types/node"
+          && *version_req == *WILDCARD_VERSION_REQ
+          && let Some(version_req) = self.types_node_version_req
+        {
+          return Ok(version_req.matches(version));
+        }
+
+        Ok(version_req.matches(version))
+      }
+    }
+  }
+
+  /// Gets if the provided version should be ignored or not
+  /// based on the `newest_dependency_date`.
+  pub fn matches_newest_dependency_date(&self, version: &Version) -> bool {
+    match self.newest_dependency_date {
+      Some(newest_dependency_date) => match self.info.time.get(version) {
+        Some(date) => newest_dependency_date.matches(*date),
+        None => true,
+      },
+      None => true,
+    }
+  }
+
+  pub fn resolve_best_package_version_info<'version>(
+    &self,
+    version_req: &VersionReq,
     existing_versions: impl Iterator<Item = &'version Version>,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
     // always attempt to resolve from the linked packages first
-    if let Some(version_infos) = self.link_packages.get(&package_info.name) {
+    if let Some(version_infos) = self.link_packages {
       let mut best_version: Option<&'a NpmPackageVersionInfo> = None;
       for version_info in version_infos {
         let version = &version_info.version;
-        if self.version_req_satisfies(version_req, version, package_info)? {
+        if self.version_req_satisfies(version_req, version)? {
           let is_greater =
             best_version.map(|c| *version > c.version).unwrap_or(true);
           if is_greater {
@@ -140,58 +232,55 @@ impl NpmVersionResolver {
       }
     }
 
-    if let Some(version) = self.resolve_best_from_existing_versions(
-      version_req,
-      package_info,
-      existing_versions,
-    )? {
-      match package_info.versions.get(version) {
+    if let Some(version) = self
+      .resolve_best_from_existing_versions(version_req, existing_versions)?
+    {
+      match self.info.versions.get(version) {
         Some(version_info) => Ok(version_info),
         None => Err(NpmPackageVersionResolutionError::VersionNotFound(
           NpmPackageVersionNotFound(PackageNv {
-            name: package_info.name.clone(),
+            name: self.info.name.clone(),
             version: version.clone(),
           }),
         )),
       }
     } else {
       // get the information
-      self.get_resolved_package_version_and_info(version_req, package_info)
+      self.get_resolved_package_version_and_info(version_req)
     }
   }
 
-  fn get_resolved_package_version_and_info<'a>(
+  fn get_resolved_package_version_and_info(
     &self,
     version_req: &VersionReq,
-    info: &'a NpmPackageInfo,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
     let mut found_matching_version = false;
     if let Some(tag) = version_req.tag() {
-      self.tag_to_version_info(info, tag)
+      self.tag_to_version_info(tag)
       // When the version is *, if there is a latest tag, use it directly.
       // No need to care about @types/node here, because it'll be handled specially below.
-    } else if info.dist_tags.contains_key("latest")
-      && info.name != "@types/node"
+    } else if self.info.dist_tags.contains_key("latest")
+      && self.info.name != "@types/node"
       // When the latest tag satisfies the version requirement, use it directly.
       // https://github.com/npm/npm-pick-manifest/blob/67508da8e21f7317e3159765006da0d6a0a61f84/lib/index.js#L125
-      && info
+      && self.info
         .dist_tags
         .get("latest")
-        .filter(|version| self.matches_newest_dependency_date(info, version))
+        .filter(|version| self.matches_newest_dependency_date(version))
         .map(|version| {
           *version_req == *WILDCARD_VERSION_REQ ||
-          self.version_req_satisfies(version_req, version, info).ok().unwrap_or(false)
+          self.version_req_satisfies(version_req, version).ok().unwrap_or(false)
         })
         .unwrap_or(false)
     {
-      self.tag_to_version_info(info, "latest")
+      self.tag_to_version_info("latest")
     } else {
       let mut maybe_best_version: Option<&'a NpmPackageVersionInfo> = None;
-      for version_info in info.versions.values() {
+      for version_info in self.info.versions.values() {
         let version = &version_info.version;
-        if self.version_req_satisfies(version_req, version, info)? {
+        if self.version_req_satisfies(version_req, version)? {
           found_matching_version = true;
-          if self.matches_newest_dependency_date(info, version) {
+          if self.matches_newest_dependency_date(version) {
             let is_best_version = maybe_best_version
               .as_ref()
               .map(|best_version| best_version.version.cmp(version).is_lt())
@@ -213,81 +302,24 @@ impl NpmVersionResolver {
         // time the previous resolution of this package's version resolved to an older
         // version, but next time to a different version because it has new information.
         None => Err(NpmPackageVersionResolutionError::VersionReqNotMatched {
-          package_name: info.name.clone(),
+          package_name: self.info.name.clone(),
           version_req: version_req.clone(),
           newest_dependency_date: found_matching_version
-            .then(|| self.newest_dependency_date.as_ref().map(|v| v.date))
+            .then_some(self.newest_dependency_date)
             .flatten(),
         }),
       }
     }
   }
 
-  pub fn version_req_satisfies_and_matches_newest_dependency_date(
+  fn resolve_best_from_existing_versions<'b>(
     &self,
     version_req: &VersionReq,
-    version: &Version,
-    package_info: &NpmPackageInfo,
-  ) -> Result<bool, NpmPackageVersionResolutionError> {
-    Ok(
-      self.version_req_satisfies(version_req, version, package_info)?
-        && self.matches_newest_dependency_date(package_info, version),
-    )
-  }
-
-  /// Gets if the provided version should be ignored or not
-  /// based on the `newest_dependency_date`.
-  pub fn matches_newest_dependency_date(
-    &self,
-    info: &NpmPackageInfo,
-    version: &Version,
-  ) -> bool {
-    info.matches_newest_dependency_date(
-      self.newest_dependency_date.as_ref(),
-      version,
-    )
-  }
-
-  pub fn version_req_satisfies(
-    &self,
-    version_req: &VersionReq,
-    version: &Version,
-    package_info: &NpmPackageInfo,
-  ) -> Result<bool, NpmPackageVersionResolutionError> {
-    match version_req.tag() {
-      Some(tag) => {
-        let version_info = self.tag_to_version_info(package_info, tag)?;
-        Ok(version_info.version == *version)
-      }
-      None => {
-        // For when someone just specifies @types/node, we want to pull in a
-        // "known good" version of @types/node that works well with Deno and
-        // not necessarily the latest version. For example, we might only be
-        // compatible with Node vX, but then Node vY is published so we wouldn't
-        // want to pull that in.
-        // Note: If the user doesn't want this behavior, then they can specify an
-        // explicit version.
-        if package_info.name == "@types/node"
-          && *version_req == *WILDCARD_VERSION_REQ
-          && let Some(version_req) = &self.types_node_version_req
-        {
-          return Ok(version_req.matches(version));
-        }
-
-        Ok(version_req.matches(version))
-      }
-    }
-  }
-
-  fn resolve_best_from_existing_versions<'a>(
-    &self,
-    version_req: &VersionReq,
-    package_info: &NpmPackageInfo,
-    existing_versions: impl Iterator<Item = &'a Version>,
-  ) -> Result<Option<&'a Version>, NpmPackageVersionResolutionError> {
+    existing_versions: impl Iterator<Item = &'b Version>,
+  ) -> Result<Option<&'b Version>, NpmPackageVersionResolutionError> {
     let mut maybe_best_version: Option<&Version> = None;
     for version in existing_versions {
-      if self.version_req_satisfies(version_req, version, package_info)? {
+      if self.version_req_satisfies(version_req, version)? {
         let is_best_version = maybe_best_version
           .as_ref()
           .map(|best_version| (*best_version).cmp(version).is_lt())
@@ -300,39 +332,34 @@ impl NpmVersionResolver {
     Ok(maybe_best_version)
   }
 
-  fn tag_to_version_info<'a>(
+  fn tag_to_version_info(
     &self,
-    info: &'a NpmPackageInfo,
     tag: &str,
   ) -> Result<&'a NpmPackageVersionInfo, NpmPackageVersionResolutionError> {
-    if let Some(version) = info.dist_tags.get(tag) {
-      match info.versions.get(version) {
+    if let Some(version) = self.info.dist_tags.get(tag) {
+      match self.info.versions.get(version) {
         Some(version_info) => {
-          if self.matches_newest_dependency_date(info, version) {
+          if self.matches_newest_dependency_date(version) {
             Ok(version_info)
           } else {
             Err(NpmPackageVersionResolutionError::DistTagVersionTooNew {
-              package_name: info.name.clone(),
+              package_name: self.info.name.clone(),
               dist_tag: tag.to_string(),
               version: version.to_string(),
-              newest_dependency_date: self
-                .newest_dependency_date
-                .as_ref()
-                .unwrap()
-                .date,
-              publish_date: *info.time.get(version).unwrap(),
+              newest_dependency_date: self.newest_dependency_date.unwrap(),
+              publish_date: *self.info.time.get(version).unwrap(),
             })
           }
         }
         None => Err(NpmPackageVersionResolutionError::DistTagVersionNotFound {
-          package_name: info.name.clone(),
+          package_name: self.info.name.clone(),
           dist_tag: tag.to_string(),
           version: version.to_string(),
         }),
       }
     } else {
       Err(NpmPackageVersionResolutionError::DistTagNotFound {
-        package_name: info.name.clone(),
+        package_name: self.info.name.clone(),
         dist_tag: tag.to_string(),
       })
     }
@@ -360,15 +387,14 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let resolver = NpmVersionResolver {
+    let provider = NpmPackageVersionResolverProvider {
       types_node_version_req: None,
       link_packages: Default::default(),
-      newest_dependency_date: None,
+      newest_dependency_date_options: Default::default(),
     };
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let version_resolver = provider.get_for_package(&package_info);
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(
       result.err().unwrap().to_string(),
       "Could not find version '1.0.0-alpha' referenced in dist-tag 'latest' for npm package 'test'."
@@ -397,10 +423,9 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let version_resolver = provider.get_for_package(&package_info);
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-alpha");
   }
 
@@ -433,17 +458,16 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let resolver = NpmVersionResolver {
+    let provider = NpmPackageVersionResolverProvider {
       types_node_version_req: Some(
         VersionReq::parse_from_npm("1.0.0").unwrap(),
       ),
       link_packages: Default::default(),
-      newest_dependency_date: None,
+      newest_dependency_date_options: Default::default(),
     };
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let version_resolver = provider.get_for_package(&package_info);
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0");
   }
 
@@ -474,15 +498,14 @@ mod test {
       )]),
       time: Default::default(),
     };
-    let resolver = NpmVersionResolver {
+    let provider = NpmPackageVersionResolverProvider {
       types_node_version_req: None,
       link_packages: Default::default(),
-      newest_dependency_date: None,
+      newest_dependency_date_options: Default::default(),
     };
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let version_resolver = provider.get_for_package(&package_info);
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "1.0.0-rc.1");
   }
 
@@ -532,18 +555,17 @@ mod test {
       ]),
       time: Default::default(),
     };
-    let resolver = NpmVersionResolver {
+    let provider = NpmPackageVersionResolverProvider {
       types_node_version_req: None,
       link_packages: Default::default(),
-      newest_dependency_date: None,
+      newest_dependency_date_options: Default::default(),
     };
 
     // check for when matches dist tag
     let package_req = PackageReq::from_str("some-pkg@^0.1.0-alpha.2").unwrap();
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let version_resolver = provider.get_for_package(&package_info);
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(
       result.unwrap().version.to_string(),
       "0.1.0-alpha.2" // not "0.1.0-beta.2"
@@ -551,10 +573,8 @@ mod test {
 
     // check for when not matches dist tag
     let package_req = PackageReq::from_str("some-pkg@^0.1.0-beta.2").unwrap();
-    let result = resolver.get_resolved_package_version_and_info(
-      &package_req.version_req,
-      &package_info,
-    );
+    let result = version_resolver
+      .get_resolved_package_version_and_info(&package_req.version_req);
     assert_eq!(result.unwrap().version.to_string(), "0.1.0-beta.2");
   }
 }

@@ -21,7 +21,7 @@ use thiserror::Error;
 
 use super::NpmPackageVersionNotFound;
 use super::UnmetPeerDepDiagnostic;
-use super::common::NpmVersionResolver;
+use super::common::NpmPackageVersionResolverProvider;
 use super::graph::Graph;
 use super::graph::GraphDependencyResolver;
 use super::graph::NpmResolutionError;
@@ -195,7 +195,7 @@ impl std::fmt::Debug for SerializedNpmResolutionSnapshot {
 #[derive(Debug, Clone)]
 pub struct AddPkgReqsOptions<'a> {
   pub package_reqs: &'a [PackageReq],
-  pub version_resolver: &'a NpmVersionResolver,
+  pub version_resolver: &'a NpmPackageVersionResolverProvider,
   /// If a deduplication pass should be done on the final graph.
   ///
   /// This should never be done after code execution occurs (ex. this
