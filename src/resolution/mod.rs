@@ -11,6 +11,7 @@ pub use common::NewestDependencyDate;
 pub use common::NewestDependencyDateOptions;
 pub use common::NpmPackageVersionNotFound;
 pub use common::NpmPackageVersionResolutionError;
+pub use common::NpmPackageVersionResolver;
 pub use common::NpmVersionResolver;
 pub use graph::NpmResolutionError;
 pub use graph::Reporter;
