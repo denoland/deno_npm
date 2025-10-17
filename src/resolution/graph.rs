@@ -6227,6 +6227,73 @@ mod test {
     );
   }
 
+  #[tokio::test]
+  async fn dedup_conflicting_root_reqs() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-a", "1.1.0");
+
+    let snapshot = {
+      let snapshot = run_resolver_with_options_and_get_snapshot(
+        &api,
+        RunResolverOptions {
+          reqs: vec!["package-a@^1.0.0", "package-a@1.0.0"],
+          skip_dedup: false,
+          ..Default::default()
+        },
+      )
+      .await
+      .unwrap();
+      let (packages, package_reqs) = snapshot_to_packages(snapshot.clone());
+      assert_eq!(
+        packages,
+        vec![TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          ("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string()),
+          (
+            "package-a@^1.0.0".to_string(),
+            "package-a@1.0.0".to_string()
+          ),
+        ]
+      );
+      snapshot
+    };
+    {
+      let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+        api,
+        RunResolverOptions {
+          snapshot,
+          reqs: vec!["package-a@1.1.0"],
+          skip_dedup: false,
+          ..Default::default()
+        },
+      )
+      .await;
+      assert_eq!(
+        packages,
+        vec![TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },]
+      );
+      assert_eq!(
+        package_reqs,
+        vec![
+          ("package-a@1.0.0".to_string(), "package-a@1.0.0".to_string()),
+          ("package-peer@1".to_string(), "package-a@1.0.0".to_string()),
+        ]
+      );
+    }
+  }
+
   fn version(text: &str) -> Version {
     Version::parse_from_npm(text).unwrap()
   }
