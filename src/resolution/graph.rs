@@ -1085,14 +1085,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_resolver,
       Some(parent_id),
     )?;
-
-    if let Some(reporter) = &self.reporter {
-      let package_req = PackageReq {
-        name: entry.name.clone(),
-        version_req: entry.version_req.clone(),
-      };
-      reporter.on_resolved(&package_req, &child_nv);
-    }
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
@@ -1172,6 +1164,14 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       version_req.version_text(),
       pkg_nv.to_string(),
     );
+
+    if let Some(reporter) = &self.reporter {
+      let package_req = PackageReq {
+        name: pkg_req_name.into(),
+        version_req: version_req.clone(),
+      };
+      reporter.on_resolved(&package_req, &pkg_nv);
+    }
 
     Ok((pkg_nv, node_id))
   }
