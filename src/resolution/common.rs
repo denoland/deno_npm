@@ -111,9 +111,6 @@ impl NewestDependencyDateOptions {
 
 #[derive(Debug, Default, Clone)]
 pub struct NpmVersionResolver {
-  /// Known good version requirement to use for the `@types/node` package
-  /// when the version is unspecified or "latest".
-  pub types_node_version_req: Option<VersionReq>,
   /// Packages that are marked as "links" in the config file.
   pub link_packages: Arc<HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
   pub newest_dependency_date_options: NewestDependencyDateOptions,
@@ -130,7 +127,6 @@ impl NpmVersionResolver {
         .newest_dependency_date_options
         .get_for_package(&info.name),
       link_packages: self.link_packages.get(&info.name),
-      types_node_version_req: self.types_node_version_req.as_ref(),
     }
   }
 }
@@ -139,7 +135,6 @@ pub struct NpmPackageVersionResolver<'a> {
   info: &'a NpmPackageInfo,
   link_packages: Option<&'a Vec<NpmPackageVersionInfo>>,
   newest_dependency_date: Option<NewestDependencyDate>,
-  types_node_version_req: Option<&'a VersionReq>,
 }
 
 impl<'a> NpmPackageVersionResolver<'a> {
@@ -177,23 +172,7 @@ impl<'a> NpmPackageVersionResolver<'a> {
         let version_info = self.tag_to_version_info(tag)?;
         Ok(version_info.version == *version)
       }
-      None => {
-        // For when someone just specifies @types/node, we want to pull in a
-        // "known good" version of @types/node that works well with Deno and
-        // not necessarily the latest version. For example, we might only be
-        // compatible with Node vX, but then Node vY is published so we wouldn't
-        // want to pull that in.
-        // Note: If the user doesn't want this behavior, then they can specify an
-        // explicit version.
-        if self.info.name == "@types/node"
-          && *version_req == *WILDCARD_VERSION_REQ
-          && let Some(version_req) = self.types_node_version_req
-        {
-          return Ok(version_req.matches(version));
-        }
-
-        Ok(version_req.matches(version))
-      }
+      None => Ok(version_req.matches(version)),
     }
   }
 
@@ -388,7 +367,6 @@ mod test {
       time: Default::default(),
     };
     let resolver = NpmVersionResolver {
-      types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
@@ -430,48 +408,6 @@ mod test {
   }
 
   #[test]
-  fn test_types_node_version() {
-    // this will use the 1.0.0 version because that's what was specified
-    // for the "types_node_version_req" even though the latest is 1.1.0
-    let package_req = PackageReq::from_str("@types/node").unwrap();
-    let package_info = NpmPackageInfo {
-      name: "@types/node".into(),
-      versions: HashMap::from([
-        (
-          Version::parse_from_npm("1.0.0").unwrap(),
-          NpmPackageVersionInfo {
-            version: Version::parse_from_npm("1.0.0").unwrap(),
-            ..Default::default()
-          },
-        ),
-        (
-          Version::parse_from_npm("1.1.0").unwrap(),
-          NpmPackageVersionInfo {
-            version: Version::parse_from_npm("1.1.0").unwrap(),
-            ..Default::default()
-          },
-        ),
-      ]),
-      dist_tags: HashMap::from([(
-        "latest".into(),
-        Version::parse_from_npm("1.1.0").unwrap(),
-      )]),
-      time: Default::default(),
-    };
-    let resolver = NpmVersionResolver {
-      types_node_version_req: Some(
-        VersionReq::parse_from_npm("1.0.0").unwrap(),
-      ),
-      link_packages: Default::default(),
-      newest_dependency_date_options: Default::default(),
-    };
-    let version_resolver = resolver.get_for_package(&package_info);
-    let result = version_resolver
-      .get_resolved_package_version_and_info(&package_req.version_req);
-    assert_eq!(result.unwrap().version.to_string(), "1.0.0");
-  }
-
-  #[test]
   fn test_wildcard_version_req() {
     let package_req = PackageReq::from_str("some-pkg").unwrap();
     let package_info = NpmPackageInfo {
@@ -499,7 +435,6 @@ mod test {
       time: Default::default(),
     };
     let resolver = NpmVersionResolver {
-      types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
@@ -556,7 +491,6 @@ mod test {
       time: Default::default(),
     };
     let resolver = NpmVersionResolver {
-      types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };

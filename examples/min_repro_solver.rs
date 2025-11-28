@@ -288,7 +288,6 @@ async fn run_resolver_and_get_snapshot(
     .map(|req| PackageReq::from_str(req).unwrap())
     .collect::<Vec<_>>();
   let version_resolver = NpmVersionResolver {
-    types_node_version_req: None,
     link_packages: Default::default(),
     newest_dependency_date_options: Default::default(),
   };
