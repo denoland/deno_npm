@@ -602,15 +602,25 @@ impl NpmResolutionSnapshot {
       })
   }
 
+  /// Resolve a package id from a deno module.
+  pub fn resolve_package_id_from_deno_module(
+    &self,
+    nv: &PackageNv,
+  ) -> Result<&NpmPackageId, PackageNvNotFoundError> {
+    match self.root_packages.get(nv) {
+      Some(id) => Ok(id),
+      None => Err(PackageNvNotFoundError(nv.clone())),
+    }
+  }
+
   /// Resolve a package from a deno module.
   pub fn resolve_package_from_deno_module(
     &self,
     nv: &PackageNv,
   ) -> Result<&NpmResolutionPackage, PackageNvNotFoundError> {
-    match self.root_packages.get(nv) {
-      Some(id) => Ok(self.packages.get(id).unwrap()),
-      None => Err(PackageNvNotFoundError(nv.clone())),
-    }
+    self
+      .resolve_package_id_from_deno_module(nv)
+      .map(|id| self.packages.get(id).unwrap())
   }
 
   pub fn top_level_packages(
