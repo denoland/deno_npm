@@ -2150,6 +2150,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     self.graph.resolved_node_ids.clear_peer_deps();
     self.graph.moved_package_ids.clear();
     self.unmet_peer_diagnostics.borrow_mut().clear();
+    self.graph.packages_to_copy_index.clear(); // ok because we haven't started running code yet
 
     // add the pending nodes from the root
     for (pkg_nv, node_id) in &self.graph.root_packages {
@@ -6585,6 +6586,88 @@ mod test {
     }
 
     Ok(snapshot)
+  }
+
+  #[tokio::test]
+  async fn dedup_with_initially_partially_resolved_graph() {
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-shared", "1.0.0");
+    api.add_peer_dependency(
+      ("package-a", "1.0.0"),
+      ("package-shared", "^1.0.0"),
+    );
+
+    // first, resolve package-a which pulls in package-shared@1.0.0
+    let snapshot = run_resolver_with_options_and_get_snapshot(
+      &api,
+      RunResolverOptions {
+        reqs: Vec::from(["package-a@1"]),
+        ..Default::default()
+      },
+    )
+    .await
+    .unwrap();
+
+    // now "publish" package-b and package-shared 1.1.0
+    api.ensure_package_version("package-b", "1.0.0");
+    api.add_peer_dependency(
+      ("package-b", "1.0.0"),
+      ("package-shared", "^1.1.0"),
+    );
+    api.ensure_package_version("package-shared", "1.1.0");
+
+    // now resolve package-b
+    let (packages, package_reqs) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        snapshot,
+        reqs: Vec::from(["package-b@1"]),
+        ..Default::default()
+      },
+    )
+    .await;
+
+    // after dedup, package-b should use package-shared@1.1.0 (consolidated)
+    assert_eq!(
+      packages,
+      vec![
+        TestNpmResolutionPackage {
+          pkg_id: "package-a@1.0.0_package-shared@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-shared".to_string(),
+            "package-shared@1.1.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-b@1.0.0_package-shared@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: BTreeMap::from([(
+            "package-shared".to_string(),
+            "package-shared@1.1.0".to_string(),
+          )])
+        },
+        TestNpmResolutionPackage {
+          pkg_id: "package-shared@1.1.0".to_string(),
+          copy_index: 0,
+          dependencies: Default::default(),
+        },
+      ]
+    );
+    assert_eq!(
+      package_reqs,
+      vec![
+        (
+          "package-a@1".to_string(),
+          "package-a@1.0.0_package-shared@1.1.0".to_string()
+        ),
+        (
+          "package-b@1".to_string(),
+          "package-b@1.0.0_package-shared@1.1.0".to_string()
+        ),
+      ]
+    );
   }
 
   async fn run_resolver_and_get_error(
