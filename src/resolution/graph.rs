@@ -7,6 +7,7 @@ use deno_semver::package::PackageName;
 use deno_semver::package::PackageNv;
 use deno_semver::package::PackageReq;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 use log::debug;
@@ -1206,7 +1207,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
 
       if self.should_dedup && !did_dedup {
-        self.run_dedup_pass().await;
+        self.run_dedup_pass().await?;
         did_dedup = true;
       }
     }
@@ -1967,7 +1968,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     self.unmet_peer_diagnostics.borrow_mut().drain(..).collect()
   }
 
-  async fn run_dedup_pass(&mut self) {
+  async fn run_dedup_pass(&mut self) -> Result<(), NpmResolutionError> {
     debug!("Running npm dedup pass.");
     type VersionReqsByVersion = BTreeMap<Version, Vec<VersionReq>>;
     let mut package_version_reqs_by_version: HashMap<
@@ -1992,17 +1993,47 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       }
     }
 
-    while let Some(node_id) = pending_nodes.pop_front() {
-      if let Some(node) = self.graph.nodes.get(&node_id) {
-        let id = self.graph.resolved_node_ids.get(node_id).unwrap();
-        if let Some(deps) = self.dep_entry_cache.get(&id.nv) {
+    let mut futures = FuturesUnordered::new();
+    let mut pending_dep_entries = VecDeque::new();
+    while !pending_nodes.is_empty() || !futures.is_empty() {
+      for node_id in pending_nodes.drain(..) {
+        let Some(nv) = self
+          .graph
+          .resolved_node_ids
+          .get(node_id)
+          .map(|id| id.nv.clone())
+        else {
+          continue;
+        };
+        if let Some(deps) = self.dep_entry_cache.get(&nv) {
+          pending_dep_entries.push_back((node_id, deps.clone()));
+        } else {
+          let api = self.api;
+          futures.push(async move {
+            let package_info = api.package_info(&nv.name).await?;
+            Result::<_, NpmResolutionError>::Ok((node_id, nv, package_info))
+          });
+        }
+      }
+
+      if let Some(result) = futures.next().await {
+        let (node_id, nv, package_info) = result?;
+        let version_info = package_info
+          .version_info(&nv, &self.version_resolver.link_packages)
+          .map_err(NpmPackageVersionResolutionError::VersionNotFound)?;
+        let deps = self.dep_entry_cache.store(nv.clone(), version_info)?;
+        pending_dep_entries.push_back((node_id, deps));
+      }
+
+      while let Some((node_id, deps)) = pending_dep_entries.pop_front() {
+        if let Some(node) = self.graph.nodes.get(&node_id) {
           for dep in deps.iter() {
             if let Some(child_node_id) = node.children.get(&dep.bare_specifier)
             {
               let child_id =
                 self.graph.resolved_node_ids.get(*child_node_id).unwrap();
               package_version_reqs_by_version
-                .entry(dep.name.clone())
+                .entry(child_id.nv.name.clone())
                 .or_default()
                 .entry(child_id.nv.version.clone())
                 .or_default()
@@ -2042,7 +2073,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     }
 
     if consolidated_versions.is_empty() {
-      return; // nothing to do
+      return Ok(()); // nothing to do
     }
 
     debug!("Consolidating npm versions.");
@@ -2128,6 +2159,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         GraphPathResolutionMode::All,
       ));
     }
+
+    Ok(())
   }
 
   async fn assign_highest_satisfying(
