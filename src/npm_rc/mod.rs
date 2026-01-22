@@ -173,7 +173,10 @@ impl NpmRc {
       Cow::Owned(format!("{}/", registry_url))
     };
     // https://example.com/ -> example.com/
-    let Some((_, registry_url)) = original_registry_url.split_once("//") else {
+    let Some((_, registry_url)) = original_registry_url
+      .split_once("//")
+      .filter(|(_, url)| !url.is_empty())
+    else {
       return (
         original_registry_url.into_owned(),
         Arc::new(RegistryConfig::default()),
