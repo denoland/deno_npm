@@ -20,8 +20,6 @@ pub enum ResolveError {
     #[source]
     source: url::ParseError,
   },
-  #[error("failed resolving .npmrc config for scope '{0}'")]
-  NpmrcScope(String),
   #[error("failed parsing npm registry url")]
   Url(#[source] url::ParseError),
 }
@@ -130,21 +128,14 @@ impl NpmRc {
   ) -> Result<ResolvedNpmRc, ResolveError> {
     let mut scopes = HashMap::with_capacity(self.scope_registries.len());
     for scope in self.scope_registries.keys() {
-      let (url, config) = match self.registry_url_and_config_for_maybe_scope(
+      let (url, config) = self.registry_url_and_config_for_maybe_scope(
         Some(scope.as_str()),
         env_registry_url.as_str(),
-      ) {
-        Some((url, config)) => (
-          Url::parse(&url).map_err(|e| ResolveError::UrlScope {
-            scope: scope.clone(),
-            source: e,
-          })?,
-          config.clone(),
-        ),
-        None => {
-          return Err(ResolveError::NpmrcScope(scope.clone()));
-        }
-      };
+      );
+      let url = Url::parse(&url).map_err(|e| ResolveError::UrlScope {
+        scope: scope.clone(),
+        source: e,
+      })?;
       scopes.insert(
         scope.clone(),
         RegistryConfigWithUrl {
@@ -153,18 +144,9 @@ impl NpmRc {
         },
       );
     }
-    let (default_url, default_config) = match self
-      .registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str())
-    {
-      Some((default_url, default_config)) => (
-        Url::parse(&default_url).map_err(ResolveError::Url)?,
-        default_config,
-      ),
-      None => (
-        env_registry_url.clone(),
-        Arc::new(RegistryConfig::default()),
-      ),
-    };
+    let (default_url, default_config) = self
+      .registry_url_and_config_for_maybe_scope(None, env_registry_url.as_str());
+    let default_url = Url::parse(&default_url).map_err(ResolveError::Url)?;
     Ok(ResolvedNpmRc {
       default_config: RegistryConfigWithUrl {
         registry_url: default_url,
@@ -179,7 +161,7 @@ impl NpmRc {
     &self,
     maybe_scope_name: Option<&str>,
     env_registry_url: &str,
-  ) -> Option<(String, Arc<RegistryConfig>)> {
+  ) -> (String, Arc<RegistryConfig>) {
     let registry_url = maybe_scope_name
       .and_then(|scope| self.scope_registries.get(scope).map(|s| s.as_str()))
       .or(self.registry.as_deref())
@@ -191,23 +173,23 @@ impl NpmRc {
       Cow::Owned(format!("{}/", registry_url))
     };
     // https://example.com/ -> example.com/
-    let registry_url = original_registry_url
-      .split_once("//")
-      .map(|(_, right)| right)?;
+    let Some((_, registry_url)) = original_registry_url.split_once("//") else {
+      return (
+        original_registry_url.into_owned(),
+        Arc::new(RegistryConfig::default()),
+      );
+    };
     let mut url: &str = registry_url;
 
     loop {
       if let Some(config) = self.registry_configs.get(url) {
-        return Some((original_registry_url.into_owned(), config.clone()));
+        return (original_registry_url.into_owned(), config.clone());
       }
       let Some(next_slash_index) = url[..url.len() - 1].rfind('/') else {
-        if original_registry_url == env_registry_url {
-          return None;
-        }
-        return Some((
+        return (
           original_registry_url.into_owned(),
           Arc::new(RegistryConfig::default()),
-        ));
+        );
       };
       url = &url[..next_slash_index + 1];
     }
@@ -769,5 +751,29 @@ registry=${VAR_FOUND}
       assert_eq!(registry_url.as_str(), "https://example2.com/");
       assert_eq!(config.as_ref(), &Default::default());
     }
+  }
+
+  #[test]
+  fn test_scope_registry_same_as_env_registry() {
+    // a scope registry that matches the env registry url should still
+    // be included in the resolved npmrc. This is important because scopes
+    // that are overriden by deno like the @jsr scope might have the registry
+    // set to the default registry like this and so we want to ensure it's
+    // still used and not overwritten
+    let npm_rc = NpmRc::parse(
+      r#"
+@jsr:registry=https://registry.npmjs.org/
+"#,
+      &|_| None,
+    )
+    .unwrap();
+    let npm_rc = npm_rc
+      .as_resolved(&Url::parse("https://registry.npmjs.org/").unwrap())
+      .unwrap();
+    assert!(npm_rc.scopes.contains_key("jsr"));
+    assert_eq!(
+      npm_rc.scopes.get("jsr").unwrap().registry_url.as_str(),
+      "https://registry.npmjs.org/"
+    );
   }
 }
