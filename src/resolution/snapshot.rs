@@ -976,6 +976,15 @@ pub fn snapshot_from_lockfile(
   let mut root_packages = HashMap::<PackageReq, NpmPackageId>::with_capacity(
     lockfile.content.packages.specifiers.len(),
   );
+  let link_package_ids = params
+    .link_packages
+    .iter()
+    .flat_map(|(name, info_vec)| {
+      info_vec.iter().map(move |info| {
+        StackString::from_string(format!("{}@{}", name, info.version))
+      })
+    })
+    .collect::<HashSet<_>>();
   // collect the specifiers to version mappings
   for (key, value) in &lockfile.content.packages.specifiers {
     match key.kind {
@@ -1010,12 +1019,16 @@ pub fn snapshot_from_lockfile(
     }
 
     packages.push(SerializedNpmResolutionSnapshotPackage {
-      dist: Some(dist_from_incomplete_package_info(
-        &id.nv,
-        package.integrity.as_deref(),
-        package.tarball.as_deref(),
-        default_tarball_url,
-      )),
+      dist: if !link_package_ids.contains(key) {
+        Some(dist_from_incomplete_package_info(
+          &id.nv,
+          package.integrity.as_deref(),
+          package.tarball.as_deref(),
+          default_tarball_url,
+        ))
+      } else {
+        None
+      },
       id,
       dependencies: dependencies
         .into_iter()
@@ -1560,6 +1573,68 @@ mod tests {
         )
         // shouldn't panic
         .is_err()
+    );
+  }
+
+  #[tokio::test]
+  async fn test_snapshot_from_lockfile_v5_with_linked_package() {
+    let api = TestNpmRegistryApi::default();
+    let lockfile = Lockfile::new(
+      NewLockfileOptions {
+        file_path: PathBuf::from("/deno.lock"),
+        content: r#"{
+          "version": "5",
+          "specifiers": {
+            "npm:cowsay@^1.6.0": "1.6.0"
+          },
+          "npm": {
+            "cowsay@1.6.0": {}
+          },
+          "workspace": {
+            "packageJson": {
+              "dependencies": [
+                "npm:cowsay@^1.6.0"
+              ]
+            },
+            "links": {
+              "npm:cowsay@1.6.0": {}
+            }
+          }
+        }"#,
+        overwrite: false,
+      },
+      &api,
+    )
+    .await
+    .unwrap();
+    let link_packages = &HashMap::from([(
+      PackageName::from_static("cowsay"),
+      vec![NpmPackageVersionInfo {
+        version: Version::parse_standard("1.6.0").unwrap(),
+        ..Default::default()
+      }],
+    )]);
+    let snapshot = snapshot_from_lockfile(SnapshotFromLockfileParams {
+      lockfile: &lockfile,
+      link_packages,
+      default_tarball_url: &TestDefaultTarballUrlProvider,
+    })
+    .unwrap();
+
+    assert_eq!(
+      snapshot.as_serialized().packages,
+      vec![SerializedNpmResolutionSnapshotPackage {
+        id: NpmPackageId::from_serialized("cowsay@1.6.0").unwrap(),
+        system: Default::default(),
+        dist: None, // should be None
+        dependencies: Default::default(),
+        optional_dependencies: Default::default(),
+        optional_peer_dependencies: Default::default(),
+        extra: None,
+        is_deprecated: false,
+        has_bin: false,
+        has_scripts: false,
+      }]
     );
   }
 }
