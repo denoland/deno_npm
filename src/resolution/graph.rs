@@ -6524,7 +6524,6 @@ mod test {
         .unwrap_or_else(HashMap::default),
     );
     let npm_version_resolver = NpmVersionResolver {
-      types_node_version_req: None,
       link_packages: link_packages.clone(),
       newest_dependency_date_options: options.newest_dependency_date,
     };
@@ -6677,7 +6676,6 @@ mod test {
     let snapshot = NpmResolutionSnapshot::new(Default::default());
     let mut graph = Graph::from_snapshot(snapshot);
     let npm_version_resolver = NpmVersionResolver {
-      types_node_version_req: None,
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
     };
