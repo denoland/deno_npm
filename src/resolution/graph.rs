@@ -38,7 +38,7 @@ use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
 use super::common::NpmVersionResolver;
-use super::overrides::ActiveOverrides;
+use super::overrides::NpmOverrides;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
@@ -244,7 +244,7 @@ struct GraphPath {
   linked_circular_descendants: RefCell<Vec<Rc<GraphPath>>>,
   mode: GraphPathResolutionMode,
   /// The currently active override rules at this point in the tree traversal.
-  active_overrides: ActiveOverrides,
+  active_overrides: Rc<NpmOverrides>,
 }
 
 impl GraphPath {
@@ -252,13 +252,11 @@ impl GraphPath {
     node_id: NodeId,
     nv: Rc<PackageNv>,
     mode: GraphPathResolutionMode,
-    active_overrides: &ActiveOverrides,
+    active_overrides: Rc<NpmOverrides>,
   ) -> Rc<Self> {
     // scope the overrides for this root package so that any scoped
     // overrides targeting this package have their children activated
-    let scoped = active_overrides
-      .for_child(&nv.name, &nv.version)
-      .into_owned();
+    let scoped = active_overrides.for_child(&nv.name, &nv.version);
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -290,10 +288,8 @@ impl GraphPath {
     nv: Rc<PackageNv>,
     mode: GraphPathResolutionMode,
   ) -> Rc<Self> {
-    let active_overrides = self
-      .active_overrides
-      .for_child(&nv.name, &nv.version)
-      .into_owned();
+    let active_overrides =
+      self.active_overrides.for_child(&nv.name, &nv.version);
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Node(self.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -1015,9 +1011,9 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
   should_dedup: bool,
-  /// The initial active overrides derived from the root package.json.
+  /// The initial overrides from the root package.json.
   /// Used when creating root-level GraphPaths.
-  initial_overrides: ActiveOverrides,
+  initial_overrides: Rc<NpmOverrides>,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -1030,8 +1026,6 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     reporter: Option<&'a dyn Reporter>,
     options: GraphDependencyResolverOptions,
   ) -> Self {
-    let initial_overrides =
-      ActiveOverrides::from_overrides(&version_resolver.overrides);
     Self {
       unmet_peer_diagnostics: Default::default(),
       graph,
@@ -1041,7 +1035,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       dep_entry_cache: Default::default(),
       reporter,
       should_dedup: options.should_dedup,
-      initial_overrides,
+      initial_overrides: Rc::new((*version_resolver.overrides).clone()),
     }
   }
 
@@ -1113,7 +1107,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           node_id,
           pkg_nv.clone(),
           GraphPathResolutionMode::All,
-          &self.initial_overrides,
+          self.initial_overrides.clone(),
         ));
         (pkg_nv, node_id)
       }
@@ -1284,7 +1278,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               *node_id,
               nv.clone(),
               GraphPathResolutionMode::OptionalPeers,
-              &self.initial_overrides,
+              self.initial_overrides.clone(),
             ));
           }
         }
@@ -2270,7 +2264,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         *node_id,
         pkg_nv.clone(),
         GraphPathResolutionMode::All,
-        &self.initial_overrides,
+        self.initial_overrides.clone(),
       ));
     }
 
@@ -6636,7 +6630,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       link_packages: link_packages.clone(),
       newest_dependency_date_options: options.newest_dependency_date,
-      overrides: options.overrides,
+      overrides: Arc::new(options.overrides),
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,

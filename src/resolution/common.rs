@@ -116,7 +116,7 @@ pub struct NpmVersionResolver {
   pub link_packages: Arc<HashMap<PackageName, Vec<NpmPackageVersionInfo>>>,
   pub newest_dependency_date_options: NewestDependencyDateOptions,
   /// npm overrides from the root package.json.
-  pub overrides: NpmOverrides,
+  pub overrides: Arc<NpmOverrides>,
 }
 
 impl NpmVersionResolver {

@@ -1,13 +1,45 @@
 // Copyright 2018-2024 the Deno authors. MIT license.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use deno_semver::StackString;
 use deno_semver::Version;
 use deno_semver::VersionReq;
 use deno_semver::package::PackageName;
 use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum NpmOverridesError {
+  #[error("Failed to parse override key \"{key}\": {source}")]
+  KeyParse {
+    key: String,
+    source: deno_semver::npm::NpmVersionReqParseError,
+  },
+  #[error(
+    "Failed to parse override value \"{value}\" for key \"{key}\": {source}"
+  )]
+  ValueParse {
+    key: String,
+    value: String,
+    source: deno_semver::npm::NpmVersionReqParseError,
+  },
+  #[error(
+    "Override uses dollar reference \"${reference}\" but \"{reference}\" is not a direct dependency of the root package"
+  )]
+  UnresolvedDollarReference { reference: String },
+  #[error(
+    "Invalid override value type for key \"{key}\": expected a string or object"
+  )]
+  InvalidValueType { key: String },
+  #[error(
+    "Invalid value type for \".\" key in override \"{key}\": expected a string"
+  )]
+  InvalidDotValueType { key: String },
+  #[error("Invalid \"overrides\" field in package.json: expected an object")]
+  InvalidTopLevelType,
+}
 
 /// The value an override resolves to.
 #[derive(Debug, Clone)]
@@ -38,42 +70,13 @@ pub struct NpmOverrideRule {
   /// The override value for this package itself.
   pub value: NpmOverrideValue,
   /// Nested overrides that apply within this package's dependency subtree.
-  pub children: Vec<NpmOverrideRule>,
+  pub children: Vec<Arc<NpmOverrideRule>>,
 }
 
 /// Top-level parsed overrides from the root package.json.
 #[derive(Debug, Clone, Default)]
 pub struct NpmOverrides {
-  pub rules: Vec<NpmOverrideRule>,
-}
-
-#[derive(Debug, Error)]
-pub enum NpmOverridesError {
-  #[error("Failed to parse override key \"{key}\": {source}")]
-  KeyParse {
-    key: String,
-    source: deno_semver::npm::NpmVersionReqParseError,
-  },
-  #[error(
-    "Failed to parse override value \"{value}\" for key \"{key}\": {source}"
-  )]
-  ValueParse {
-    key: String,
-    value: String,
-    source: deno_semver::npm::NpmVersionReqParseError,
-  },
-  #[error(
-    "Override uses dollar reference \"${reference}\" but \"{reference}\" is not a direct dependency of the root package"
-  )]
-  UnresolvedDollarReference { reference: String },
-  #[error(
-    "Invalid override value type for key \"{key}\": expected a string or object"
-  )]
-  InvalidValueType { key: String },
-  #[error(
-    "Invalid value type for \".\" key in override \"{key}\": expected a string"
-  )]
-  InvalidDotValueType { key: String },
+  pub rules: Vec<Arc<NpmOverrideRule>>,
 }
 
 impl NpmOverrides {
@@ -92,31 +95,7 @@ impl NpmOverrides {
         Ok(Self { rules })
       }
       serde_json::Value::Null => Ok(Self::default()),
-      _ => Ok(Self::default()),
-    }
-  }
-
-  pub fn is_empty(&self) -> bool {
-    self.rules.is_empty()
-  }
-}
-
-/// Tracks which override rules are applicable at a given point during
-/// dependency graph traversal. As resolution descends into a package
-/// that matches a scoped override, that rule's children become active.
-#[derive(Debug, Clone, Default)]
-pub struct ActiveOverrides {
-  rules: Vec<NpmOverrideRule>,
-}
-
-impl ActiveOverrides {
-  /// Creates the initial active overrides from the top-level overrides config.
-  pub fn from_overrides(overrides: &NpmOverrides) -> Self {
-    if overrides.is_empty() {
-      return Self::default();
-    }
-    Self {
-      rules: overrides.rules.clone(),
+      _ => Err(NpmOverridesError::InvalidTopLevelType),
     }
   }
 
@@ -133,16 +112,16 @@ impl ActiveOverrides {
   /// - Rules that target other packages (either simple or scoped): pass
   ///   through unchanged so they can match deeper descendants.
   pub fn for_child(
-    &self,
+    self: &Rc<Self>,
     child_name: &PackageName,
     child_version: &Version,
-  ) -> Cow<'_, Self> {
+  ) -> Rc<Self> {
     if self.rules.is_empty() {
-      return Cow::Borrowed(self);
+      return self.clone();
     }
 
-    let mut scoped_children = Vec::new();
-    let mut passthrough_rules = Vec::new();
+    let mut scoped_children: Vec<Arc<NpmOverrideRule>> = Vec::new();
+    let mut passthrough_rules: Vec<Arc<NpmOverrideRule>> = Vec::new();
     let mut changed = false;
 
     for rule in self.rules.iter() {
@@ -169,11 +148,11 @@ impl ActiveOverrides {
     }
 
     if !changed {
-      Cow::Borrowed(self)
+      self.clone()
     } else {
       // scoped children first so they take precedence over passthrough rules
       scoped_children.extend(passthrough_rules);
-      Cow::Owned(Self {
+      Rc::new(Self {
         rules: scoped_children,
       })
     }
@@ -262,7 +241,7 @@ fn parse_override_value(
   key: &str,
   value: &serde_json::Value,
   root_deps: &HashMap<StackString, StackString>,
-) -> Result<(NpmOverrideValue, Vec<NpmOverrideRule>), NpmOverridesError> {
+) -> Result<(NpmOverrideValue, Vec<Arc<NpmOverrideRule>>), NpmOverridesError> {
   match value {
     serde_json::Value::String(s) => {
       if s.is_empty() {
@@ -299,12 +278,12 @@ fn parse_override_value(
           let (child_name, child_selector) = parse_override_key(child_key)?;
           let (child_val, grandchildren) =
             parse_override_value(child_key, child_value, root_deps)?;
-          children.push(NpmOverrideRule {
+          children.push(Arc::new(NpmOverrideRule {
             name: child_name,
             selector: child_selector,
             value: child_val,
             children: grandchildren,
-          });
+          }));
         }
       }
 
@@ -351,18 +330,18 @@ fn resolve_override_version_string(
 fn parse_override_rules(
   map: &serde_json::Map<String, serde_json::Value>,
   root_deps: &HashMap<StackString, StackString>,
-) -> Result<Vec<NpmOverrideRule>, NpmOverridesError> {
+) -> Result<Vec<Arc<NpmOverrideRule>>, NpmOverridesError> {
   let mut rules = Vec::with_capacity(map.len());
   for (key, value) in map {
     let (name, selector) = parse_override_key(key)?;
     let (override_value, children) =
       parse_override_value(key, value, root_deps)?;
-    rules.push(NpmOverrideRule {
+    rules.push(Arc::new(NpmOverrideRule {
       name,
       selector,
       value: override_value,
       children,
-    });
+    }));
   }
   Ok(rules)
 }
@@ -527,6 +506,15 @@ mod test {
   }
 
   #[test]
+  fn parse_invalid_top_level_type() {
+    let raw = serde_json::json!(42);
+    let result = NpmOverrides::from_value(raw, &empty_root_deps());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("expected an object"));
+  }
+
+  #[test]
   fn parse_empty_string_override() {
     let raw = serde_json::json!({
       "foo": ""
@@ -572,133 +560,131 @@ mod test {
   }
 
   #[test]
-  fn active_overrides_empty() {
+  fn overrides_empty() {
     let overrides = NpmOverrides::default();
-    let active = ActiveOverrides::from_overrides(&overrides);
-    assert!(active.is_empty());
+    assert!(overrides.is_empty());
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
   }
 
   #[test]
-  fn active_overrides_simple_global() {
+  fn overrides_simple_global() {
     let raw = serde_json::json!({
       "foo": "1.0.0"
     });
     let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
 
     // should find override for "foo" (no selector, so None version works)
-    let result = active.get_override_for(&PackageName::from_str("foo"), None);
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "1.0.0");
 
     // should not find override for "bar"
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("bar"), None)
         .is_none()
     );
   }
 
   #[test]
-  fn active_overrides_for_child_passthrough() {
+  fn overrides_for_child_passthrough() {
     // global override should pass through to child contexts (for non-matching packages)
     let raw = serde_json::json!({
       "foo": "1.0.0"
     });
-    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
     // descend into "bar@2.0.0" — "foo" override should still be active
-    let child_active = active.for_child(
+    let child = overrides.for_child(
       &PackageName::from_str("bar"),
       &Version::parse_from_npm("2.0.0").unwrap(),
     );
-    let result =
-      child_active.get_override_for(&PackageName::from_str("foo"), None);
+    let result = child.get_override_for(&PackageName::from_str("foo"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "1.0.0");
   }
 
   #[test]
-  fn active_overrides_for_child_consumed() {
+  fn overrides_for_child_consumed() {
     // a simple override for "foo" should be consumed when descending into "foo"
     let raw = serde_json::json!({
       "foo": "1.0.0"
     });
-    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
     // descend into "foo@1.0.0" — the override is consumed (it targeted this node)
-    let child_active = active.for_child(
+    let child = overrides.for_child(
       &PackageName::from_str("foo"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
     // "foo" override should no longer be active for deeper descendants
     assert!(
-      child_active
+      child
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
   }
 
   #[test]
-  fn active_overrides_scoped_override() {
+  fn overrides_scoped() {
     // scoped override: "parent": { "child": "2.0.0" }
     let raw = serde_json::json!({
       "parent": {
         "child": "2.0.0"
       }
     });
-    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
     // at the top level, there's no override for "child"
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("child"), None)
         .is_none()
     );
 
     // descend into "parent@1.0.0" — child overrides should become active
-    let child_active = active.for_child(
+    let inside_parent = overrides.for_child(
       &PackageName::from_str("parent"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
     let result =
-      child_active.get_override_for(&PackageName::from_str("child"), None);
+      inside_parent.get_override_for(&PackageName::from_str("child"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "2.0.0");
 
     // descend into "other@1.0.0" — "child" override should NOT be active
-    let other_active = active.for_child(
+    let inside_other = overrides.for_child(
       &PackageName::from_str("other"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
     assert!(
-      other_active
+      inside_other
         .get_override_for(&PackageName::from_str("child"), None)
         .is_none()
     );
   }
 
   #[test]
-  fn active_overrides_selector_match() {
+  fn overrides_selector_match() {
     // override with version selector: "foo@^2.0.0": { "bar": "3.0.0" }
     let raw = serde_json::json!({
       "foo@^2.0.0": {
         "bar": "3.0.0"
       }
     });
-    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
     // descend into "foo@2.1.0" (matches ^2.0.0) — bar override should be active
-    let matching = active.for_child(
+    let matching = overrides.for_child(
       &PackageName::from_str("foo"),
       &Version::parse_from_npm("2.1.0").unwrap(),
     );
@@ -707,7 +693,7 @@ mod test {
     assert_eq!(result.unwrap().version_text(), "3.0.0");
 
     // descend into "foo@1.0.0" (does NOT match ^2.0.0) — bar override should NOT be active
-    let non_matching = active.for_child(
+    let non_matching = overrides.for_child(
       &PackageName::from_str("foo"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
@@ -719,7 +705,7 @@ mod test {
   }
 
   #[test]
-  fn active_overrides_dot_key_with_selector() {
+  fn overrides_dot_key_with_selector() {
     // override with "." key and selector:
     // "foo@^2.0.0": { ".": "2.1.0", "bar": "3.0.0" }
     let raw = serde_json::json!({
@@ -729,17 +715,16 @@ mod test {
       }
     });
     let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
 
     // without a resolved version, the selector-based override is not returned
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
 
     // with a matching version, the "." override is returned
-    let result = active.get_override_for(
+    let result = overrides.get_override_for(
       &PackageName::from_str("foo"),
       Some(&Version::parse_from_npm("2.5.0").unwrap()),
     );
@@ -748,7 +733,7 @@ mod test {
 
     // with a non-matching version, the override is not returned
     assert!(
-      active
+      overrides
         .get_override_for(
           &PackageName::from_str("foo"),
           Some(&Version::parse_from_npm("1.0.0").unwrap()),
@@ -758,23 +743,22 @@ mod test {
   }
 
   #[test]
-  fn active_overrides_selector_on_direct_value() {
+  fn overrides_selector_on_direct_value() {
     // "foo@^2.0.0": "2.1.0" — selector on a direct version override
     let raw = serde_json::json!({
       "foo@^2.0.0": "2.1.0"
     });
     let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
 
     // without version: not returned (has selector)
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
 
     // matching version: returned
-    let result = active.get_override_for(
+    let result = overrides.get_override_for(
       &PackageName::from_str("foo"),
       Some(&Version::parse_from_npm("2.3.0").unwrap()),
     );
@@ -783,7 +767,7 @@ mod test {
 
     // non-matching version: not returned
     assert!(
-      active
+      overrides
         .get_override_for(
           &PackageName::from_str("foo"),
           Some(&Version::parse_from_npm("1.5.0").unwrap()),
@@ -793,32 +777,32 @@ mod test {
   }
 
   #[test]
-  fn active_overrides_removed_cancels_override() {
+  fn overrides_removed_cancels_override() {
     // simulate a scoped removal: after entering a scope, the active rules
     // would be [{name: "foo", value: Removed}, {name: "foo", value: Version("1.0.0")}]
     // the Removed should cancel the subsequent Version rule
-    let active = ActiveOverrides {
+    let overrides = NpmOverrides {
       rules: vec![
-        NpmOverrideRule {
+        Arc::new(NpmOverrideRule {
           name: PackageName::from_str("foo"),
           selector: None,
           value: NpmOverrideValue::Removed,
           children: Vec::new(),
-        },
-        NpmOverrideRule {
+        }),
+        Arc::new(NpmOverrideRule {
           name: PackageName::from_str("foo"),
           selector: None,
           value: NpmOverrideValue::Version(
             VersionReq::parse_from_npm("1.0.0").unwrap(),
           ),
           children: Vec::new(),
-        },
+        }),
       ],
     };
 
     // Removed comes first, so get_override_for returns None
     assert!(
-      active
+      overrides
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
@@ -834,16 +818,17 @@ mod test {
         "foo": ""
       }
     });
-    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let active = ActiveOverrides::from_overrides(&overrides);
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
     // at top level, "foo" override is active
-    let result = active.get_override_for(&PackageName::from_str("foo"), None);
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "1.0.0");
 
     // enter "parent@1.0.0" — the scoped removal should cancel the global override
-    let inside_parent = active.for_child(
+    let inside_parent = overrides.for_child(
       &PackageName::from_str("parent"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
