@@ -3,6 +3,7 @@
 mod collections;
 mod common;
 mod graph;
+mod overrides;
 mod snapshot;
 #[cfg(feature = "tracing")]
 mod tracing;
@@ -34,3 +35,9 @@ pub use snapshot::SnapshotFromLockfileError;
 pub use snapshot::SnapshotFromLockfileParams;
 pub use snapshot::ValidSerializedNpmResolutionSnapshot;
 pub use snapshot::snapshot_from_lockfile;
+
+pub use overrides::ActiveOverrides;
+pub use overrides::NpmOverrideRule;
+pub use overrides::NpmOverrideValue;
+pub use overrides::NpmOverrides;
+pub use overrides::NpmOverridesError;

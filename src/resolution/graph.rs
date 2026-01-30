@@ -38,6 +38,7 @@ use crate::resolution::collections::OneDirectionalLinkedList;
 use crate::resolution::snapshot::SnapshotPackageCopyIndexResolver;
 
 use super::common::NpmVersionResolver;
+use super::overrides::ActiveOverrides;
 use super::snapshot::NpmResolutionSnapshot;
 use crate::NpmPackageId;
 use crate::NpmResolutionPackage;
@@ -242,6 +243,8 @@ struct GraphPath {
   /// descendants should be kept up to date and always point to this node.
   linked_circular_descendants: RefCell<Vec<Rc<GraphPath>>>,
   mode: GraphPathResolutionMode,
+  /// The currently active override rules at this point in the tree traversal.
+  active_overrides: ActiveOverrides,
 }
 
 impl GraphPath {
@@ -249,7 +252,13 @@ impl GraphPath {
     node_id: NodeId,
     nv: Rc<PackageNv>,
     mode: GraphPathResolutionMode,
+    active_overrides: &ActiveOverrides,
   ) -> Rc<Self> {
+    // scope the overrides for this root package so that any scoped
+    // overrides targeting this package have their children activated
+    let scoped = active_overrides
+      .for_child(&nv.name, &nv.version)
+      .into_owned();
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Root(nv.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -258,6 +267,7 @@ impl GraphPath {
       nv,
       linked_circular_descendants: Default::default(),
       mode,
+      active_overrides: scoped,
     })
   }
 
@@ -280,6 +290,10 @@ impl GraphPath {
     nv: Rc<PackageNv>,
     mode: GraphPathResolutionMode,
   ) -> Rc<Self> {
+    let active_overrides = self
+      .active_overrides
+      .for_child(&nv.name, &nv.version)
+      .into_owned();
     Rc::new(Self {
       previous_node: Some(GraphPathNodeOrRoot::Node(self.clone())),
       node_id_ref: NodeIdRef::new(node_id),
@@ -287,6 +301,7 @@ impl GraphPath {
       nv,
       linked_circular_descendants: Default::default(),
       mode,
+      active_overrides,
     })
   }
 
@@ -1000,6 +1015,9 @@ pub struct GraphDependencyResolver<'a, TNpmRegistryApi: NpmRegistryApi> {
   dep_entry_cache: DepEntryCache,
   reporter: Option<&'a dyn Reporter>,
   should_dedup: bool,
+  /// The initial active overrides derived from the root package.json.
+  /// Used when creating root-level GraphPaths.
+  initial_overrides: ActiveOverrides,
 }
 
 impl<'a, TNpmRegistryApi: NpmRegistryApi>
@@ -1012,6 +1030,8 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     reporter: Option<&'a dyn Reporter>,
     options: GraphDependencyResolverOptions,
   ) -> Self {
+    let initial_overrides =
+      ActiveOverrides::from_overrides(&version_resolver.overrides);
     Self {
       unmet_peer_diagnostics: Default::default(),
       graph,
@@ -1021,6 +1041,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       dep_entry_cache: Default::default(),
       reporter,
       should_dedup: options.should_dedup,
+      initial_overrides,
     }
   }
 
@@ -1035,6 +1056,38 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
 
     // attempt to find an existing root package that matches this package req
     let version_resolver = self.version_resolver.get_for_package(package_info);
+    // check if an override applies to this root-level package:
+    // try unconditional overrides first, then resolve naturally to check
+    // selector-based overrides
+    let req_version_req = match self
+      .initial_overrides
+      .get_override_for(&package_req.name, None)
+    {
+      Some(req) => req.clone(),
+      None => {
+        // resolve naturally to check for selector-based overrides
+        let natural_version = version_resolver
+          .resolve_best_package_version_info(
+            &package_req.version_req,
+            self
+              .graph
+              .package_name_versions
+              .entry(version_resolver.info().name.clone())
+              .or_default()
+              .iter(),
+          )
+          .ok()
+          .map(|info| info.version.clone());
+        match natural_version.as_ref().and_then(|v| {
+          self
+            .initial_overrides
+            .get_override_for(&package_req.name, Some(v))
+        }) {
+          Some(req) => req.clone(),
+          None => package_req.version_req.clone(),
+        }
+      }
+    };
     let existing_root = self
       .graph
       .root_packages
@@ -1042,7 +1095,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .find(|(nv, _id)| {
         package_req.name == nv.name
           && version_resolver
-            .version_req_satisfies(&package_req.version_req, &nv.version)
+            .version_req_satisfies(&req_version_req, &nv.version)
             .ok()
             .unwrap_or(false)
       })
@@ -1052,7 +1105,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       None => {
         let (pkg_nv, node_id) = self.resolve_node_from_info(
           &package_req.name,
-          &package_req.version_req,
+          &req_version_req,
           &version_resolver,
           None,
         )?;
@@ -1060,6 +1113,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
           node_id,
           pkg_nv.clone(),
           GraphPathResolutionMode::All,
+          &self.initial_overrides,
         ));
         (pkg_nv, node_id)
       }
@@ -1080,12 +1134,41 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
   ) -> Result<NodeId, NpmResolutionError> {
     debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
     let parent_id = parent_path.node_id();
-    let (child_nv, mut child_id) = self.resolve_node_from_info(
-      &entry.name,
-      &entry.version_req,
-      version_resolver,
-      Some(parent_id),
-    )?;
+    // check if an override applies to this dependency:
+    // first try unconditional overrides (no selector), then resolve
+    // naturally and check selector-based overrides against the result
+    let (child_nv, mut child_id) = match parent_path
+      .active_overrides
+      .get_override_for(&entry.name, None)
+    {
+      Some(req) => self.resolve_node_from_info(
+        &entry.name,
+        req,
+        version_resolver,
+        Some(parent_id),
+      )?,
+      None => {
+        let result = self.resolve_node_from_info(
+          &entry.name,
+          &entry.version_req,
+          version_resolver,
+          Some(parent_id),
+        )?;
+        // check for selector-based override matching the resolved version
+        match parent_path
+          .active_overrides
+          .get_override_for(&entry.name, Some(&result.0.version))
+        {
+          Some(req) => self.resolve_node_from_info(
+            &entry.name,
+            req,
+            version_resolver,
+            Some(parent_id),
+          )?,
+          None => result,
+        }
+      }
+    };
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
@@ -1201,6 +1284,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               *node_id,
               nv.clone(),
               GraphPathResolutionMode::OptionalPeers,
+              &self.initial_overrides,
             ));
           }
         }
@@ -1581,15 +1665,43 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       // We didn't find anything by searching the ancestor siblings, so we need
       // to resolve based on the package info
       let parent_id = ancestor_path.node_id();
-      let (_, node_id) = self.resolve_node_from_info(
-        &peer_dep.name,
-        peer_dep
-          .peer_dep_version_req
-          .as_ref()
-          .unwrap_or(&peer_dep.version_req),
-        peer_version_resolver,
-        Some(parent_id),
-      )?;
+      let default_req = peer_dep
+        .peer_dep_version_req
+        .as_ref()
+        .unwrap_or(&peer_dep.version_req);
+      // check if an override applies to this peer dependency:
+      // unconditional first, then selector-based
+      let (_, node_id) = match ancestor_path
+        .active_overrides
+        .get_override_for(&peer_dep.name, None)
+      {
+        Some(req) => self.resolve_node_from_info(
+          &peer_dep.name,
+          req,
+          peer_version_resolver,
+          Some(parent_id),
+        )?,
+        None => {
+          let result = self.resolve_node_from_info(
+            &peer_dep.name,
+            default_req,
+            peer_version_resolver,
+            Some(parent_id),
+          )?;
+          match ancestor_path
+            .active_overrides
+            .get_override_for(&peer_dep.name, Some(&result.0.version))
+          {
+            Some(req) => self.resolve_node_from_info(
+              &peer_dep.name,
+              req,
+              peer_version_resolver,
+              Some(parent_id),
+            )?,
+            None => result,
+          }
+        }
+      };
       let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
       self.set_new_peer_dep(&[ancestor_path], peer_parent, specifier, node_id);
       Ok(Some(node_id))
@@ -2158,6 +2270,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         *node_id,
         pkg_nv.clone(),
         GraphPathResolutionMode::All,
+        &self.initial_overrides,
       ));
     }
 
@@ -6473,11 +6586,7 @@ mod test {
       &api,
       RunResolverOptions {
         reqs,
-        link_packages: None,
-        newest_dependency_date: Default::default(),
-        snapshot: Default::default(),
-        expected_diagnostics: Default::default(),
-        skip_dedup: false,
+        ..Default::default()
       },
     )
     .await
@@ -6492,6 +6601,7 @@ mod test {
     expected_diagnostics: Vec<&'a str>,
     newest_dependency_date: NewestDependencyDateOptions,
     skip_dedup: bool,
+    overrides: crate::resolution::NpmOverrides,
   }
 
   async fn run_resolver_with_options_and_get_err(
@@ -6526,6 +6636,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       link_packages: link_packages.clone(),
       newest_dependency_date_options: options.newest_dependency_date,
+      overrides: options.overrides,
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -6678,6 +6789,7 @@ mod test {
     let npm_version_resolver = NpmVersionResolver {
       link_packages: Default::default(),
       newest_dependency_date_options: Default::default(),
+      overrides: Default::default(),
     };
     let mut resolver = GraphDependencyResolver::new(
       &mut graph,
@@ -6695,5 +6807,364 @@ mod test {
     }
 
     resolver.resolve_pending().await.unwrap_err()
+  }
+
+  // === npm overrides integration tests ===
+
+  fn make_overrides(
+    json: serde_json::Value,
+  ) -> crate::resolution::NpmOverrides {
+    crate::resolution::NpmOverrides::from_value(json, &Default::default())
+      .unwrap()
+  }
+
+  fn make_overrides_with_root_deps(
+    json: serde_json::Value,
+    root_deps: std::collections::HashMap<
+      deno_semver::StackString,
+      deno_semver::StackString,
+    >,
+  ) -> crate::resolution::NpmOverrides {
+    crate::resolution::NpmOverrides::from_value(json, &root_deps).unwrap()
+  }
+
+  #[tokio::test]
+  async fn override_simple_version() {
+    // "foo": "1.0.0" should force foo@1.0.0 everywhere, even though
+    // package-a asks for foo@^2.0.0
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("foo", "1.0.0");
+    api.ensure_package_version("foo", "2.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("foo", "^2.0.0"));
+
+    let (packages, _package_reqs) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo": "1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // foo should be resolved to 1.0.0, not 2.0.0
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.pkg_id, "foo@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_does_not_affect_unrelated_packages() {
+    // override for "foo" should not affect "bar"
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("foo", "1.0.0");
+    api.ensure_package_version("foo", "2.0.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.ensure_package_version("bar", "2.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("foo", "^2.0.0"));
+    api.add_dependency(("package-a", "1.0.0"), ("bar", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo": "1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.pkg_id, "foo@1.0.0");
+    // bar should still resolve to 2.0.0 as normal
+    let bar_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("bar@"))
+      .unwrap();
+    assert_eq!(bar_pkg.pkg_id, "bar@2.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_scoped_to_parent() {
+    // "parent": { "child": "1.0.0" } should only override child
+    // when it's under parent's subtree
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("parent", "1.0.0");
+    api.ensure_package_version("other", "1.0.0");
+    api.ensure_package_version("child", "1.0.0");
+    api.ensure_package_version("child", "2.0.0");
+    // both parent and other depend on child@^2.0.0
+    api.add_dependency(("parent", "1.0.0"), ("child", "^2.0.0"));
+    api.add_dependency(("other", "1.0.0"), ("child", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["parent@1.0.0", "other@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "parent": {
+            "child": "1.0.0"
+          }
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // parent's child should be 1.0.0 (overridden)
+    let parent_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("parent@"))
+      .unwrap();
+    assert_eq!(parent_pkg.dependencies.get("child").unwrap(), "child@1.0.0");
+    // other's child should be 2.0.0 (not overridden)
+    let other_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("other@"))
+      .unwrap();
+    assert_eq!(other_pkg.dependencies.get("child").unwrap(), "child@2.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_with_version_selector() {
+    // "foo@^2.0.0": { "bar": "1.0.0" }
+    // should only override bar when foo resolves to 2.x
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("foo", "2.1.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.ensure_package_version("bar", "3.0.0");
+    api.add_dependency(("foo", "2.1.0"), ("bar", "^3.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["foo@^2.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo@^2.0.0": {
+            "bar": "1.0.0"
+          }
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // bar should be overridden to 1.0.0
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.dependencies.get("bar").unwrap(), "bar@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_version_selector_no_match() {
+    // "foo@^3.0.0": { "bar": "1.0.0" }
+    // should NOT override bar when foo resolves to 2.x
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("foo", "2.1.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.ensure_package_version("bar", "3.0.0");
+    api.add_dependency(("foo", "2.1.0"), ("bar", "^3.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["foo@^2.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo@^3.0.0": {
+            "bar": "1.0.0"
+          }
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // bar should NOT be overridden (selector doesn't match)
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.dependencies.get("bar").unwrap(), "bar@3.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_dollar_reference() {
+    // "bar": "$bar" should resolve to the root dependency's version of bar
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.ensure_package_version("bar", "2.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("bar", "^2.0.0"));
+
+    let mut root_deps = std::collections::HashMap::new();
+    root_deps.insert(
+      deno_semver::StackString::from("bar"),
+      deno_semver::StackString::from("^1.0.0"),
+    );
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0", "bar@^1.0.0"],
+        overrides: make_overrides_with_root_deps(
+          serde_json::json!({
+            "bar": "$bar"
+          }),
+          root_deps,
+        ),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // bar should be resolved to 1.0.0 everywhere
+    let bar_pkgs: Vec<_> = packages
+      .iter()
+      .filter(|p| p.pkg_id.starts_with("bar@"))
+      .collect();
+    assert_eq!(bar_pkgs.len(), 1);
+    assert_eq!(bar_pkgs[0].pkg_id, "bar@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_transitive_dependency() {
+    // override should apply to deeply nested transitive deps
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("leaf", "1.0.0");
+    api.ensure_package_version("leaf", "2.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1.0.0"));
+    api.add_dependency(("package-b", "1.0.0"), ("leaf", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "leaf": "1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // leaf should be 1.0.0 even though it's two levels deep
+    let leaf_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("leaf@"))
+      .unwrap();
+    assert_eq!(leaf_pkg.pkg_id, "leaf@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_with_dot_key() {
+    // "foo@^2.0.0": { ".": "2.0.0", "bar": "1.0.0" }
+    // should override foo itself and also bar within foo's tree
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("foo", "2.0.0");
+    api.ensure_package_version("foo", "2.1.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.ensure_package_version("bar", "3.0.0");
+    api.add_dependency(("foo", "2.0.0"), ("bar", "^3.0.0"));
+    api.add_dependency(("foo", "2.1.0"), ("bar", "^3.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["foo@^2.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo@^2.0.0": {
+            ".": "2.0.0",
+            "bar": "1.0.0"
+          }
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // foo should resolve to 2.0.0 (overridden by "." key)
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.pkg_id, "foo@2.0.0");
+    // bar within foo should be 1.0.0
+    assert_eq!(foo_pkg.dependencies.get("bar").unwrap(), "bar@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_no_overrides_unchanged() {
+    // with empty overrides, resolution should behave exactly as before
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("foo", "2.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("foo", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: Default::default(),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    let foo_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("foo@"))
+      .unwrap();
+    assert_eq!(foo_pkg.pkg_id, "foo@2.0.0");
   }
 }
