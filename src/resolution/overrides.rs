@@ -87,7 +87,7 @@ impl NpmOverrides {
   /// specifier to version string. This is used to resolve `$pkg` references.
   pub fn from_value(
     value: serde_json::Value,
-    root_deps: &HashMap<StackString, StackString>,
+    root_deps: &HashMap<PackageName, StackString>,
   ) -> Result<Self, NpmOverridesError> {
     match value {
       serde_json::Value::Object(map) => {
@@ -240,7 +240,7 @@ fn parse_override_key(
 fn parse_override_value(
   key: &str,
   value: &serde_json::Value,
-  root_deps: &HashMap<StackString, StackString>,
+  root_deps: &HashMap<PackageName, StackString>,
 ) -> Result<(NpmOverrideValue, Vec<Arc<NpmOverrideRule>>), NpmOverridesError> {
   match value {
     serde_json::Value::String(s) => {
@@ -299,7 +299,7 @@ fn parse_override_value(
 fn resolve_override_version_string(
   key: &str,
   value: &str,
-  root_deps: &HashMap<StackString, StackString>,
+  root_deps: &HashMap<PackageName, StackString>,
 ) -> Result<VersionReq, NpmOverridesError> {
   if let Some(ref_name) = value.strip_prefix('$') {
     // dollar reference: look up the root dependency's version
@@ -329,7 +329,7 @@ fn resolve_override_version_string(
 /// Parses the top-level override rules from a JSON object.
 fn parse_override_rules(
   map: &serde_json::Map<String, serde_json::Value>,
-  root_deps: &HashMap<StackString, StackString>,
+  root_deps: &HashMap<PackageName, StackString>,
 ) -> Result<Vec<Arc<NpmOverrideRule>>, NpmOverridesError> {
   let mut rules = Vec::with_capacity(map.len());
   for (key, value) in map {
@@ -464,7 +464,7 @@ mod test {
   #[test]
   fn parse_dollar_reference() {
     let mut root_deps = HashMap::new();
-    root_deps.insert(StackString::from("foo"), StackString::from("^1.0.0"));
+    root_deps.insert(PackageName::from("foo"), StackString::from("^1.0.0"));
     let raw = serde_json::json!({
       "bar": "$foo"
     });
