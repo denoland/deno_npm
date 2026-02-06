@@ -39,6 +39,10 @@ pub enum NpmOverridesError {
   InvalidDotValueType { key: String },
   #[error("Invalid \"overrides\" field in package.json: expected an object")]
   InvalidTopLevelType,
+  #[error(
+    "jsr: override \"{value}\" for key \"{key}\" requires a scoped package name (e.g. jsr:@scope/name)"
+  )]
+  JsrRequiresScope { key: String, value: String },
 }
 
 /// The value an override resolves to.
@@ -46,6 +50,12 @@ pub enum NpmOverridesError {
 pub enum NpmOverrideValue {
   /// A version requirement, e.g. "1.0.0" or "^2.0.0".
   Version(VersionReq),
+  /// An npm alias override, e.g. "npm:other-package@^1.0.0".
+  /// Replaces the dependency with a different package.
+  Alias {
+    package: PackageName,
+    version_req: VersionReq,
+  },
   /// No self-override (only child overrides exist). This corresponds to the
   /// case where the override key maps to an object without a "." key.
   Inherited,
@@ -184,18 +194,21 @@ impl NpmOverrides {
         continue;
       }
       match &rule.value {
-        NpmOverrideValue::Version(req) => match &rule.selector {
-          None => return Some(req),
-          Some(selector) => {
-            if let Some(version) = resolved_version
-              && selector.matches(version)
-            {
-              return Some(req);
+        NpmOverrideValue::Version(req)
+        | NpmOverrideValue::Alias { version_req: req, .. } => {
+          match &rule.selector {
+            None => return Some(req),
+            Some(selector) => {
+              if let Some(version) = resolved_version
+                && selector.matches(version)
+              {
+                return Some(req);
+              }
+              // has selector but no version provided or version doesn't
+              // match — skip this rule
             }
-            // has selector but no version provided or version doesn't
-            // match — skip this rule
           }
-        },
+        }
         NpmOverrideValue::Removed => match &rule.selector {
           None => return None,
           Some(selector) => {
@@ -212,6 +225,25 @@ impl NpmOverrides {
           // no self-override, only children — skip
         }
       }
+    }
+    None
+  }
+
+  /// Returns the replacement package name if an unconditional alias override
+  /// matches this dependency. Used by the graph resolver to fetch the correct
+  /// package info before resolution.
+  pub fn get_alias_for(
+    &self,
+    dep_name: &PackageName,
+  ) -> Option<&PackageName> {
+    for rule in self.rules.iter() {
+      if rule.name != *dep_name || rule.selector.is_some() {
+        continue;
+      }
+      return match &rule.value {
+        NpmOverrideValue::Alias { package, .. } => Some(package),
+        _ => None,
+      };
     }
     None
   }
@@ -258,12 +290,8 @@ fn parse_override_value(
 ) -> Result<(NpmOverrideValue, Vec<Arc<NpmOverrideRule>>), NpmOverridesError> {
   match value {
     serde_json::Value::String(s) => {
-      if s.is_empty() {
-        Ok((NpmOverrideValue::Removed, Vec::new()))
-      } else {
-        let version_req = resolve_override_version_string(key, s, root_deps)?;
-        Ok((NpmOverrideValue::Version(version_req), Vec::new()))
-      }
+      let value = parse_override_string(key, s, root_deps)?;
+      Ok((value, Vec::new()))
     }
     serde_json::Value::Object(map) => {
       let mut self_value = NpmOverrideValue::Inherited;
@@ -274,13 +302,7 @@ fn parse_override_value(
           // the "." key overrides the package itself
           match child_value {
             serde_json::Value::String(s) => {
-              if s.is_empty() {
-                self_value = NpmOverrideValue::Removed;
-              } else {
-                self_value = NpmOverrideValue::Version(
-                  resolve_override_version_string(key, s, root_deps)?,
-                );
-              }
+              self_value = parse_override_string(key, s, root_deps)?;
             }
             _ => {
               return Err(NpmOverridesError::InvalidDotValueType {
@@ -307,6 +329,126 @@ fn parse_override_value(
       key: key.to_string(),
     }),
   }
+}
+
+/// Parses an override string value, handling empty strings, `npm:` aliases,
+/// `$pkg` dollar references, and plain version requirements.
+fn parse_override_string(
+  key: &str,
+  s: &str,
+  root_deps: &HashMap<PackageName, StackString>,
+) -> Result<NpmOverrideValue, NpmOverridesError> {
+  if s.is_empty() {
+    Ok(NpmOverrideValue::Removed)
+  } else if let Some(rest) = s.strip_prefix("npm:") {
+    parse_npm_alias_override(key, rest)
+  } else if let Some(rest) = s.strip_prefix("jsr:") {
+    parse_jsr_override(key, rest)
+  } else {
+    let version_req = resolve_override_version_string(key, s, root_deps)?;
+    Ok(NpmOverrideValue::Version(version_req))
+  }
+}
+
+/// Parses an `npm:package@version` alias value into an `Alias` override.
+fn parse_npm_alias_override(
+  key: &str,
+  npm_value: &str,
+) -> Result<NpmOverrideValue, NpmOverridesError> {
+  let (name, version_str) =
+    if let Some((name, version)) = npm_value.rsplit_once('@') {
+      if name.is_empty() {
+        // scoped package without version: "npm:@scope/package"
+        (npm_value, "*")
+      } else {
+        (name, version)
+      }
+    } else {
+      (npm_value, "*")
+    };
+
+  let version_req =
+    VersionReq::parse_from_npm(version_str).map_err(|source| {
+      NpmOverridesError::ValueParse {
+        key: key.to_string(),
+        value: format!("npm:{npm_value}"),
+        source,
+      }
+    })?;
+
+  Ok(NpmOverrideValue::Alias {
+    package: PackageName::from_str(name),
+    version_req,
+  })
+}
+
+/// Parses a `jsr:` override value into an `Alias` override.
+///
+/// JSR packages are mapped to npm via the `@jsr/scope__name` convention.
+/// Two forms are supported:
+/// - Explicit package: `jsr:@scope/name@version` (e.g. `jsr:@std/path@^1.0.0`)
+/// - Version only: `jsr:^1` — derives the package name from the override key
+///   (e.g. key `@std/path` with value `jsr:1` → `@jsr/std__path` @ `1`)
+fn parse_jsr_override(
+  key: &str,
+  jsr_value: &str,
+) -> Result<NpmOverrideValue, NpmOverridesError> {
+  let (jsr_name, version_str) = if jsr_value.starts_with('@') {
+    // explicit package: jsr:@scope/name@version or jsr:@scope/name
+    if let Some((name, version)) = jsr_value.rsplit_once('@') {
+      if name.is_empty() {
+        // only one @ — scoped package without version
+        (jsr_value, "*")
+      } else {
+        (name, version)
+      }
+    } else {
+      (jsr_value, "*")
+    }
+  } else {
+    // version only: jsr:^1, jsr:1 — derive package name from the key.
+    // key may include a version selector (e.g. "@std/path@^1.0.0"),
+    // so strip that to get just the package name.
+    let key_name = if let Some(rest) = key.strip_prefix('@') {
+      // scoped key — find the second '@' for the version selector
+      match rest.find('@') {
+        Some(idx) => &key[..idx + 1],
+        None => key,
+      }
+    } else {
+      match key.find('@') {
+        Some(idx) => &key[..idx],
+        None => key,
+      }
+    };
+    (key_name, jsr_value)
+  };
+
+  // validate and split @scope/name
+  let Some((scope, pkg_name)) =
+    jsr_name.strip_prefix('@').and_then(|rest| rest.split_once('/'))
+  else {
+    return Err(NpmOverridesError::JsrRequiresScope {
+      key: key.to_string(),
+      value: format!("jsr:{jsr_value}"),
+    });
+  };
+
+  let npm_name = format!("@jsr/{scope}__{pkg_name}");
+
+  let version_req =
+    VersionReq::parse_from_npm(version_str).map_err(|source| {
+      NpmOverridesError::ValueParse {
+        key: key.to_string(),
+        value: format!("jsr:{jsr_value}"),
+        source,
+      }
+    })?;
+
+  Ok(NpmOverrideValue::Alias {
+    package: PackageName::from_str(&npm_name),
+    version_req,
+  })
 }
 
 /// Resolves a version string value, handling `$pkg` dollar references.
@@ -900,5 +1042,710 @@ mod test {
       Some(&Version::parse_from_npm("2.1.0").unwrap()),
     );
     assert!(result.is_none());
+  }
+
+  #[test]
+  fn overrides_first_match_precedence() {
+    // when multiple rules target the same package, the first match wins
+    let raw = serde_json::json!({
+      "foo": "1.0.0",
+      "foo@^2.0.0": "2.5.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+
+    // the unconditional "foo": "1.0.0" is first, so it always wins
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    // even with a version that matches ^2.0.0, the first rule still wins
+    let result = overrides.get_override_for(
+      &PackageName::from_str("foo"),
+      Some(&Version::parse_from_npm("2.1.0").unwrap()),
+    );
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+  }
+
+  #[test]
+  fn overrides_first_match_selector_then_unconditional() {
+    // reversed order: selector-based rule first, unconditional second
+    let raw = serde_json::json!({
+      "foo@^2.0.0": "2.5.0",
+      "foo": "1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+
+    // without resolved version, selector can't match — falls through to
+    // the unconditional rule
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    // with matching version, the selector-based rule matches first
+    let result = overrides.get_override_for(
+      &PackageName::from_str("foo"),
+      Some(&Version::parse_from_npm("2.1.0").unwrap()),
+    );
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "2.5.0");
+
+    // with non-matching version, selector skipped, unconditional wins
+    let result = overrides.get_override_for(
+      &PackageName::from_str("foo"),
+      Some(&Version::parse_from_npm("1.5.0").unwrap()),
+    );
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+  }
+
+  #[test]
+  fn overrides_scoped_package_nested() {
+    // scoped packages in nested/behavioral tests
+    let raw = serde_json::json!({
+      "@scope/parent": {
+        "@scope/child": "2.0.0"
+      }
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    // at top level, no override for @scope/child
+    assert!(
+      overrides
+        .get_override_for(&PackageName::from_str("@scope/child"), None)
+        .is_none()
+    );
+
+    // descend into @scope/parent@1.0.0 — @scope/child override activates
+    let inside_parent = overrides.for_child(
+      &PackageName::from_str("@scope/parent"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let result = inside_parent
+      .get_override_for(&PackageName::from_str("@scope/child"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "2.0.0");
+
+    // descend into unrelated @other/pkg — @scope/child override not active
+    let inside_other = overrides.for_child(
+      &PackageName::from_str("@other/pkg"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    assert!(
+      inside_other
+        .get_override_for(&PackageName::from_str("@scope/child"), None)
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn overrides_scoped_package_with_selector_nested() {
+    // scoped parent with version selector
+    let raw = serde_json::json!({
+      "@scope/parent@^2.0.0": {
+        "@scope/child": "3.0.0"
+      }
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    // matching version — children activate
+    let matching = overrides.for_child(
+      &PackageName::from_str("@scope/parent"),
+      &Version::parse_from_npm("2.1.0").unwrap(),
+    );
+    let result = matching
+      .get_override_for(&PackageName::from_str("@scope/child"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "3.0.0");
+
+    // non-matching version — children do not activate
+    let non_matching = overrides.for_child(
+      &PackageName::from_str("@scope/parent"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    assert!(
+      non_matching
+        .get_override_for(&PackageName::from_str("@scope/child"), None)
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn parse_npm_alias_override_simple() {
+    let raw = serde_json::json!({
+      "foo": "npm:bar@1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    assert_eq!(overrides.rules.len(), 1);
+    let rule = &overrides.rules[0];
+    assert_eq!(rule.name.as_str(), "foo");
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "bar");
+        assert_eq!(version_req.version_text(), "1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_npm_alias_override_scoped() {
+    let raw = serde_json::json!({
+      "foo": "npm:@scope/bar@^2.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@scope/bar");
+        assert_eq!(version_req.version_text(), "^2.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_npm_alias_override_no_version() {
+    let raw = serde_json::json!({
+      "foo": "npm:bar"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "bar");
+        assert_eq!(version_req.version_text(), "*");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_npm_alias_scoped_no_version() {
+    // "npm:@scope/bar" — scoped package without version
+    let raw = serde_json::json!({
+      "foo": "npm:@scope/bar"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@scope/bar");
+        assert_eq!(version_req.version_text(), "*");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_npm_alias_dot_key() {
+    // alias in the "." key of an object override
+    let raw = serde_json::json!({
+      "foo": {
+        ".": "npm:bar@1.0.0",
+        "baz": "2.0.0"
+      }
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "bar");
+        assert_eq!(version_req.version_text(), "1.0.0");
+      }
+      _ => panic!("expected Alias from dot key"),
+    }
+    assert_eq!(rule.children.len(), 1);
+  }
+
+  #[test]
+  fn overrides_alias_get_override_for() {
+    // get_override_for returns the alias's version_req
+    let raw = serde_json::json!({
+      "foo": "npm:bar@^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "^1.0.0");
+  }
+
+  #[test]
+  fn overrides_alias_get_alias_for() {
+    // get_alias_for returns the replacement package name
+    let raw = serde_json::json!({
+      "foo": "npm:bar@^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let alias = overrides.get_alias_for(&PackageName::from_str("foo"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "bar");
+
+    // non-aliased override returns None for alias lookup
+    let raw2 = serde_json::json!({
+      "foo": "1.0.0"
+    });
+    let overrides2 =
+      NpmOverrides::from_value(raw2, &empty_root_deps()).unwrap();
+    assert!(
+      overrides2
+        .get_alias_for(&PackageName::from_str("foo"))
+        .is_none()
+    );
+
+    // non-existent package returns None
+    assert!(
+      overrides
+        .get_alias_for(&PackageName::from_str("baz"))
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn overrides_alias_passthrough_for_child() {
+    // alias overrides should pass through to child contexts
+    let raw = serde_json::json!({
+      "foo": "npm:bar@1.0.0"
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    let child = overrides.for_child(
+      &PackageName::from_str("baz"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let result = child.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    let alias = child.get_alias_for(&PackageName::from_str("foo"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "bar");
+  }
+
+  // --- jsr: override tests ---
+
+  #[test]
+  fn parse_jsr_override_basic() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path@1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    assert_eq!(overrides.rules.len(), 1);
+    let rule = &overrides.rules[0];
+    assert_eq!(rule.name.as_str(), "foo");
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_with_range() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path@^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "^1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_tilde_range() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@foo/bar@~2.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/foo__bar");
+        assert_eq!(version_req.version_text(), "~2.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_no_version() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "*");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_hyphenated_name() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path-utils@1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path-utils");
+        assert_eq!(version_req.version_text(), "1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_complex_scope() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@my-org/my-pkg@>=1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/my-org__my-pkg");
+        assert_eq!(version_req.version_text(), ">=1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_error_no_scope() {
+    // "jsr:foo" — missing @ scope prefix
+    let raw = serde_json::json!({
+      "bar": "jsr:foo"
+    });
+    let result = NpmOverrides::from_value(raw, &empty_root_deps());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("jsr:"));
+    assert!(err.contains("requires a scoped package name"));
+  }
+
+  #[test]
+  fn parse_jsr_override_error_no_slash() {
+    // "jsr:@foo" — scope without /name
+    let raw = serde_json::json!({
+      "bar": "jsr:@foo"
+    });
+    let result = NpmOverrides::from_value(raw, &empty_root_deps());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("requires a scoped package name"));
+  }
+
+  #[test]
+  fn parse_jsr_override_error_unscoped_with_version() {
+    // "jsr:foo@1.0.0" — no scope
+    let raw = serde_json::json!({
+      "bar": "jsr:foo@1.0.0"
+    });
+    let result = NpmOverrides::from_value(raw, &empty_root_deps());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("requires a scoped package name"));
+  }
+
+  #[test]
+  fn parse_jsr_override_dot_key() {
+    // jsr: in the "." key of an object override
+    let raw = serde_json::json!({
+      "foo": {
+        ".": "jsr:@std/path@1.0.0",
+        "baz": "2.0.0"
+      }
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "1.0.0");
+      }
+      _ => panic!("expected Alias from dot key"),
+    }
+    assert_eq!(rule.children.len(), 1);
+  }
+
+  #[test]
+  fn jsr_override_get_override_for() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path@^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let result =
+      overrides.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "^1.0.0");
+  }
+
+  #[test]
+  fn jsr_override_get_alias_for() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path@^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let alias = overrides.get_alias_for(&PackageName::from_str("foo"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
+  }
+
+  #[test]
+  fn jsr_override_passthrough_for_child() {
+    let raw = serde_json::json!({
+      "foo": "jsr:@std/path@1.0.0"
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    let child = overrides.for_child(
+      &PackageName::from_str("baz"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let result = child.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    let alias = child.get_alias_for(&PackageName::from_str("foo"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
+  }
+
+  #[test]
+  fn jsr_override_scoped_to_parent() {
+    // jsr override scoped within a parent
+    let raw = serde_json::json!({
+      "parent": {
+        "child": "jsr:@std/path@1.0.0"
+      }
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    // at top level, no override for child
+    assert!(
+      overrides
+        .get_override_for(&PackageName::from_str("child"), None)
+        .is_none()
+    );
+
+    // enter parent — child override activates
+    let inside_parent = overrides.for_child(
+      &PackageName::from_str("parent"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let result =
+      inside_parent.get_override_for(&PackageName::from_str("child"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    let alias =
+      inside_parent.get_alias_for(&PackageName::from_str("child"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only() {
+    // "jsr:1" — derive package name from key "@std/path"
+    let raw = serde_json::json!({
+      "@std/path": "jsr:1"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    assert_eq!(overrides.rules.len(), 1);
+    let rule = &overrides.rules[0];
+    assert_eq!(rule.name.as_str(), "@std/path");
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "1");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only_caret() {
+    let raw = serde_json::json!({
+      "@std/path": "jsr:^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "^1.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only_tilde() {
+    let raw = serde_json::json!({
+      "@foo/bar": "jsr:~2.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/foo__bar");
+        assert_eq!(version_req.version_text(), "~2.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only_star() {
+    let raw = serde_json::json!({
+      "@std/path": "jsr:*"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "*");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only_key_with_selector() {
+    // key has a version selector: "@std/path@^1.0.0"
+    // the selector is on the key (for scoping), not the version override
+    let raw = serde_json::json!({
+      "@std/path@^1.0.0": "jsr:2.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let rule = &overrides.rules[0];
+    assert_eq!(rule.name.as_str(), "@std/path");
+    assert!(rule.selector.is_some());
+    match &rule.value {
+      NpmOverrideValue::Alias {
+        package,
+        version_req,
+      } => {
+        assert_eq!(package.as_str(), "@jsr/std__path");
+        assert_eq!(version_req.version_text(), "2.0.0");
+      }
+      _ => panic!("expected Alias"),
+    }
+  }
+
+  #[test]
+  fn parse_jsr_override_version_only_error_unscoped_key() {
+    // key is "foo" (unscoped) — can't derive a valid JSR name
+    let raw = serde_json::json!({
+      "foo": "jsr:1.0.0"
+    });
+    let result = NpmOverrides::from_value(raw, &empty_root_deps());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("requires a scoped package name"));
+  }
+
+  #[test]
+  fn jsr_override_version_only_get_alias_for() {
+    let raw = serde_json::json!({
+      "@std/path": "jsr:^1.0.0"
+    });
+    let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
+    let result = overrides
+      .get_override_for(&PackageName::from_str("@std/path"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "^1.0.0");
+
+    let alias =
+      overrides.get_alias_for(&PackageName::from_str("@std/path"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
+  }
+
+  #[test]
+  fn jsr_override_version_only_passthrough() {
+    let raw = serde_json::json!({
+      "@std/path": "jsr:1.0.0"
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    let child = overrides.for_child(
+      &PackageName::from_str("other"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let alias =
+      child.get_alias_for(&PackageName::from_str("@std/path"));
+    assert!(alias.is_some());
+    assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
   }
 }

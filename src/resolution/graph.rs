@@ -1390,7 +1390,26 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
               child_id
             }
             None => {
-              self.analyze_dependency(dep, &version_resolver, &parent_path)?
+              // check if an alias override replaces this dependency's package
+              if let Some(alias_name) =
+                parent_path.active_overrides.get_alias_for(&dep.name)
+              {
+                let alias_info =
+                  self.api.package_info(alias_name.as_str()).await?;
+                let alias_resolver =
+                  self.version_resolver.get_for_package(&alias_info);
+                self.analyze_dependency(
+                  dep,
+                  &alias_resolver,
+                  &parent_path,
+                )?
+              } else {
+                self.analyze_dependency(
+                  dep,
+                  &version_resolver,
+                  &parent_path,
+                )?
+              }
             }
           };
 
@@ -7168,5 +7187,238 @@ mod test {
       .find(|p| p.pkg_id.starts_with("foo@"))
       .unwrap();
     assert_eq!(foo_pkg.pkg_id, "foo@2.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_npm_alias() {
+    // "foo": "npm:bar@1.0.0" should resolve foo to bar@1.0.0
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("foo", "2.0.0");
+    api.ensure_package_version("bar", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("foo", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo": "npm:bar@1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // foo should not appear — bar@1.0.0 should be resolved instead
+    assert!(
+      packages.iter().all(|p| !p.pkg_id.starts_with("foo@")),
+      "foo should not be in the resolved packages"
+    );
+    let bar_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("bar@"))
+      .unwrap();
+    assert_eq!(bar_pkg.pkg_id, "bar@1.0.0");
+    // package-a's dependency "foo" should point to bar@1.0.0
+    let parent = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("package-a@"))
+      .unwrap();
+    assert_eq!(parent.dependencies.get("foo").unwrap(), "bar@1.0.0");
+  }
+
+  #[tokio::test]
+  async fn override_npm_alias_transitive() {
+    // npm alias override should work on transitive dependencies too
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("package-b", "1.0.0");
+    api.ensure_package_version("leaf", "2.0.0");
+    api.ensure_package_version("replacement", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("package-b", "1.0.0"));
+    api.add_dependency(("package-b", "1.0.0"), ("leaf", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "leaf": "npm:replacement@1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // leaf should not be in the graph; replacement@1.0.0 should be
+    assert!(
+      packages.iter().all(|p| !p.pkg_id.starts_with("leaf@")),
+      "leaf should not be in the resolved packages"
+    );
+    let replacement = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("replacement@"))
+      .unwrap();
+    assert_eq!(replacement.pkg_id, "replacement@1.0.0");
+    // package-b's "leaf" dep should point to replacement@1.0.0
+    let pkg_b = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("package-b@"))
+      .unwrap();
+    assert_eq!(
+      pkg_b.dependencies.get("leaf").unwrap(),
+      "replacement@1.0.0"
+    );
+  }
+
+  #[tokio::test]
+  async fn override_npm_alias_scoped_to_parent() {
+    // "parent": { "child": "npm:alt@1.0.0" }
+    // should only alias child under parent, not under other
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("parent", "1.0.0");
+    api.ensure_package_version("other", "1.0.0");
+    api.ensure_package_version("child", "2.0.0");
+    api.ensure_package_version("alt", "1.0.0");
+    api.add_dependency(("parent", "1.0.0"), ("child", "^2.0.0"));
+    api.add_dependency(("other", "1.0.0"), ("child", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["parent@1.0.0", "other@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "parent": {
+            "child": "npm:alt@1.0.0"
+          }
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // parent's "child" should resolve to alt@1.0.0
+    let parent_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("parent@"))
+      .unwrap();
+    assert_eq!(parent_pkg.dependencies.get("child").unwrap(), "alt@1.0.0");
+    // other's "child" should still be child@2.0.0 (unaffected)
+    let other_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("other@"))
+      .unwrap();
+    assert_eq!(
+      other_pkg.dependencies.get("child").unwrap(),
+      "child@2.0.0"
+    );
+  }
+
+  #[tokio::test]
+  async fn override_jsr_alias() {
+    // "foo": "jsr:@std/path@1.0.0" should resolve foo to @jsr/std__path@1.0.0
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("foo", "2.0.0");
+    api.ensure_package_version("@jsr/std__path", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("foo", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "foo": "jsr:@std/path@1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // foo should not appear — @jsr/std__path@1.0.0 should be resolved instead
+    assert!(
+      packages.iter().all(|p| !p.pkg_id.starts_with("foo@")),
+      "foo should not be in the resolved packages"
+    );
+    let jsr_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("@jsr/std__path@"))
+      .unwrap();
+    assert_eq!(jsr_pkg.pkg_id, "@jsr/std__path@1.0.0");
+    // package-a's "foo" dep should point to @jsr/std__path@1.0.0
+    let parent = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("package-a@"))
+      .unwrap();
+    assert_eq!(
+      parent.dependencies.get("foo").unwrap(),
+      "@jsr/std__path@1.0.0"
+    );
+  }
+
+  #[tokio::test]
+  async fn override_jsr_version_only() {
+    // "@std/path": "jsr:1.0.0" should derive the jsr name from the key
+    // and resolve to @jsr/std__path@1.0.0
+    let api = TestNpmRegistryApi::default();
+    api.ensure_package_version("package-a", "1.0.0");
+    api.ensure_package_version("@std/path", "2.0.0");
+    api.ensure_package_version("@jsr/std__path", "1.0.0");
+    api.add_dependency(("package-a", "1.0.0"), ("@std/path", "^2.0.0"));
+
+    let (packages, _) = run_resolver_with_options_and_get_output(
+      api,
+      RunResolverOptions {
+        reqs: vec!["package-a@1.0.0"],
+        overrides: make_overrides(serde_json::json!({
+          "@std/path": "jsr:1.0.0"
+        })),
+        snapshot: Default::default(),
+        link_packages: None,
+        expected_diagnostics: Vec::new(),
+        newest_dependency_date: Default::default(),
+        skip_dedup: false,
+      },
+    )
+    .await;
+
+    // @std/path should not appear — @jsr/std__path@1.0.0 should be resolved
+    assert!(
+      packages
+        .iter()
+        .all(|p| !p.pkg_id.starts_with("@std/path@")),
+      "@std/path should not be in the resolved packages"
+    );
+    let jsr_pkg = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("@jsr/std__path@"))
+      .unwrap();
+    assert_eq!(jsr_pkg.pkg_id, "@jsr/std__path@1.0.0");
+    // package-a's "@std/path" dep should point to @jsr/std__path@1.0.0
+    let parent = packages
+      .iter()
+      .find(|p| p.pkg_id.starts_with("package-a@"))
+      .unwrap();
+    assert_eq!(
+      parent.dependencies.get("@std/path").unwrap(),
+      "@jsr/std__path@1.0.0"
+    );
   }
 }
