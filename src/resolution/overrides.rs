@@ -196,10 +196,18 @@ impl NpmOverrides {
             // match — skip this rule
           }
         },
-        NpmOverrideValue::Removed => {
-          // explicit removal cancels any override for this dep
-          return None;
-        }
+        NpmOverrideValue::Removed => match &rule.selector {
+          None => return None,
+          Some(selector) => {
+            if let Some(version) = resolved_version
+              && selector.matches(version)
+            {
+              return None;
+            }
+            // has selector but no version provided or version doesn't
+            // match — skip this removal rule
+          }
+        },
         NpmOverrideValue::Inherited => {
           // no self-override, only children — skip
         }
@@ -823,39 +831,7 @@ mod test {
   }
 
   #[test]
-  fn overrides_removed_cancels_override() {
-    // simulate a scoped removal: after entering a scope, the active rules
-    // would be [{name: "foo", value: Removed}, {name: "foo", value: Version("1.0.0")}]
-    // the Removed should cancel the subsequent Version rule
-    let overrides = NpmOverrides {
-      rules: vec![
-        Arc::new(NpmOverrideRule {
-          name: PackageName::from_str("foo"),
-          selector: None,
-          value: NpmOverrideValue::Removed,
-          children: Vec::new(),
-        }),
-        Arc::new(NpmOverrideRule {
-          name: PackageName::from_str("foo"),
-          selector: None,
-          value: NpmOverrideValue::Version(
-            VersionReq::parse_from_npm("1.0.0").unwrap(),
-          ),
-          children: Vec::new(),
-        }),
-      ],
-    };
-
-    // Removed comes first, so get_override_for returns None
-    assert!(
-      overrides
-        .get_override_for(&PackageName::from_str("foo"), None)
-        .is_none()
-    );
-  }
-
-  #[test]
-  fn for_child_scoped_rules_take_precedence() {
+  fn for_child_scoped_removal_cancels_override() {
     // "foo": "1.0.0" (global) and "parent": { "foo": "" } (scoped removal)
     // after entering "parent", the scoped removal should take precedence
     let raw = serde_json::json!({
@@ -883,5 +859,46 @@ mod test {
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
+  }
+
+  #[test]
+  fn overrides_removed_with_selector() {
+    // "parent": { "foo@^2.0.0": "" } should only cancel the global "foo"
+    // override when the resolved version matches ^2.0.0
+    let raw = serde_json::json!({
+      "foo": "1.0.0",
+      "parent": {
+        "foo@^2.0.0": ""
+      }
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    let inside_parent = overrides.for_child(
+      &PackageName::from_str("parent"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+
+    // no resolved version — selector can't match, so Removed is skipped,
+    // falls through to the unconditional Version rule
+    let result =
+      inside_parent.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    // resolved version 1.5.0 — doesn't match ^2.0.0, so Removed is skipped
+    let result = inside_parent.get_override_for(
+      &PackageName::from_str("foo"),
+      Some(&Version::parse_from_npm("1.5.0").unwrap()),
+    );
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+
+    // resolved version 2.1.0 — matches ^2.0.0, so Removed cancels the override
+    let result = inside_parent.get_override_for(
+      &PackageName::from_str("foo"),
+      Some(&Version::parse_from_npm("2.1.0").unwrap()),
+    );
+    assert!(result.is_none());
   }
 }
