@@ -195,7 +195,9 @@ impl NpmOverrides {
       }
       match &rule.value {
         NpmOverrideValue::Version(req)
-        | NpmOverrideValue::Alias { version_req: req, .. } => {
+        | NpmOverrideValue::Alias {
+          version_req: req, ..
+        } => {
           match &rule.selector {
             None => return Some(req),
             Some(selector) => {
@@ -232,10 +234,7 @@ impl NpmOverrides {
   /// Returns the replacement package name if an unconditional alias override
   /// matches this dependency. Used by the graph resolver to fetch the correct
   /// package info before resolution.
-  pub fn get_alias_for(
-    &self,
-    dep_name: &PackageName,
-  ) -> Option<&PackageName> {
+  pub fn get_alias_for(&self, dep_name: &PackageName) -> Option<&PackageName> {
     for rule in self.rules.iter() {
       if rule.name != *dep_name || rule.selector.is_some() {
         continue;
@@ -425,8 +424,9 @@ fn parse_jsr_override(
   };
 
   // validate and split @scope/name
-  let Some((scope, pkg_name)) =
-    jsr_name.strip_prefix('@').and_then(|rest| rest.split_once('/'))
+  let Some((scope, pkg_name)) = jsr_name
+    .strip_prefix('@')
+    .and_then(|rest| rest.split_once('/'))
   else {
     return Err(NpmOverridesError::JsrRequiresScope {
       key: key.to_string(),
@@ -1157,8 +1157,8 @@ mod test {
       &PackageName::from_str("@scope/parent"),
       &Version::parse_from_npm("2.1.0").unwrap(),
     );
-    let result = matching
-      .get_override_for(&PackageName::from_str("@scope/child"), None);
+    let result =
+      matching.get_override_for(&PackageName::from_str("@scope/child"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "3.0.0");
 
@@ -1594,8 +1594,7 @@ mod test {
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "1.0.0");
 
-    let alias =
-      inside_parent.get_alias_for(&PackageName::from_str("child"));
+    let alias = inside_parent.get_alias_for(&PackageName::from_str("child"));
     assert!(alias.is_some());
     assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
   }
@@ -1720,13 +1719,12 @@ mod test {
       "@std/path": "jsr:^1.0.0"
     });
     let overrides = NpmOverrides::from_value(raw, &empty_root_deps()).unwrap();
-    let result = overrides
-      .get_override_for(&PackageName::from_str("@std/path"), None);
+    let result =
+      overrides.get_override_for(&PackageName::from_str("@std/path"), None);
     assert!(result.is_some());
     assert_eq!(result.unwrap().version_text(), "^1.0.0");
 
-    let alias =
-      overrides.get_alias_for(&PackageName::from_str("@std/path"));
+    let alias = overrides.get_alias_for(&PackageName::from_str("@std/path"));
     assert!(alias.is_some());
     assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
   }
@@ -1743,8 +1741,7 @@ mod test {
       &PackageName::from_str("other"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
-    let alias =
-      child.get_alias_for(&PackageName::from_str("@std/path"));
+    let alias = child.get_alias_for(&PackageName::from_str("@std/path"));
     assert!(alias.is_some());
     assert_eq!(alias.unwrap().as_str(), "@jsr/std__path");
   }

@@ -1398,17 +1398,9 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
                   self.api.package_info(alias_name.as_str()).await?;
                 let alias_resolver =
                   self.version_resolver.get_for_package(&alias_info);
-                self.analyze_dependency(
-                  dep,
-                  &alias_resolver,
-                  &parent_path,
-                )?
+                self.analyze_dependency(dep, &alias_resolver, &parent_path)?
               } else {
-                self.analyze_dependency(
-                  dep,
-                  &version_resolver,
-                  &parent_path,
-                )?
+                self.analyze_dependency(dep, &version_resolver, &parent_path)?
               }
             }
           };
@@ -7274,10 +7266,7 @@ mod test {
       .iter()
       .find(|p| p.pkg_id.starts_with("package-b@"))
       .unwrap();
-    assert_eq!(
-      pkg_b.dependencies.get("leaf").unwrap(),
-      "replacement@1.0.0"
-    );
+    assert_eq!(pkg_b.dependencies.get("leaf").unwrap(), "replacement@1.0.0");
   }
 
   #[tokio::test]
@@ -7321,10 +7310,7 @@ mod test {
       .iter()
       .find(|p| p.pkg_id.starts_with("other@"))
       .unwrap();
-    assert_eq!(
-      other_pkg.dependencies.get("child").unwrap(),
-      "child@2.0.0"
-    );
+    assert_eq!(other_pkg.dependencies.get("child").unwrap(), "child@2.0.0");
   }
 
   #[tokio::test]
@@ -7401,9 +7387,7 @@ mod test {
 
     // @std/path should not appear — @jsr/std__path@1.0.0 should be resolved
     assert!(
-      packages
-        .iter()
-        .all(|p| !p.pkg_id.starts_with("@std/path@")),
+      packages.iter().all(|p| !p.pkg_id.starts_with("@std/path@")),
       "@std/path should not be in the resolved packages"
     );
     let jsr_pkg = packages
