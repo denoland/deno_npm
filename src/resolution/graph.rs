@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use deno_semver::StackString;
 use deno_semver::Version;
@@ -1052,36 +1052,35 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     let version_resolver = self.version_resolver.get_for_package(package_info);
     // check if an override applies to this root-level package:
     // try unconditional overrides first, then resolve naturally to check
-    // selector-based overrides
-    let req_version_req = match self
-      .initial_overrides
-      .get_override_for(&package_req.name, None)
-    {
-      Some(req) => req.clone(),
-      None => {
-        // resolve naturally to check for selector-based overrides
-        let natural_version = version_resolver
-          .resolve_best_package_version_info(
-            &package_req.version_req,
-            self
-              .graph
-              .package_name_versions
-              .entry(version_resolver.info().name.clone())
-              .or_default()
-              .iter(),
-          )
-          .ok()
-          .map(|info| info.version.clone());
-        match natural_version.as_ref().and_then(|v| {
-          self
-            .initial_overrides
-            .get_override_for(&package_req.name, Some(v))
-        }) {
-          Some(req) => req.clone(),
-          None => package_req.version_req.clone(),
+    // selector-based overrides.
+    // clone the Rc so we can borrow from the local rather than from self,
+    // avoiding a conflict with later &mut self calls.
+    let overrides = self.initial_overrides.clone();
+    let req_version_req =
+      match overrides.get_override_for(&package_req.name, None) {
+        Some(req) => req,
+        None => {
+          // resolve naturally to check for selector-based overrides
+          let natural_version = version_resolver
+            .resolve_best_package_version_info(
+              &package_req.version_req,
+              self
+                .graph
+                .package_name_versions
+                .entry(version_resolver.info().name.clone())
+                .or_default()
+                .iter(),
+            )
+            .ok()
+            .map(|info| info.version.clone());
+          match natural_version.as_ref().and_then(|v| {
+            overrides.get_override_for(&package_req.name, Some(v))
+          }) {
+            Some(req) => req,
+            None => &package_req.version_req,
+          }
         }
-      }
-    };
+      };
     let existing_root = self
       .graph
       .root_packages
@@ -1089,7 +1088,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       .find(|(nv, _id)| {
         package_req.name == nv.name
           && version_resolver
-            .version_req_satisfies(&req_version_req, &nv.version)
+            .version_req_satisfies(req_version_req, &nv.version)
             .ok()
             .unwrap_or(false)
       })
@@ -1099,7 +1098,7 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
       None => {
         let (pkg_nv, node_id) = self.resolve_node_from_info(
           &package_req.name,
-          &req_version_req,
+          req_version_req,
           &version_resolver,
           None,
         )?;
@@ -1129,40 +1128,46 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
     debug_assert_eq!(entry.kind, NpmDependencyEntryKind::Dep);
     let parent_id = parent_path.node_id();
     // check if an override applies to this dependency:
-    // first try unconditional overrides (no selector), then resolve
-    // naturally and check selector-based overrides against the result
-    let (child_nv, mut child_id) = match parent_path
+    // first try unconditional overrides (no selector), then resolve the
+    // version naturally and check selector-based overrides against it.
+    // parent_path is a parameter (not a field of self) so borrowing from
+    // its active_overrides doesn't conflict with &mut self.
+    let effective_req = match parent_path
       .active_overrides
       .get_override_for(&entry.name, None)
     {
-      Some(req) => self.resolve_node_from_info(
-        &entry.name,
-        req,
-        version_resolver,
-        Some(parent_id),
-      )?,
+      Some(req) => req,
       None => {
-        let result = self.resolve_node_from_info(
-          &entry.name,
-          &entry.version_req,
-          version_resolver,
-          Some(parent_id),
-        )?;
-        // check for selector-based override matching the resolved version
-        match parent_path
-          .active_overrides
-          .get_override_for(&entry.name, Some(&result.0.version))
-        {
-          Some(req) => self.resolve_node_from_info(
-            &entry.name,
-            req,
-            version_resolver,
-            Some(parent_id),
-          )?,
-          None => result,
+        // resolve just the version to check for selector-based overrides
+        // without creating a graph node yet
+        let natural_version = version_resolver
+          .resolve_best_package_version_info(
+            &entry.version_req,
+            self
+              .graph
+              .package_name_versions
+              .entry(version_resolver.info().name.clone())
+              .or_default()
+              .iter(),
+          )
+          .ok()
+          .map(|info| info.version.clone());
+        match natural_version.as_ref().and_then(|v| {
+          parent_path
+            .active_overrides
+            .get_override_for(&entry.name, Some(v))
+        }) {
+          Some(req) => req,
+          None => &entry.version_req,
         }
       }
     };
+    let (child_nv, mut child_id) = self.resolve_node_from_info(
+      &entry.name,
+      effective_req,
+      version_resolver,
+      Some(parent_id),
+    )?;
     // Some packages may resolves to themselves as a dependency. If this occurs,
     // just ignore adding these as dependencies because this is likely a mistake
     // in the package.
@@ -1664,38 +1669,41 @@ impl<'a, TNpmRegistryApi: NpmRegistryApi>
         .as_ref()
         .unwrap_or(&peer_dep.version_req);
       // check if an override applies to this peer dependency:
-      // unconditional first, then selector-based
-      let (_, node_id) = match ancestor_path
+      // unconditional first, then resolve version to check selector-based
+      let effective_req = match ancestor_path
         .active_overrides
         .get_override_for(&peer_dep.name, None)
       {
-        Some(req) => self.resolve_node_from_info(
-          &peer_dep.name,
-          req,
-          peer_version_resolver,
-          Some(parent_id),
-        )?,
+        Some(req) => req,
         None => {
-          let result = self.resolve_node_from_info(
-            &peer_dep.name,
-            default_req,
-            peer_version_resolver,
-            Some(parent_id),
-          )?;
-          match ancestor_path
-            .active_overrides
-            .get_override_for(&peer_dep.name, Some(&result.0.version))
-          {
-            Some(req) => self.resolve_node_from_info(
-              &peer_dep.name,
-              req,
-              peer_version_resolver,
-              Some(parent_id),
-            )?,
-            None => result,
+          let natural_version = peer_version_resolver
+            .resolve_best_package_version_info(
+              default_req,
+              self
+                .graph
+                .package_name_versions
+                .entry(peer_version_resolver.info().name.clone())
+                .or_default()
+                .iter(),
+            )
+            .ok()
+            .map(|info| info.version.clone());
+          match natural_version.as_ref().and_then(|v| {
+            ancestor_path
+              .active_overrides
+              .get_override_for(&peer_dep.name, Some(v))
+          }) {
+            Some(req) => req,
+            None => default_req,
           }
         }
       };
+      let (_, node_id) = self.resolve_node_from_info(
+        &peer_dep.name,
+        effective_req,
+        peer_version_resolver,
+        Some(parent_id),
+      )?;
       let peer_parent = GraphPathNodeOrRoot::Node(ancestor_path.clone());
       self.set_new_peer_dep(&[ancestor_path], peer_parent, specifier, node_id);
       Ok(Some(node_id))

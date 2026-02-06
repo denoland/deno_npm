@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -136,9 +136,15 @@ impl NpmOverrides {
           // nested overrides for this subtree
           scoped_children.extend(rule.children.iter().cloned());
         }
-        // whether or not the selector matched, we don't pass this rule
-        // through because it was "consumed" by matching or not matching
-        // the child's name
+        if rule.children.is_empty()
+          || (rule.selector.is_some() && !selector_matches)
+        {
+          // pass through when: the rule is a simple childless override
+          // (so it keeps applying deeper), OR the rule has a selector
+          // that didn't match this version (so it can still match a
+          // deeper occurrence at a different version)
+          passthrough_rules.push(rule.clone());
+        }
         changed = true;
       } else {
         // this rule targets a different package — keep it active for
@@ -611,25 +617,50 @@ mod test {
   }
 
   #[test]
-  fn overrides_for_child_consumed() {
-    // a simple override for "foo" should be consumed when descending into "foo"
+  fn overrides_for_child_simple_passthrough() {
+    // a simple (childless) override for "foo" should pass through when
+    // descending into "foo" so it keeps applying to deeper re-entrant deps
     let raw = serde_json::json!({
       "foo": "1.0.0"
     });
     let overrides =
       Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
 
-    // descend into "foo@1.0.0" — the override is consumed (it targeted this node)
+    // descend into "foo@1.0.0" — the override should still be active
     let child = overrides.for_child(
       &PackageName::from_str("foo"),
       &Version::parse_from_npm("1.0.0").unwrap(),
     );
-    // "foo" override should no longer be active for deeper descendants
+    let result = child.get_override_for(&PackageName::from_str("foo"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "1.0.0");
+  }
+
+  #[test]
+  fn overrides_for_child_scoped_consumed() {
+    // a scoped override (with children) should be consumed when descending
+    // into the targeted node, activating its children instead
+    let raw = serde_json::json!({
+      "foo": {
+        "bar": "2.0.0"
+      }
+    });
+    let overrides =
+      Rc::new(NpmOverrides::from_value(raw, &empty_root_deps()).unwrap());
+
+    // descend into "foo@1.0.0" — the "foo" rule is consumed, "bar" activated
+    let child = overrides.for_child(
+      &PackageName::from_str("foo"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
     assert!(
       child
         .get_override_for(&PackageName::from_str("foo"), None)
         .is_none()
     );
+    let result = child.get_override_for(&PackageName::from_str("bar"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "2.0.0");
   }
 
   #[test]
@@ -702,6 +733,21 @@ mod test {
         .get_override_for(&PackageName::from_str("bar"), None)
         .is_none()
     );
+
+    // but the rule should still be alive for a deeper foo@2.x occurrence
+    // (e.g. foo@1.0.0 → baz → foo@2.1.0)
+    let inside_baz = non_matching.for_child(
+      &PackageName::from_str("baz"),
+      &Version::parse_from_npm("1.0.0").unwrap(),
+    );
+    let deeper_match = inside_baz.for_child(
+      &PackageName::from_str("foo"),
+      &Version::parse_from_npm("2.1.0").unwrap(),
+    );
+    let result =
+      deeper_match.get_override_for(&PackageName::from_str("bar"), None);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().version_text(), "3.0.0");
   }
 
   #[test]

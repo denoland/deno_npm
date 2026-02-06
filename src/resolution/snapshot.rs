@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use deno_error::JsError;
 use deno_lockfile::Lockfile;
